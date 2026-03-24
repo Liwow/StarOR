@@ -1,0 +1,21 @@
+[project]
+name = "ttrl-or"
+version = "0.1.0"
+description = "A modular test-time training framework for optimization modeling with MCTS + GRPO."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+hf = [
+  "torch>=2.2.0",
+  "transformers>=4.46.0",
+  "peft>=0.14.0",
+  "trl>=0.15.0",
+  "datasets>=2.20.0",
+  "accelerate>=0.34.0",
+]
+dev = ["pytest>=8.0.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

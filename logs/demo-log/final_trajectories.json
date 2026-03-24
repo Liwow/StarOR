@@ -1,0 +1,62 @@
+[
+  {
+    "trajectory_id": "840ff035-a3f5-4b73-921f-f9c159b0463e",
+    "priors": {
+      "code": 0.7854138485588115,
+      "obj_cons": 0.5979167436975555,
+      "set_param_var": 0.4350716110757613,
+      "schema": 0.5770967213327299
+    },
+    "reward": {
+      "r1": 1.0,
+      "r2": 0.0,
+      "r3": 1.0,
+      "total": 1.0,
+      "consensus_signature": "{\"objective\": 70.0, \"status\": \"ok\"}",
+      "execution_success": true,
+      "robustness_success": true,
+      "metadata": {}
+    },
+    "code": "def solve(instance: dict) -> dict:\n    total = 0.0\n    for value in instance.values():\n        if isinstance(value, (int, float)):\n            total += float(value)\n    return {\"objective\": total, \"status\": \"ok\"}"
+  },
+  {
+    "trajectory_id": "b026826b-5d4b-4b28-9f0c-1556a03fa6ac",
+    "priors": {
+      "code": 0.7854138485588115,
+      "obj_cons": 0.5979167436975555,
+      "set_param_var": 0.4350716110757613,
+      "schema": 0.5770967213327299
+    },
+    "reward": {
+      "r1": 1.0,
+      "r2": 0.0,
+      "r3": 1.0,
+      "total": 1.0,
+      "consensus_signature": "{\"objective\": 70.0, \"status\": \"ok\"}",
+      "execution_success": true,
+      "robustness_success": true,
+      "metadata": {}
+    },
+    "code": "def solve(instance: dict) -> dict:\n    total = 0.0\n    for value in instance.values():\n        if isinstance(value, (int, float)):\n            total += float(value)\n    return {\"objective\": total, \"status\": \"ok\"}"
+  },
+  {
+    "trajectory_id": "9718c99a-3aa0-49b1-aeda-a0d0aa1e060a",
+    "priors": {
+      "code": 0.7854138485588115,
+      "obj_cons": 0.5979167436975555,
+      "set_param_var": 0.4350716110757613,
+      "schema": 0.5770967213327299
+    },
+    "reward": {
+      "r1": 1.0,
+      "r2": 0.0,
+      "r3": 1.0,
+      "total": 1.0,
+      "consensus_signature": "{\"objective\": 70.0, \"status\": \"ok\"}",
+      "execution_success": true,
+      "robustness_success": true,
+      "metadata": {}
+    },
+    "code": "def solve(instance: dict) -> dict:\n    total = 0.0\n    for value in instance.values():\n        if isinstance(value, (int, float)):\n            total += float(value)\n    return {\"objective\": total, \"status\": \"ok\"}"
+  }
+]

@@ -1,0 +1,3 @@
+﻿Maximize the value of selected items under a single knapsack capacity limit.
+We have estimated item costs and values from demand planning.
+Please build an optimization model and return executable Python solver code.
