@@ -24,7 +24,8 @@ STAGE_ORDER: tuple[Stage, ...] = (
 class OptimizationTask:
     task_id: str
     description: str
-    instance: dict[str, Any]
+    instance: dict[str, Any] = field(default_factory=dict)
+    perturbation_map: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -108,7 +109,9 @@ class RunTrace:
     backend: str
     task_description: str
     instance: dict[str, Any]
-    config: dict[str, Any]
+    perturbation_map: dict[str, Any] = field(default_factory=dict)
+    task_context: dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
     stages: list[StageTrace] = field(default_factory=list)
     final_selection: dict[str, Any] = field(default_factory=dict)
     best_trajectory: dict[str, Any] = field(default_factory=dict)

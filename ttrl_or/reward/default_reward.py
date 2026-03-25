@@ -7,6 +7,7 @@ from ttrl_or.config import RewardConfig
 from ttrl_or.model.backend import PolicyBackend
 from ttrl_or.reward.base import RewardCalculator
 from ttrl_or.reward.executor import PythonCodeExecutor
+from ttrl_or.reward.perturbation import generate_perturbed_instances_from_map
 from ttrl_or.types import OptimizationTask, RewardBreakdown, Trajectory
 
 
@@ -30,7 +31,7 @@ class TTRLRewardCalculator(RewardCalculator):
 
         r1 = self.compute_r1(execution.success, execution.signature, consensus)
         if r1 == 1.0:
-            r3 = self.compute_r3(trajectory)
+            r3, r3_meta = self._compute_r3_with_details(trajectory)
             total = self.combine_rewards(r1=r1, r2=0.0, r3=r3)
             return RewardBreakdown(
                 r1=r1,
@@ -40,6 +41,7 @@ class TTRLRewardCalculator(RewardCalculator):
                 consensus_signature=consensus,
                 execution_success=execution.success,
                 robustness_success=(r3 == 1.0),
+                metadata={"r3": r3_meta},
             )
 
         r2 = self.compute_r2(execution.success)
@@ -52,6 +54,7 @@ class TTRLRewardCalculator(RewardCalculator):
             consensus_signature=consensus,
             execution_success=execution.success,
             robustness_success=False,
+            metadata={},
         )
 
     def finalize_group(self, trajectories: list[Trajectory]) -> list[Trajectory]:
@@ -69,7 +72,7 @@ class TTRLRewardCalculator(RewardCalculator):
             exec_result = exec_results[traj.trajectory_id]
             r1 = self.compute_r1(exec_result.success, exec_result.signature, consensus)
             if r1 == 1.0:
-                r3 = self.compute_r3(traj)
+                r3, r3_meta = self._compute_r3_with_details(traj)
                 total = self.combine_rewards(r1=r1, r2=0.0, r3=r3)
                 traj.reward = RewardBreakdown(
                     r1=r1,
@@ -79,6 +82,7 @@ class TTRLRewardCalculator(RewardCalculator):
                     consensus_signature=consensus,
                     execution_success=exec_result.success,
                     robustness_success=(r3 == 1.0),
+                    metadata={"r3": r3_meta},
                 )
             else:
                 r2 = self.compute_r2(exec_result.success)
@@ -91,6 +95,7 @@ class TTRLRewardCalculator(RewardCalculator):
                     consensus_signature=consensus,
                     execution_success=exec_result.success,
                     robustness_success=False,
+                    metadata={},
                 )
         return trajectories
 
@@ -106,21 +111,63 @@ class TTRLRewardCalculator(RewardCalculator):
         return 1.0 if execution_success else 0.0
 
     def compute_r3(self, trajectory: Trajectory) -> float:
-        tests = self.backend.generate_test_instances(self.task, self.config.robustness_cases)
-        if not tests:
-            return 0.0
-
-        for case in tests:
-            res = self.executor.run(trajectory.code, case)
-            if not res.success:
-                return 0.0
-        return 1.0
+        score, _ = self._compute_r3_with_details(trajectory)
+        return score
 
     @staticmethod
     def combine_rewards(r1: float, r2: float, r3: float) -> float:
         if r1 == 1.0:
             return r1 * 0.9 + r3 * 0.1
         return r2 * 0.2
+
+    def _compute_r3_with_details(self, trajectory: Trajectory) -> tuple[float, dict]:
+        if not self.config.enable_perturb_reward:
+            return 1.0, {
+                "enabled": False,
+                "reason": "disabled_by_config",
+                "num_cases": 0,
+            }
+
+        tests = self.backend.generate_test_instances(self.task, self.config.robustness_cases)
+        source = "backend"
+        if not tests:
+            tests = generate_perturbed_instances_from_map(self.task.instance, self.task.perturbation_map, self.config.robustness_cases)
+            source = "heuristic"
+
+        if not tests:
+            return 0.0, {
+                "enabled": True,
+                "source": source,
+                "reason": "no_perturb_cases",
+                "num_cases": 0,
+            }
+
+        details: list[dict] = []
+        for idx, case in enumerate(tests):
+            res = self.executor.run(trajectory.code, case)
+            case_meta = case.get("__perturbation__") if isinstance(case, dict) else None
+            detail = {
+                "case_index": idx,
+                "success": res.success,
+                "signature": res.signature,
+                "changes": case_meta.get("changes", []) if isinstance(case_meta, dict) else [],
+            }
+            details.append(detail)
+            if not res.success:
+                return 0.0, {
+                    "enabled": True,
+                    "source": source,
+                    "num_cases": len(tests),
+                    "failed_case_index": idx,
+                    "cases": details,
+                }
+
+        return 1.0, {
+            "enabled": True,
+            "source": source,
+            "num_cases": len(tests),
+            "cases": details,
+        }
 
     def _execute(self, trajectory: Trajectory):
         if trajectory.trajectory_id in self._exec_cache:
@@ -149,3 +196,4 @@ class TTRLRewardCalculator(RewardCalculator):
         if not valid:
             return ""
         return Counter(valid).most_common(1)[0][0]
+

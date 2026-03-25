@@ -87,3 +87,27 @@ def test_provisional_reward_uses_stage_local_consensus_window():
         assert reward.r1 == 1.0
     finally:
         backend.end_episode()
+
+def test_disable_perturb_reward_short_circuits_r3():
+    task = OptimizationTask(
+        task_id="reward-3",
+        description="Disable perturb reward",
+        instance={"a": 2, "b": 3},
+    )
+    backend = MockPolicyBackend(seed=9)
+    backend.begin_episode(task)
+
+    try:
+        config = RewardConfig(enable_perturb_reward=False)
+        rewarder = TTRLRewardCalculator(task=task, backend=backend, config=config)
+
+        explored = [Trajectory(trajectory_id="e1", outputs={Stage.CODE: _GOOD_CODE})]
+        candidate = Trajectory(trajectory_id="cand", outputs={Stage.CODE: _GOOD_CODE})
+        reward = rewarder.provisional_reward(candidate, explored)
+
+        assert reward.r1 == 1.0
+        assert reward.r3 == 1.0
+        assert reward.total == 1.0
+        assert reward.metadata["r3"]["enabled"] is False
+    finally:
+        backend.end_episode()

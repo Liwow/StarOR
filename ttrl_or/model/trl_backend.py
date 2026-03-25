@@ -164,17 +164,23 @@ class TRLPolicyBackend(PolicyBackend):
         return report
 
     def generate_test_instances(self, task: OptimizationTask, k: int) -> list[dict[str, Any]]:
-        tests: list[dict[str, Any]] = []
+        from ttrl_or.reward.perturbation import generate_perturbed_instances_from_map
+
+        tests = generate_perturbed_instances_from_map(task.instance, task.perturbation_map, k)
+        if tests:
+            return tests
+
+        fallback: list[dict[str, Any]] = []
         for i in range(k):
             case: dict[str, Any] = {}
             scale = 1.0 + 0.1 * ((i % 3) - 1)
             for key, value in task.instance.items():
-                if isinstance(value, (int, float)):
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
                     case[key] = round(float(value) * scale, 6)
                 else:
                     case[key] = value
-            tests.append(case)
-        return tests
+            fallback.append(case)
+        return fallback
 
     def _build_trl_grpo_args(self, config: GRPOConfig, output_dir: str):
         trl = _import_trl()
@@ -348,3 +354,5 @@ def _import_datasets():
         return datasets
     except ImportError as exc:
         raise RuntimeError("TRL backend requires `datasets`. Install with: pip install datasets") from exc
+
+

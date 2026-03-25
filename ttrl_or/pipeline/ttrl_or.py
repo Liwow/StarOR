@@ -31,6 +31,7 @@ class TTRLORRunner:
 
     def run_task(self, task: OptimizationTask) -> TaskRunResult:
         self.backend.begin_episode(task)
+        task_context = self.backend.prepare_task_context(task, self.config.dataset)
 
         backend_name = type(self.backend).__name__
         trace = RunTrace(
@@ -38,10 +39,13 @@ class TTRLORRunner:
             backend=backend_name,
             task_description=task.description,
             instance=task.instance,
+            perturbation_map=task.perturbation_map,
+            task_context=task_context,
             config={
                 "mcts": asdict(self.config.mcts),
                 "reward": asdict(self.config.reward),
                 "grpo": asdict(self.config.grpo),
+                "dataset": asdict(self.config.dataset),
                 "group_size": self.config.group_size,
             },
         )
@@ -163,11 +167,16 @@ class TTRLORRunner:
             # Drop temporary LoRA/adapters before the next instance.
             self.backend.end_episode()
 
-    def run_from_text(self, description: str, instance: dict, task_id: str | None = None) -> TaskRunResult:
+    def run_from_text(
+        self,
+        description: str,
+        instance: dict | None = None,
+        task_id: str | None = None,
+    ) -> TaskRunResult:
         task = OptimizationTask(
             task_id=task_id or str(uuid.uuid4()),
             description=description,
-            instance=instance,
+            instance=instance or {},
         )
         return self.run_task(task)
 
@@ -208,6 +217,8 @@ class TTRLORRunner:
             "backend": trace.backend,
             "task_description": trace.task_description,
             "instance": trace.instance,
+            "perturbation_map": trace.perturbation_map,
+            "task_context": trace.task_context,
             "config": trace.config,
             "final_selection": trace.final_selection,
             "best_trajectory": trace.best_trajectory,

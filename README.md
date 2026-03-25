@@ -34,38 +34,94 @@ Combination:
 - if `r1 == 1`: `reward = r1 * 0.9 + r3 * 0.1`
 - else: `reward = r2 * 0.2`
 
-## Install
+## Environment Setup
 
-Minimal (mock backend):
+Recommended (Python 3.10+):
 
 ```bash
+python -m venv .venv
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip setuptools wheel
+pip install -e ".[hf,dev]"
+```
+
+If your pip still fails editable install, use fallback:
+
+```bash
+pip install -r requirements-hf.txt
 pip install -e .
 ```
 
-With TRL training backend:
+Notes:
+
+- `setup.py` is included for compatibility with older tooling.
+- `pyproject.toml` is the primary package configuration.
+
+## Data Reading (Raw JSONL First)
+
+You can now run directly on the original raw files under `data/*.jsonl` (no unified conversion required).
+
+Supported raw styles in one loader:
+
+- parameters embedded in free text
+- parameters represented in markdown tables
+
+The training pipeline now uses **description-only input** by default.
+The backend pre-extracts a numeric parameter map and perturbation map *before stage-1 generation*.
+
+The extracted map is built from:
+
+- numeric mentions from the question text
+- numeric cells from markdown tables
+- `__key_param_keys__` (heuristic key parameters from objective/constraint context)
+
+Python API:
+
+```python
+from ttrl_or.dataset import load_raw_task_dataset
+samples = load_raw_task_dataset("data/NL4OPT.jsonl", limit=10)
+```
+
+Optional: keep unified normalization tools for offline preprocessing:
 
 ```bash
-pip install -e ".[hf]"
+python tools/normalize_data.py --input data/IndustryOR_fixedV2.jsonl --output data/unified/IndustryOR_fixedV2.unified.jsonl
+python tools/normalize_all_data.py --input-dir data --output-dir data/unified
 ```
 
 ## Quick Start
 
-Mock backend (no real GRPO training):
+Single-task mode (description only, mock backend):
+
+```bash
+python -m ttrl_or --backend mock --task-file examples/task.txt
+```
+
+Optional: still supported for ablation/debug to provide explicit numeric instance:
 
 ```bash
 python -m ttrl_or --backend mock --task-file examples/task.txt --instance-json examples/instance.json
 ```
 
+Dataset mode on raw JSONL (recommended for your current workflow):
+
+```bash
+python -m ttrl_or --backend mock --dataset-jsonl data/NL4OPT.jsonl --dataset-limit 20 --out outputs/nl4opt_mock.json
+```
+
 TRL backend (real GRPO updates via `trl`):
 
 ```bash
-python -m ttrl_or --backend trl --model-name Qwen/Qwen2.5-1.5B-Instruct --task-file examples/task.txt --instance-json examples/instance.json
+python -m ttrl_or --backend trl --model-name Qwen/Qwen2.5-1.5B-Instruct --dataset-jsonl data/NL4OPT.jsonl --dataset-limit 20
 ```
 
 Useful knobs:
 
 - MCTS: `--group-size`, `--expand-per-node`, `--simulations-per-node`, `--rollout-k`, `--max-nodes-per-stage`
-- Reward: `--consensus-window` (stage-local provisional voting window)
+- Reward: `--consensus-window`, `--robustness-cases`, `--disable-perturb-reward`
+  - `r3` perturbation now uses backend pre-extracted mapping (`focus_keys` + value map).
+- Dataset loader: `--dataset-start-index`, `--dataset-limit`, `--dataset-max-numeric-features`, `--dataset-key-param-top-k`
 - GRPO: `--grpo-lr`, `--grpo-batch-size`, `--grpo-grad-accum`, `--grpo-num-generations`, `--grpo-max-steps`
 - Logging: `--log-dir` and `--no-save-logs`
 - Generation: `--temperature`, `--top-p`, `--max-new-tokens`
@@ -102,6 +158,9 @@ All defaults are defined in `ttrl_or/config.py`.
 - `local_consensus_window` (Key): stage-local sliding window size for provisional `r1` consensus.
   - `<= 0` means use all explored rollouts in current stage.
   - Smaller window tracks recent behavior; larger window stabilizes vote.
+- `enable_perturb_reward` (Key): switch to enable/disable perturbation-based `r3`.
+  - `True`: run key-parameter perturbation tests for robustness reward.
+  - `False`: skip perturbation tests and treat `r3` as passed (`1.0`).
 
 ### GRPOConfig
 
@@ -146,6 +205,7 @@ By default each instance writes logs under `logs/<task_id>/`:
   - rollout reward details (`r1/r2/r3/total`)
   - Q/visit before and after updates
   - GRPO report per stage
+- `mcts_stats.json`: concise MCTS node expansion/reuse and rollout counts per stage
 - `final_trajectories.json`: selected final trajectories with reward and code
 - `best_code.py`: final selected code
 
@@ -166,9 +226,12 @@ pytest -q
 - `ttrl_or/model/mock_backend.py`: mock backend for local pipeline checks
 - `ttrl_or/model/trl_backend.py`: TRL + PEFT LoRA backend for real GRPO updates
 - `ttrl_or/prompts/`: prompt templates and builder
+- `ttrl_or/dataset/`: raw dataset loading, instance construction, and optional unified normalization
 
 ## Notes
 
 - `MockPolicyBackend` intentionally does not train.
 - `TRLPolicyBackend` creates temporary LoRA adapters per task instance and drops them at episode end.
 - If `trl/peft/datasets` are missing, `--backend trl` will raise a clear install error.
+
+

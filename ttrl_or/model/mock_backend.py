@@ -59,18 +59,24 @@ class MockPolicyBackend(PolicyBackend):
         }
 
     def generate_test_instances(self, task: OptimizationTask, k: int) -> list[dict[str, Any]]:
-        tests: list[dict[str, Any]] = []
+        from ttrl_or.reward.perturbation import generate_perturbed_instances_from_map
+
+        tests = generate_perturbed_instances_from_map(task.instance, task.perturbation_map, k)
+        if tests:
+            return tests
+
+        fallback: list[dict[str, Any]] = []
         for i in range(k):
             rng = self._rng(Stage.CODE, task.description, 100 + i)
             case: dict[str, Any] = {}
             for key, value in task.instance.items():
-                if isinstance(value, (int, float)):
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
                     jitter = 1.0 + rng.uniform(-0.2, 0.2)
                     case[key] = round(value * jitter, 4)
                 else:
                     case[key] = value
-            tests.append(case)
-        return tests
+            fallback.append(case)
+        return fallback
 
     def _rng(self, stage: Stage, prompt: str, salt: int) -> random.Random:
         digest = md5(f"{self.seed}|{self._episode_key}|{stage.value}|{prompt}|{salt}".encode("utf-8")).hexdigest()

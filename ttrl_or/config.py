@@ -17,6 +17,7 @@ class RewardConfig:
     code_timeout_sec: int = 6
     robustness_cases: int = 3
     local_consensus_window: int = 32
+    enable_perturb_reward: bool = False
 
 
 @dataclass(slots=True)
@@ -33,10 +34,20 @@ class GRPOConfig:
 
 
 @dataclass(slots=True)
+class DatasetConfig:
+    jsonl_path: str = "data\IndustryOR_fixedV2.jsonl"
+    start_index: int = 0
+    limit: int = 0
+    max_numeric_features: int = 16
+    key_param_top_k: int = 8
+
+
+@dataclass(slots=True)
 class PipelineConfig:
     mcts: MCTSConfig = field(default_factory=MCTSConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
     grpo: GRPOConfig = field(default_factory=GRPOConfig)
+    dataset: DatasetConfig = field(default_factory=DatasetConfig)
     group_size: int = 8
     save_logs: bool = True
     log_dir: str = "logs"
