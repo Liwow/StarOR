@@ -116,6 +116,12 @@ TRL backend (real GRPO updates via `trl`):
 python -m ttrl_or --backend trl --model-name model/Qwen/Qwen3-4B-Instruct-2507 --dataset-jsonl data/NL4OPT.jsonl --dataset-limit 20
 ```
 
+TRL backend with a local downloaded model directory:
+
+```bash
+python -m ttrl_or --backend trl --model-path E:/models/Qwen2.5-1.5B-Instruct --dataset-jsonl data/NL4OPT.jsonl --dataset-limit 20
+```
+
 TRL + vLLM generation backend (optional, requires compatible `trl` + `vllm` environment):
 
 ```bash
@@ -124,7 +130,7 @@ python -m ttrl_or --backend trl --model-name model/Qwen/Qwen3-4B-Instruct-2507 -
 
 Useful knobs:
 
-- MCTS: `--group-size`, `--expand-per-node`, `--simulations-per-node`, `--rollout-k`, `--max-nodes-per-stage`
+- MCTS: `--group-size`, `--expand-per-node`, `--simulations-per-node`, `--rollout-k`, `--max-nodes-per-stage`, `--mcts-stop-on-reward-one`
 - Reward: `--consensus-window`, `--robustness-cases`, `--disable-perturb-reward`
   - `r3` perturbation now uses backend pre-extracted mapping (`focus_keys` + value map).
 - Dataset loader: `--dataset-start-index`, `--dataset-limit`, `--dataset-max-numeric-features`, `--dataset-key-param-top-k`
@@ -132,6 +138,7 @@ Useful knobs:
   - LLM extractor knobs: `--mapping-llm-max-new-tokens`, `--mapping-llm-temperature`, `--mapping-llm-top-p`
 - GRPO: `--grpo-lr`, `--grpo-batch-size`, `--grpo-grad-accum`, `--grpo-num-generations`, `--grpo-max-steps`, `--grpo-use-vllm`, `--grpo-vllm-mode`, `--grpo-vllm-gpu-memory-utilization`, `--grpo-vllm-tensor-parallel-size`, `--grpo-vllm-max-model-len`
 - Logging: `--log-dir` and `--no-save-logs`
+- Backend/model: `--backend`, `--model-name`, `--model-path`, `--seed`, `--torch-dtype`, `--trust-remote-code`
 - Generation: `--temperature`, `--top-p`, `--max-new-tokens`
 
 ## Configuration Reference
@@ -155,6 +162,9 @@ All defaults are defined in `ttrl_or/config.py`.
 - `rollout_k` (Key): rollout count for each selected child during simulation.
   - Larger => lower reward variance.
   - Most expensive parameter in MCTS inner loop.
+- `stop_on_reward_one` (Key): if enabled, once any rollout in a stage reaches `reward.total == 1`, MCTS stops further search and this instance exits stage loop early.
+  - Useful for aggressive latency reduction when a perfect candidate appears early.
+  - Disable it when you want fuller exploration for stability.
 
 ### RewardConfig
 
@@ -192,6 +202,18 @@ All defaults are defined in `ttrl_or/config.py`.
 - `vllm_gpu_memory_utilization` (Key): target fraction of GPU memory reserved by vLLM KV/cache scheduler.
 - `vllm_tensor_parallel_size` (Key): TP shard count for vLLM inference workers.
 - `vllm_max_model_len` (Key): max sequence length used by vLLM engine.
+
+### BackendConfig
+
+- `backend`: backend selector (`mock` or `trl`).
+- `model_name_or_path` (Key): model identifier used by TRL backend.
+  - Supports Hugging Face repo id (for example `Qwen/Qwen2.5-1.5B-Instruct`).
+  - Supports local downloaded directory path (for example `E:/models/Qwen2.5-1.5B-Instruct`).
+- `seed`: random seed used by mock backend sampling.
+- `temperature`, `top_p`, `max_new_tokens`: generation knobs for backend sampling.
+- `torch_dtype`: dtype passed into model loading (`auto`, `float16`, `bfloat16`, etc.).
+- `trust_remote_code`: whether to allow remote model code when loading.
+- `lora_r`, `lora_alpha`, `lora_dropout`: LoRA adapter hyperparameters in TRL backend.
 
 ### PipelineConfig
 

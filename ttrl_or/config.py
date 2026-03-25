@@ -10,6 +10,7 @@ class MCTSConfig:
     max_nodes_per_stage: int = 15
     c_puct: float = 1.4
     rollout_k: int = 3
+    stop_on_reward_one: bool = False
 
 
 @dataclass(slots=True)
@@ -52,12 +53,27 @@ class DatasetConfig:
 
 
 @dataclass(slots=True)
+class BackendConfig:
+    backend: str = "mock"
+    model_name_or_path: str = "Qwen/Qwen2.5-1.5B-Instruct"
+    seed: int = 7
+    temperature: float = 0.8
+    top_p: float = 0.95
+    max_new_tokens: int = 256
+    torch_dtype: str = "auto"
+    trust_remote_code: bool = False
+    lora_r: int = 8
+    lora_alpha: int = 16
+    lora_dropout: float = 0.05
+
+
+@dataclass(slots=True)
 class PipelineConfig:
     mcts: MCTSConfig = field(default_factory=MCTSConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
     grpo: GRPOConfig = field(default_factory=GRPOConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
+    backend: BackendConfig = field(default_factory=BackendConfig)
     group_size: int = 8
     save_logs: bool = True
     log_dir: str = "logs"
-

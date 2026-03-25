@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import uuid
@@ -46,6 +46,7 @@ class TTRLORRunner:
                 "reward": asdict(self.config.reward),
                 "grpo": asdict(self.config.grpo),
                 "dataset": asdict(self.config.dataset),
+                "backend": asdict(self.config.backend),
                 "group_size": self.config.group_size,
             },
         )
@@ -62,6 +63,9 @@ class TTRLORRunner:
             root = mcts.root()
             frontier = [root]
             stage_reports: dict[str, dict] = {}
+            early_stop_candidate: Trajectory | None = None
+            stopped_early_stage: Stage | None = None
+            stopped_early_info: dict = {}
 
             # Four-layer loop: after each stage expansion, do one GRPO update.
             for stage in STAGE_ORDER:
@@ -69,7 +73,7 @@ class TTRLORRunner:
 
                 # Keep provisional consensus local to the current stage only.
                 stage_rollout_archive: list[Trajectory] = []
-                frontier, records = mcts.expand_stage(
+                frontier, records, early_stop_info = mcts.expand_stage(
                     task=task,
                     stage=stage,
                     parent_nodes=frontier,
@@ -89,7 +93,12 @@ class TTRLORRunner:
                     for record in records
                 ]
                 grpo_report = self.backend.grpo_update(stage_samples, self.config.grpo, stage)
-                stage_reports[stage.value] = grpo_report
+
+                stage_report = dict(grpo_report)
+                stage_report["mcts_early_stop"] = early_stop_info is not None
+                if early_stop_info is not None:
+                    stage_report["mcts_early_stop_info"] = early_stop_info
+                stage_reports[stage.value] = stage_report
 
                 trace.stages.append(
                     StageTrace(
@@ -98,12 +107,15 @@ class TTRLORRunner:
                         num_frontier_out=len(frontier),
                         stage_samples=len(stage_samples),
                         grpo_report=grpo_report,
+                        mcts_early_stop=(early_stop_info is not None),
+                        mcts_early_stop_info=(early_stop_info or {}),
                         expansions=[
                             {
                                 "node_id": record.node_id,
                                 "parent_id": record.parent_id,
                                 "prior": record.prior,
                                 "was_expanded": record.was_expanded,
+                                "hit_reward_one": record.hit_reward_one,
                                 "mean_reward": record.reward,
                                 "child_q_before": record.child_q_before,
                                 "child_q_after": record.child_q_after,
@@ -121,29 +133,55 @@ class TTRLORRunner:
                     )
                 )
 
-            code_nodes = frontier
-            ranked_code_nodes = sorted(code_nodes, key=lambda node: (node.q_value, node.visits), reverse=True)
-            selected_nodes = ranked_code_nodes[: self.config.group_size]
+                if early_stop_info is not None:
+                    stopped_early_stage = stage
+                    stopped_early_info = dict(early_stop_info)
+                    target_tid = str(early_stop_info.get("trajectory_id", ""))
+                    matched = [record.trajectory for record in records if record.trajectory.trajectory_id == target_tid]
+                    if matched:
+                        early_stop_candidate = matched[0]
+                    elif records:
+                        early_stop_candidate = max(records, key=lambda x: x.reward).trajectory
+                    break
 
-            # Final answer is selected by finalized reward (not by Q value).
-            group_trajectories = [node.to_partial_trajectory() for node in selected_nodes]
-            group_trajectories = rewarder.finalize_group(group_trajectories)
-            best = self._pick_best_by_reward(group_trajectories, selected_nodes)
+            if early_stop_candidate is not None:
+                group_trajectories = rewarder.finalize_group([early_stop_candidate])
+                best = self._pick_best_by_reward(group_trajectories, [])
+                final_selection = {
+                    "num_code_nodes": len(group_trajectories),
+                    "num_selected": len(group_trajectories),
+                    "selection_basis": "reward",
+                    "stopped_early": True,
+                    "stop_stage": stopped_early_stage.value if stopped_early_stage else "",
+                    "stop_info": stopped_early_info,
+                    "selected_nodes": [],
+                }
+            else:
+                code_nodes = frontier
+                ranked_code_nodes = sorted(code_nodes, key=lambda node: (node.q_value, node.visits), reverse=True)
+                selected_nodes = ranked_code_nodes[: self.config.group_size]
 
-            final_selection = {
-                "num_code_nodes": len(code_nodes),
-                "num_selected": len(selected_nodes),
-                "selection_basis": "reward",
-                "selected_nodes": [
-                    {
-                        "node_id": node.node_id,
-                        "q_value": node.q_value,
-                        "visits": node.visits,
-                        "prior": node.prior,
-                    }
-                    for node in selected_nodes
-                ],
-            }
+                # Final answer is selected by finalized reward (not by Q value).
+                group_trajectories = [node.to_partial_trajectory() for node in selected_nodes]
+                group_trajectories = rewarder.finalize_group(group_trajectories)
+                best = self._pick_best_by_reward(group_trajectories, selected_nodes)
+
+                final_selection = {
+                    "num_code_nodes": len(code_nodes),
+                    "num_selected": len(selected_nodes),
+                    "selection_basis": "reward",
+                    "stopped_early": False,
+                    "selected_nodes": [
+                        {
+                            "node_id": node.node_id,
+                            "q_value": node.q_value,
+                            "visits": node.visits,
+                            "prior": node.prior,
+                        }
+                        for node in selected_nodes
+                    ],
+                }
+
             stage_reports["final_selection"] = final_selection
 
             mcts_stats = self._build_mcts_stats(trace)
@@ -298,6 +336,8 @@ class TTRLORRunner:
                 "reused_node_ids": reused_nodes,
                 "rollouts_total": sum(rollout_by_node.values()),
                 "rollouts_by_node": dict(rollout_by_node),
+                "early_stop": bool(stage_trace.mcts_early_stop),
+                "early_stop_info": dict(stage_trace.mcts_early_stop_info),
             }
 
         return {

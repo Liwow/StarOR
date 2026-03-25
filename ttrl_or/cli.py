@@ -22,9 +22,20 @@ def _load_instance(path: str) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
-def _build_backend(args: argparse.Namespace):
-    if args.backend == "mock":
-        return MockPolicyBackend(seed=args.seed)
+def _resolve_model_name_or_path(value: str) -> str:
+    if not value:
+        return value
+    maybe_path = Path(value).expanduser()
+    if maybe_path.exists():
+        return str(maybe_path.resolve())
+    return value
+
+
+def _build_backend(config: PipelineConfig):
+    backend_cfg = config.backend
+
+    if backend_cfg.backend == "mock":
+        return MockPolicyBackend(seed=backend_cfg.seed)
 
     if TRLPolicyBackend is None:
         detail = f" Import error: {TRL_IMPORT_ERROR}" if TRL_IMPORT_ERROR else ""
@@ -34,15 +45,15 @@ def _build_backend(args: argparse.Namespace):
         )
 
     return TRLPolicyBackend(
-        model_name_or_path=args.model_name,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        max_new_tokens=args.max_new_tokens,
-        torch_dtype=args.torch_dtype,
-        trust_remote_code=args.trust_remote_code,
-        lora_r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
+        model_name_or_path=backend_cfg.model_name_or_path,
+        temperature=backend_cfg.temperature,
+        top_p=backend_cfg.top_p,
+        max_new_tokens=backend_cfg.max_new_tokens,
+        torch_dtype=backend_cfg.torch_dtype,
+        trust_remote_code=backend_cfg.trust_remote_code,
+        lora_r=backend_cfg.lora_r,
+        lora_alpha=backend_cfg.lora_alpha,
+        lora_dropout=backend_cfg.lora_dropout,
     )
 
 
@@ -65,6 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--backend", type=str, choices=["mock", "trl"], default="mock")
     parser.add_argument("--model-name", type=str, default="Qwen/Qwen2.5-1.5B-Instruct")
+    parser.add_argument("--model-path", type=str, default="")
     parser.add_argument("--seed", type=int, default=7)
 
     parser.add_argument("--temperature", type=float, default=0.8)
@@ -82,6 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--simulations-per-node", type=int, default=4)
     parser.add_argument("--rollout-k", type=int, default=2)
     parser.add_argument("--max-nodes-per-stage", type=int, default=12)
+    parser.add_argument("--mcts-stop-on-reward-one", action="store_true")
 
     parser.add_argument("--consensus-window", type=int, default=64)
     parser.add_argument("--robustness-cases", type=int, default=3)
@@ -116,6 +129,7 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.mcts.simulations_per_node = args.simulations_per_node
     config.mcts.rollout_k = args.rollout_k
     config.mcts.max_nodes_per_stage = args.max_nodes_per_stage
+    config.mcts.stop_on_reward_one = args.mcts_stop_on_reward_one
 
     config.reward.local_consensus_window = args.consensus_window
     config.reward.robustness_cases = args.robustness_cases
@@ -146,6 +160,19 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.dataset.mapping_llm_temperature = args.mapping_llm_temperature
     config.dataset.mapping_llm_top_p = args.mapping_llm_top_p
 
+    model_value = args.model_path if args.model_path else args.model_name
+    config.backend.backend = args.backend
+    config.backend.model_name_or_path = _resolve_model_name_or_path(model_value)
+    config.backend.seed = args.seed
+    config.backend.temperature = args.temperature
+    config.backend.top_p = args.top_p
+    config.backend.max_new_tokens = args.max_new_tokens
+    config.backend.torch_dtype = args.torch_dtype
+    config.backend.trust_remote_code = args.trust_remote_code
+    config.backend.lora_r = args.lora_r
+    config.backend.lora_alpha = args.lora_alpha
+    config.backend.lora_dropout = args.lora_dropout
+
     config.log_dir = args.log_dir
     config.save_logs = not args.no_save_logs
     return config
@@ -159,7 +186,7 @@ def _run_single(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
     output = {
         "mode": "single",
         "task_id": result.task_id,
-        "backend": args.backend,
+        "backend": runner.config.backend.backend,
         "stage_reports": result.stage_reports,
         "best_reward": result.best_trajectory.reward.total if result.best_trajectory and result.best_trajectory.reward else None,
         "best_reward_components": (
@@ -234,7 +261,7 @@ def _run_dataset(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
     return {
         "mode": "dataset",
         "dataset_jsonl": str(Path(dataset_path).resolve()),
-        "backend": args.backend,
+        "backend": runner.config.backend.backend,
         "num_samples": len(samples),
         "runs": runs,
     }
@@ -245,7 +272,7 @@ def main() -> int:
     args = parser.parse_args()
 
     config = _build_config(args)
-    backend = _build_backend(args)
+    backend = _build_backend(config)
     runner = TTRLORRunner(backend=backend, config=config)
 
     if config.dataset.jsonl_path:

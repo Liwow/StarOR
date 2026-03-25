@@ -2,7 +2,7 @@
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 from ttrl_or.config import MCTSConfig
 from ttrl_or.mcts.node import SearchNode
@@ -27,6 +27,7 @@ class StageExpansionRecord:
     trajectory: Trajectory
     prior: float = 0.0
     was_expanded: bool = False
+    hit_reward_one: bool = False
     child_q_before: float = 0.0
     child_visits_before: int = 0
     child_q_after: float = 0.0
@@ -62,8 +63,10 @@ class FourStageMCTS:
         stage: Stage,
         parent_nodes: list[SearchNode],
         rollout_archive: list[Trajectory],
-    ) -> tuple[list[SearchNode], list[StageExpansionRecord]]:
+    ) -> tuple[list[SearchNode], list[StageExpansionRecord], dict[str, Any] | None]:
         records: list[StageExpansionRecord] = []
+        early_stop_info: dict[str, Any] | None = None
+        stop_stage = False
 
         for parent in parent_nodes:
             for _ in range(self.config.simulations_per_node):
@@ -94,6 +97,7 @@ class FourStageMCTS:
                 best_reward = float("-inf")
                 best_trajectory: Trajectory | None = None
                 rollout_details: list[dict] = []
+                hit_reward_one = False
 
                 for ridx in range(max(1, self.config.rollout_k)):
                     completed = self.rollout_to_code(task, child)
@@ -122,6 +126,18 @@ class FourStageMCTS:
                         best_reward = reward.total
                         best_trajectory = completed
 
+                    if self.config.stop_on_reward_one and reward.total >= 1.0:
+                        hit_reward_one = True
+                        early_stop_info = {
+                            "stage": stage.value,
+                            "parent_id": parent.node_id,
+                            "node_id": child.node_id,
+                            "rollout_index": ridx,
+                            "trajectory_id": completed.trajectory_id,
+                            "reward_total": float(reward.total),
+                        }
+                        break
+
                 mean_reward = sum(reward_values) / max(1, len(reward_values))
                 child.update(mean_reward)
                 parent.update(mean_reward)
@@ -140,6 +156,7 @@ class FourStageMCTS:
                         trajectory=best_trajectory,
                         prior=child.prior,
                         was_expanded=was_expanded,
+                        hit_reward_one=hit_reward_one,
                         child_q_before=child_q_before,
                         child_visits_before=child_visits_before,
                         child_q_after=child.q_value,
@@ -152,6 +169,13 @@ class FourStageMCTS:
                     )
                 )
 
+                if hit_reward_one:
+                    stop_stage = True
+                    break
+
+            if stop_stage:
+                break
+
         candidates: list[SearchNode] = []
         for parent in parent_nodes:
             candidates.extend(parent.children)
@@ -162,7 +186,7 @@ class FourStageMCTS:
             key=lambda node: (node.q_value, node.visits, node.prior),
             reverse=True,
         )
-        return ranked[: self.config.max_nodes_per_stage], records
+        return ranked[: self.config.max_nodes_per_stage], records, early_stop_info
 
     def rollout_to_code(self, task: OptimizationTask, from_node: SearchNode) -> Trajectory:
         partial = from_node.to_partial_trajectory()
