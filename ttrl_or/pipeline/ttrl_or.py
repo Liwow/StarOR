@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import uuid
@@ -46,6 +46,7 @@ class TTRLORRunner:
                 "reward": asdict(self.config.reward),
                 "grpo": asdict(self.config.grpo),
                 "dataset": asdict(self.config.dataset),
+                "backend": asdict(self.config.backend),
                 "group_size": self.config.group_size,
             },
         )
