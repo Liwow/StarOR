@@ -113,7 +113,7 @@ python -m ttrl_or --backend mock --dataset-jsonl data/NL4OPT.jsonl --dataset-lim
 TRL backend (real GRPO updates via `trl`):
 
 ```bash
-python -m ttrl_or --backend trl --model-name Qwen/Qwen2.5-1.5B-Instruct --dataset-jsonl data/NL4OPT.jsonl --dataset-limit 20
+python -m ttrl_or --backend trl --model-name model/Qwen/Qwen3-4B-Instruct-2507 --dataset-jsonl data/NL4OPT.jsonl --dataset-limit 20
 ```
 
 TRL backend with a local downloaded model directory:
@@ -125,7 +125,7 @@ python -m ttrl_or --backend trl --model-path E:/models/Qwen2.5-1.5B-Instruct --d
 TRL + vLLM generation backend (optional, requires compatible `trl` + `vllm` environment):
 
 ```bash
-python -m ttrl_or --backend trl --model-name Qwen/Qwen2.5-1.5B-Instruct --dataset-jsonl data/NL4OPT.jsonl --dataset-limit 20 --grpo-use-vllm --grpo-vllm-mode server --grpo-vllm-gpu-memory-utilization 0.85
+python -m ttrl_or --backend trl --model-name model/Qwen/Qwen3-4B-Instruct-2507 --dataset-jsonl data/NL4OPT.jsonl --dataset-limit 20 --grpo-use-vllm --grpo-vllm-mode server --grpo-vllm-gpu-memory-utilization 0.85
 ```
 
 ## Scripted Launch (4 GPUs)
