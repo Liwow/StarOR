@@ -82,6 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--simulations-per-node", type=int, default=4)
     parser.add_argument("--rollout-k", type=int, default=2)
     parser.add_argument("--max-nodes-per-stage", type=int, default=12)
+    parser.add_argument("--mcts-stop-on-reward-one", action="store_true")
 
     parser.add_argument("--consensus-window", type=int, default=64)
     parser.add_argument("--robustness-cases", type=int, default=3)
@@ -116,6 +117,7 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.mcts.simulations_per_node = args.simulations_per_node
     config.mcts.rollout_k = args.rollout_k
     config.mcts.max_nodes_per_stage = args.max_nodes_per_stage
+    config.mcts.stop_on_reward_one = args.mcts_stop_on_reward_one
 
     config.reward.local_consensus_window = args.consensus_window
     config.reward.robustness_cases = args.robustness_cases

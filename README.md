@@ -124,7 +124,7 @@ python -m ttrl_or --backend trl --model-name Qwen/Qwen2.5-1.5B-Instruct --datase
 
 Useful knobs:
 
-- MCTS: `--group-size`, `--expand-per-node`, `--simulations-per-node`, `--rollout-k`, `--max-nodes-per-stage`
+- MCTS: `--group-size`, `--expand-per-node`, `--simulations-per-node`, `--rollout-k`, `--max-nodes-per-stage`, `--mcts-stop-on-reward-one`
 - Reward: `--consensus-window`, `--robustness-cases`, `--disable-perturb-reward`
   - `r3` perturbation now uses backend pre-extracted mapping (`focus_keys` + value map).
 - Dataset loader: `--dataset-start-index`, `--dataset-limit`, `--dataset-max-numeric-features`, `--dataset-key-param-top-k`
@@ -155,6 +155,9 @@ All defaults are defined in `ttrl_or/config.py`.
 - `rollout_k` (Key): rollout count for each selected child during simulation.
   - Larger => lower reward variance.
   - Most expensive parameter in MCTS inner loop.
+- `stop_on_reward_one` (Key): if enabled, once any rollout in a stage reaches `reward.total == 1`, MCTS stops further search and this instance exits stage loop early.
+  - Useful for aggressive latency reduction when a perfect candidate appears early.
+  - Disable it when you want fuller exploration for stability.
 
 ### RewardConfig
 

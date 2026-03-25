@@ -10,6 +10,7 @@ class MCTSConfig:
     max_nodes_per_stage: int = 15
     c_puct: float = 1.4
     rollout_k: int = 3
+    stop_on_reward_one: bool = False
 
 
 @dataclass(slots=True)

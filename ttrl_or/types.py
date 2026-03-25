@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -100,6 +100,8 @@ class StageTrace:
     num_frontier_out: int
     stage_samples: int
     grpo_report: dict[str, Any]
+    mcts_early_stop: bool = False
+    mcts_early_stop_info: dict[str, Any] = field(default_factory=dict)
     expansions: list[dict[str, Any]] = field(default_factory=list)
 
 
