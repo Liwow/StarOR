@@ -46,7 +46,7 @@ class DatasetConfig:
     max_numeric_features: int = 16
     key_param_top_k: int = 8
     mapping_extractor: str = "rule"
-    mapping_llm_max_new_tokens: int = 512
+    mapping_llm_max_new_tokens: int = 1024
     mapping_llm_temperature: float = 0.0
     mapping_llm_top_p: float = 1.0
 
