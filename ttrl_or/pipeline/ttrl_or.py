@@ -5,9 +5,11 @@ import uuid
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 from ttrl_or.config import PipelineConfig
 from ttrl_or.mcts import FourStageMCTS
+from ttrl_or.mcts.tree import StageExpansionRecord
 from ttrl_or.model.backend import PolicyBackend
 from ttrl_or.prompts import DEFAULT_TEMPLATES, PromptBuilder
 from ttrl_or.reward import TTRLRewardCalculator
@@ -67,32 +69,38 @@ class TTRLORRunner:
             stopped_early_stage: Stage | None = None
             stopped_early_info: dict = {}
 
-            # Four-layer loop: after each stage expansion, do one GRPO update.
+            # Four-layer loop with online GRPO: each selected child's rollout_k group triggers one update.
             for stage in STAGE_ORDER:
                 frontier_in = len(frontier)
 
                 # Keep provisional consensus local to the current stage only.
                 stage_rollout_archive: list[Trajectory] = []
+                stage_update_reports: list[dict[str, Any]] = []
+
+                def _on_rollout_group(record: StageExpansionRecord) -> dict[str, Any]:
+                    samples = self._samples_from_record(stage=stage, record=record)
+                    update_report = self.backend.grpo_update(samples, self.config.grpo, stage)
+                    report = dict(update_report)
+                    report["group_id"] = record.group_id
+                    report["simulation_index"] = record.simulation_index
+                    report["rollout_k"] = len(record.rollout_details)
+                    stage_update_reports.append(report)
+                    return report
+
                 frontier, records, early_stop_info = mcts.expand_stage(
                     task=task,
                     stage=stage,
                     parent_nodes=frontier,
                     rollout_archive=stage_rollout_archive,
+                    on_rollout_group=_on_rollout_group,
                 )
 
-                stage_samples = [
-                    TrainingSample(
-                        stage=stage,
-                        prompt=record.prompt,
-                        completion=record.completion,
-                        reward=record.reward,
-                        group_id=f"{stage.value}:{record.parent_id}",
-                        trajectory_id=record.trajectory.trajectory_id,
-                        metadata={"node_id": record.node_id},
-                    )
-                    for record in records
-                ]
-                grpo_report = self.backend.grpo_update(stage_samples, self.config.grpo, stage)
+                stage_samples = sum(len(record.rollout_details) for record in records)
+                grpo_report = self._summarize_stage_grpo(
+                    stage=stage,
+                    stage_samples=stage_samples,
+                    update_reports=stage_update_reports,
+                )
 
                 stage_report = dict(grpo_report)
                 stage_report["mcts_early_stop"] = early_stop_info is not None
@@ -105,7 +113,7 @@ class TTRLORRunner:
                         stage=stage.value,
                         num_frontier_in=frontier_in,
                         num_frontier_out=len(frontier),
-                        stage_samples=len(stage_samples),
+                        stage_samples=stage_samples,
                         grpo_report=grpo_report,
                         mcts_early_stop=(early_stop_info is not None),
                         mcts_early_stop_info=(early_stop_info or {}),
@@ -113,6 +121,8 @@ class TTRLORRunner:
                             {
                                 "node_id": record.node_id,
                                 "parent_id": record.parent_id,
+                                "group_id": record.group_id,
+                                "simulation_index": record.simulation_index,
                                 "prior": record.prior,
                                 "was_expanded": record.was_expanded,
                                 "hit_reward_one": record.hit_reward_one,
@@ -126,6 +136,7 @@ class TTRLORRunner:
                                 "parent_visits_before": record.parent_visits_before,
                                 "parent_visits_after": record.parent_visits_after,
                                 "rollout_details": record.rollout_details,
+                                "grpo_report": record.grpo_report,
                                 "completion_preview": record.completion[:300],
                             }
                             for record in records
@@ -304,10 +315,55 @@ class TTRLORRunner:
         }
 
     @staticmethod
+    def _samples_from_record(stage: Stage, record: StageExpansionRecord) -> list[TrainingSample]:
+        samples: list[TrainingSample] = []
+        for detail in record.rollout_details:
+            reward_obj = detail.get("reward", {})
+            reward_total = float(reward_obj.get("total", record.reward))
+            samples.append(
+                TrainingSample(
+                    stage=stage,
+                    prompt=record.prompt,
+                    completion=record.completion,
+                    reward=reward_total,
+                    group_id=record.group_id,
+                    trajectory_id=str(detail.get("trajectory_id", "")),
+                    metadata={
+                        "node_id": record.node_id,
+                        "parent_id": record.parent_id,
+                        "simulation_index": record.simulation_index,
+                        "rollout_index": int(detail.get("rollout_index", 0)),
+                    },
+                )
+            )
+        return samples
+
+    @staticmethod
+    def _summarize_stage_grpo(stage: Stage, stage_samples: int, update_reports: list[dict[str, Any]]) -> dict[str, Any]:
+        train_losses = [float(r["train_loss"]) for r in update_reports if "train_loss" in r]
+        train_runtimes = [float(r["train_runtime"]) for r in update_reports if "train_runtime" in r]
+
+        summary: dict[str, Any] = {
+            "mode": "online_per_selected_node",
+            "stage": stage.value,
+            "num_updates": len(update_reports),
+            "num_samples": stage_samples,
+            "updated": any(bool(r.get("updated", False)) for r in update_reports),
+            "updates": update_reports,
+        }
+        if train_losses:
+            summary["train_loss_mean"] = sum(train_losses) / len(train_losses)
+        if train_runtimes:
+            summary["train_runtime_sum"] = sum(train_runtimes)
+        return summary
+
+    @staticmethod
     def _build_mcts_stats(trace: RunTrace) -> dict:
         per_stage: dict[str, dict] = {}
         total_expansions = 0
         total_rollouts = 0
+        total_grpo_updates = 0
+        total_grpo_samples = 0
 
         for stage_trace in trace.stages:
             rollout_by_node: dict[str, int] = defaultdict(int)
@@ -326,6 +382,12 @@ class TTRLORRunner:
                 else:
                     reused_nodes.append(node_id)
 
+            grpo_report = stage_trace.grpo_report or {}
+            stage_grpo_updates = int(grpo_report.get("num_updates", 0))
+            stage_grpo_samples = int(grpo_report.get("num_samples", 0))
+            total_grpo_updates += stage_grpo_updates
+            total_grpo_samples += stage_grpo_samples
+
             per_stage[stage_trace.stage] = {
                 "frontier_in": stage_trace.num_frontier_in,
                 "frontier_out": stage_trace.num_frontier_out,
@@ -336,6 +398,8 @@ class TTRLORRunner:
                 "reused_node_ids": reused_nodes,
                 "rollouts_total": sum(rollout_by_node.values()),
                 "rollouts_by_node": dict(rollout_by_node),
+                "grpo_updates": stage_grpo_updates,
+                "grpo_samples": stage_grpo_samples,
                 "early_stop": bool(stage_trace.mcts_early_stop),
                 "early_stop_info": dict(stage_trace.mcts_early_stop_info),
             }
@@ -343,5 +407,7 @@ class TTRLORRunner:
         return {
             "total_expansions": total_expansions,
             "total_rollouts": total_rollouts,
+            "total_grpo_updates": total_grpo_updates,
+            "total_grpo_samples": total_grpo_samples,
             "per_stage": per_stage,
         }

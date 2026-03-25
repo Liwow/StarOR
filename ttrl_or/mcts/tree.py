@@ -1,8 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from ttrl_or.config import MCTSConfig
 from ttrl_or.mcts.node import SearchNode
@@ -37,6 +37,9 @@ class StageExpansionRecord:
     parent_q_after: float = 0.0
     parent_visits_after: int = 0
     rollout_details: list[dict] = field(default_factory=list)
+    simulation_index: int = 0
+    group_id: str = ""
+    grpo_report: dict[str, Any] = field(default_factory=dict)
 
 
 class FourStageMCTS:
@@ -63,13 +66,14 @@ class FourStageMCTS:
         stage: Stage,
         parent_nodes: list[SearchNode],
         rollout_archive: list[Trajectory],
+        on_rollout_group: Callable[[StageExpansionRecord], dict[str, Any] | None] | None = None,
     ) -> tuple[list[SearchNode], list[StageExpansionRecord], dict[str, Any] | None]:
         records: list[StageExpansionRecord] = []
         early_stop_info: dict[str, Any] | None = None
         stop_stage = False
 
         for parent in parent_nodes:
-            for _ in range(self.config.simulations_per_node):
+            for sim_idx in range(self.config.simulations_per_node):
                 parent_q_before = parent.q_value
                 parent_visits_before = parent.visits
 
@@ -102,6 +106,7 @@ class FourStageMCTS:
                 for ridx in range(max(1, self.config.rollout_k)):
                     completed = self.rollout_to_code(task, child)
                     reward = self.rewarder.provisional_reward(completed, rollout_archive)
+                    completed.reward = reward
                     rollout_archive.append(completed)
                     reward_values.append(reward.total)
 
@@ -145,29 +150,34 @@ class FourStageMCTS:
                 if best_trajectory is None:
                     best_trajectory = child.to_partial_trajectory()
 
-                records.append(
-                    StageExpansionRecord(
-                        stage=stage,
-                        node_id=child.node_id,
-                        parent_id=parent.node_id,
-                        prompt=child.prompt,
-                        completion=child.text,
-                        reward=mean_reward,
-                        trajectory=best_trajectory,
-                        prior=child.prior,
-                        was_expanded=was_expanded,
-                        hit_reward_one=hit_reward_one,
-                        child_q_before=child_q_before,
-                        child_visits_before=child_visits_before,
-                        child_q_after=child.q_value,
-                        child_visits_after=child.visits,
-                        parent_q_before=parent_q_before,
-                        parent_visits_before=parent_visits_before,
-                        parent_q_after=parent.q_value,
-                        parent_visits_after=parent.visits,
-                        rollout_details=rollout_details,
-                    )
+                record = StageExpansionRecord(
+                    stage=stage,
+                    node_id=child.node_id,
+                    parent_id=parent.node_id,
+                    prompt=child.prompt,
+                    completion=child.text,
+                    reward=mean_reward,
+                    trajectory=best_trajectory,
+                    prior=child.prior,
+                    was_expanded=was_expanded,
+                    hit_reward_one=hit_reward_one,
+                    child_q_before=child_q_before,
+                    child_visits_before=child_visits_before,
+                    child_q_after=child.q_value,
+                    child_visits_after=child.visits,
+                    parent_q_before=parent_q_before,
+                    parent_visits_before=parent_visits_before,
+                    parent_q_after=parent.q_value,
+                    parent_visits_after=parent.visits,
+                    rollout_details=rollout_details,
+                    simulation_index=sim_idx,
+                    group_id=f"{stage.value}:{parent.node_id}:{child.node_id}:{sim_idx}",
                 )
+                if on_rollout_group is not None:
+                    group_report = on_rollout_group(record)
+                    if group_report:
+                        record.grpo_report = dict(group_report)
+                records.append(record)
 
                 if hit_reward_one:
                     stop_stage = True

@@ -41,7 +41,7 @@ class GRPOConfig:
 
 @dataclass(slots=True)
 class DatasetConfig:
-    jsonl_path: str = "data/IndustryOR_fixedV2.jsonl"
+    jsonl_path: str = ""
     start_index: int = 0
     limit: int = 0
     max_numeric_features: int = 16

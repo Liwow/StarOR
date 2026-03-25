@@ -5,12 +5,12 @@ A modular prototype for **test-time reinforcement learning** on optimization mod
 Input: natural language optimization task description.
 
 Pipeline:
-1. `schema`
+1. `schema` (now outputs schema + skill + cautions)
 2. `set_param_var`
 3. `obj_cons`
 4. `code`
 
-Each stage uses MCTS with PUCT and rollout-to-code evaluation. After each stage, one GRPO update is applied to the temporary LoRA state. At the end of stage 4, final candidates are reranked by finalized reward to choose the answer, then LoRA is dropped before the next task.
+Each stage uses MCTS with PUCT and rollout-to-code evaluation. Inside a stage, each selected child runs `rollout_k` rollouts as one group, and that group is used for one immediate GRPO update on temporary LoRA. At the end of stage 4, final candidates are reranked by finalized reward to choose the answer, then LoRA is dropped before the next task.
 
 Provisional consensus (`r1`) is computed with a **stage-local sliding window**, so each stage only votes against recent rollouts from that same stage.
 
@@ -128,10 +128,43 @@ TRL + vLLM generation backend (optional, requires compatible `trl` + `vllm` envi
 python -m ttrl_or --backend trl --model-name Qwen/Qwen2.5-1.5B-Instruct --dataset-jsonl data/NL4OPT.jsonl --dataset-limit 20 --grpo-use-vllm --grpo-vllm-mode server --grpo-vllm-gpu-memory-utilization 0.85
 ```
 
+## Scripted Launch (4 GPUs)
+
+All launch scripts are under `scripts/` and default to single-node 4-GPU setup.
+
+1. Edit common parameters directly in scripts
+
+- `scripts/start_vllm_server.sh`
+  - `CUDA_VISIBLE_DEVICES`
+  - `MODEL_NAME_OR_PATH`
+  - `VLLM_TENSOR_PARALLEL_SIZE` (for 4 cards, keep `4`)
+- `scripts/run_ttrl_or_trl.sh`
+  - `CUDA_VISIBLE_DEVICES`
+  - `MODEL_NAME_OR_PATH`
+  - `DATASET_JSONL`, `DATASET_LIMIT`
+  - `USE_VLLM`, `VLLM_MODE`
+
+2. Terminal A: start vLLM service
+
+```bash
+chmod +x scripts/*.sh
+scripts/start_vllm_server.sh
+```
+
+3. Terminal B: run TTRL-OR + TRL
+
+```bash
+scripts/run_ttrl_or_trl.sh
+```
+
+4. If you do not want vLLM
+
+Set `USE_VLLM=false` in `scripts/run_ttrl_or_trl.sh`, then run the same script.
+
 Useful knobs:
 
-- MCTS: `--group-size`, `--expand-per-node`, `--simulations-per-node`, `--rollout-k`, `--max-nodes-per-stage`, `--mcts-stop-on-reward-one`
-- Reward: `--consensus-window`, `--robustness-cases`, `--disable-perturb-reward`
+- MCTS: `--group-size`, `--expand-per-node`, `--simulations-per-node`, `--rollout-k`, `--max-nodes-per-stage`, `--c-puct`, `--mcts-stop-on-reward-one`
+- Reward: `--consensus-window`, `--robustness-cases`, `--code-timeout-sec`, `--enable-perturb-reward`, `--disable-perturb-reward`
   - `r3` perturbation now uses backend pre-extracted mapping (`focus_keys` + value map).
 - Dataset loader: `--dataset-start-index`, `--dataset-limit`, `--dataset-max-numeric-features`, `--dataset-key-param-top-k`
   - Mapping extractor plugin: `--mapping-extractor rule|llm`
@@ -253,7 +286,7 @@ By default each instance writes logs under `logs/<task_id>/`:
   - prior probability
   - rollout reward details (`r1/r2/r3/total`)
   - Q/visit before and after updates
-  - GRPO report per stage
+  - GRPO report per selected-node group (and stage summary)
 - `mcts_stats.json`: concise MCTS node expansion/reuse and rollout counts per stage
 - `final_trajectories.json`: selected final trajectories with reward and code
 - `best_code.py`: final selected code
@@ -268,7 +301,7 @@ pytest -q
 
 ## Project Layout
 
-- `ttrl_or/pipeline/ttrl_or.py`: end-to-end runner (`MCTS -> 4 stage GRPO updates -> reward-based final selection`)
+- `ttrl_or/pipeline/ttrl_or.py`: end-to-end runner (`MCTS -> online per-group GRPO updates across 4 stages -> reward-based final selection`)
 - `ttrl_or/mcts/`: tree search and PUCT selection
 - `ttrl_or/reward/`: execution + consensus + robustness reward
 - `ttrl_or/model/backend.py`: backend interface
@@ -277,11 +310,12 @@ pytest -q
 - `ttrl_or/prompts/`: prompt templates and builder
 - `ttrl_or/dataset/`: raw dataset loading, instance construction, and optional unified normalization
 - `ttrl_or/mapping/`: pluggable mapping extractors (`rule` / `llm`)
+- `scripts/start_vllm_server.sh`: vLLM OpenAI-compatible service launcher (4-GPU defaults)
+- `scripts/run_ttrl_or_trl.sh`: one-command TTRL-OR + TRL runner (edit parameters directly in file)
 
 ## Notes
 
 - `MockPolicyBackend` intentionally does not train.
 - `TRLPolicyBackend` creates temporary LoRA adapters per task instance and drops them at episode end.
 - If `trl/peft/datasets` are missing, `--backend trl` will raise a clear install error.
-
 

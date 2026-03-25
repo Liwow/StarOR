@@ -23,8 +23,6 @@ def _load_instance(path: str) -> dict:
 
 
 def _resolve_model_name_or_path(value: str) -> str:
-    if not value:
-        return value
     maybe_path = Path(value).expanduser()
     if maybe_path.exists():
         return str(maybe_path.resolve())
@@ -58,65 +56,85 @@ def _build_backend(config: PipelineConfig):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run TTRL-OR pipeline on one optimization task or a raw JSONL dataset.")
+    defaults = PipelineConfig()
+
+    parser = argparse.ArgumentParser(
+        description="Run TTRL-OR pipeline on one optimization task or a raw JSONL dataset."
+    )
     parser.add_argument("--task-text", type=str, default="")
     parser.add_argument("--task-file", type=str, default="")
     parser.add_argument("--instance-json", type=str, default="")
     parser.add_argument("--task-id", type=str, default="")
 
-    parser.add_argument("--dataset-jsonl", type=str, default="")
-    parser.add_argument("--dataset-start-index", type=int, default=0)
-    parser.add_argument("--dataset-limit", type=int, default=0)
-    parser.add_argument("--dataset-max-numeric-features", type=int, default=256)
-    parser.add_argument("--dataset-key-param-top-k", type=int, default=16)
-    parser.add_argument("--mapping-extractor", type=str, choices=["rule", "llm"], default="rule")
-    parser.add_argument("--mapping-llm-max-new-tokens", type=int, default=512)
-    parser.add_argument("--mapping-llm-temperature", type=float, default=0.0)
-    parser.add_argument("--mapping-llm-top-p", type=float, default=1.0)
+    parser.add_argument("--dataset-jsonl", type=str, default=defaults.dataset.jsonl_path)
+    parser.add_argument("--dataset-start-index", type=int, default=defaults.dataset.start_index)
+    parser.add_argument("--dataset-limit", type=int, default=defaults.dataset.limit)
+    parser.add_argument("--dataset-max-numeric-features", type=int, default=defaults.dataset.max_numeric_features)
+    parser.add_argument("--dataset-key-param-top-k", type=int, default=defaults.dataset.key_param_top_k)
+    parser.add_argument(
+        "--mapping-extractor",
+        type=str,
+        choices=["rule", "llm"],
+        default=defaults.dataset.mapping_extractor,
+    )
+    parser.add_argument("--mapping-llm-max-new-tokens", type=int, default=defaults.dataset.mapping_llm_max_new_tokens)
+    parser.add_argument("--mapping-llm-temperature", type=float, default=defaults.dataset.mapping_llm_temperature)
+    parser.add_argument("--mapping-llm-top-p", type=float, default=defaults.dataset.mapping_llm_top_p)
 
-    parser.add_argument("--backend", type=str, choices=["mock", "trl"], default="mock")
-    parser.add_argument("--model-name", type=str, default="Qwen/Qwen2.5-1.5B-Instruct")
+    parser.add_argument("--backend", type=str, choices=["mock", "trl"], default=defaults.backend.backend)
+    parser.add_argument("--model-name", type=str, default=defaults.backend.model_name_or_path)
     parser.add_argument("--model-path", type=str, default="")
-    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--seed", type=int, default=defaults.backend.seed)
 
-    parser.add_argument("--temperature", type=float, default=0.8)
-    parser.add_argument("--top-p", type=float, default=0.95)
-    parser.add_argument("--max-new-tokens", type=int, default=256)
-    parser.add_argument("--torch-dtype", type=str, default="auto")
-    parser.add_argument("--trust-remote-code", action="store_true")
+    parser.add_argument("--temperature", type=float, default=defaults.backend.temperature)
+    parser.add_argument("--top-p", type=float, default=defaults.backend.top_p)
+    parser.add_argument("--max-new-tokens", type=int, default=defaults.backend.max_new_tokens)
+    parser.add_argument("--torch-dtype", type=str, default=defaults.backend.torch_dtype)
+    parser.add_argument("--trust-remote-code", action="store_true", default=defaults.backend.trust_remote_code)
 
-    parser.add_argument("--lora-r", type=int, default=8)
-    parser.add_argument("--lora-alpha", type=int, default=16)
-    parser.add_argument("--lora-dropout", type=float, default=0.05)
+    parser.add_argument("--lora-r", type=int, default=defaults.backend.lora_r)
+    parser.add_argument("--lora-alpha", type=int, default=defaults.backend.lora_alpha)
+    parser.add_argument("--lora-dropout", type=float, default=defaults.backend.lora_dropout)
 
-    parser.add_argument("--group-size", type=int, default=8)
-    parser.add_argument("--expand-per-node", type=int, default=3)
-    parser.add_argument("--simulations-per-node", type=int, default=4)
-    parser.add_argument("--rollout-k", type=int, default=2)
-    parser.add_argument("--max-nodes-per-stage", type=int, default=12)
-    parser.add_argument("--mcts-stop-on-reward-one", action="store_true")
+    parser.add_argument("--group-size", type=int, default=defaults.group_size)
+    parser.add_argument("--expand-per-node", type=int, default=defaults.mcts.expand_per_node)
+    parser.add_argument("--simulations-per-node", type=int, default=defaults.mcts.simulations_per_node)
+    parser.add_argument("--rollout-k", type=int, default=defaults.mcts.rollout_k)
+    parser.add_argument("--max-nodes-per-stage", type=int, default=defaults.mcts.max_nodes_per_stage)
+    parser.add_argument("--c-puct", type=float, default=defaults.mcts.c_puct)
+    parser.add_argument("--mcts-stop-on-reward-one", action="store_true", default=defaults.mcts.stop_on_reward_one)
 
-    parser.add_argument("--consensus-window", type=int, default=64)
-    parser.add_argument("--robustness-cases", type=int, default=3)
-    parser.add_argument("--disable-perturb-reward", action="store_true")
+    parser.add_argument("--consensus-window", type=int, default=defaults.reward.local_consensus_window)
+    parser.add_argument("--robustness-cases", type=int, default=defaults.reward.robustness_cases)
+    parser.add_argument("--code-timeout-sec", type=int, default=defaults.reward.code_timeout_sec)
 
-    parser.add_argument("--grpo-lr", type=float, default=3e-5)
-    parser.add_argument("--grpo-clip", type=float, default=0.2)
-    parser.add_argument("--grpo-kl", type=float, default=0.0)
-    parser.add_argument("--grpo-batch-size", type=int, default=1)
-    parser.add_argument("--grpo-grad-accum", type=int, default=1)
-    parser.add_argument("--grpo-num-generations", type=int, default=2)
-    parser.add_argument("--grpo-max-prompt-len", type=int, default=1024)
-    parser.add_argument("--grpo-max-completion-len", type=int, default=256)
-    parser.add_argument("--grpo-max-steps", type=int, default=1)
-    parser.add_argument("--grpo-use-vllm", action="store_true")
-    parser.add_argument("--grpo-vllm-mode", type=str, default="server")
-    parser.add_argument("--grpo-vllm-gpu-memory-utilization", type=float, default=0.85)
-    parser.add_argument("--grpo-vllm-tensor-parallel-size", type=int, default=1)
-    parser.add_argument("--grpo-vllm-max-model-len", type=int, default=4096)
+    perturb_group = parser.add_mutually_exclusive_group()
+    perturb_group.add_argument("--enable-perturb-reward", dest="enable_perturb_reward", action="store_true")
+    perturb_group.add_argument("--disable-perturb-reward", dest="enable_perturb_reward", action="store_false")
+    parser.set_defaults(enable_perturb_reward=defaults.reward.enable_perturb_reward)
 
-    parser.add_argument("--log-dir", type=str, default="logs")
-    parser.add_argument("--no-save-logs", action="store_true")
+    parser.add_argument("--grpo-lr", type=float, default=defaults.grpo.learning_rate)
+    parser.add_argument("--grpo-clip", type=float, default=defaults.grpo.clip_range)
+    parser.add_argument("--grpo-kl", type=float, default=defaults.grpo.kl_coef)
+    parser.add_argument("--grpo-batch-size", type=int, default=defaults.grpo.per_device_train_batch_size)
+    parser.add_argument("--grpo-grad-accum", type=int, default=defaults.grpo.gradient_accumulation_steps)
+    parser.add_argument("--grpo-num-generations", type=int, default=defaults.grpo.num_generations)
+    parser.add_argument("--grpo-max-prompt-len", type=int, default=defaults.grpo.max_prompt_length)
+    parser.add_argument("--grpo-max-completion-len", type=int, default=defaults.grpo.max_completion_length)
+    parser.add_argument("--grpo-max-steps", type=int, default=defaults.grpo.max_steps)
+
+    parser.add_argument("--grpo-use-vllm", action="store_true", default=defaults.grpo.use_vllm)
+    parser.add_argument("--grpo-vllm-mode", type=str, default=defaults.grpo.vllm_mode)
+    parser.add_argument(
+        "--grpo-vllm-gpu-memory-utilization",
+        type=float,
+        default=defaults.grpo.vllm_gpu_memory_utilization,
+    )
+    parser.add_argument("--grpo-vllm-tensor-parallel-size", type=int, default=defaults.grpo.vllm_tensor_parallel_size)
+    parser.add_argument("--grpo-vllm-max-model-len", type=int, default=defaults.grpo.vllm_max_model_len)
+
+    parser.add_argument("--log-dir", type=str, default=defaults.log_dir)
+    parser.add_argument("--no-save-logs", action="store_true", default=not defaults.save_logs)
 
     parser.add_argument("--out", type=str, default="")
     return parser
@@ -124,16 +142,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config = PipelineConfig()
+
     config.group_size = args.group_size
+    config.log_dir = args.log_dir
+    config.save_logs = not args.no_save_logs
+
     config.mcts.expand_per_node = args.expand_per_node
     config.mcts.simulations_per_node = args.simulations_per_node
     config.mcts.rollout_k = args.rollout_k
     config.mcts.max_nodes_per_stage = args.max_nodes_per_stage
+    config.mcts.c_puct = args.c_puct
     config.mcts.stop_on_reward_one = args.mcts_stop_on_reward_one
 
     config.reward.local_consensus_window = args.consensus_window
     config.reward.robustness_cases = args.robustness_cases
-    config.reward.enable_perturb_reward = not args.disable_perturb_reward
+    config.reward.code_timeout_sec = args.code_timeout_sec
+    config.reward.enable_perturb_reward = args.enable_perturb_reward
 
     config.grpo.learning_rate = args.grpo_lr
     config.grpo.clip_range = args.grpo_clip
@@ -173,8 +197,6 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.backend.lora_alpha = args.lora_alpha
     config.backend.lora_dropout = args.lora_dropout
 
-    config.log_dir = args.log_dir
-    config.save_logs = not args.no_save_logs
     return config
 
 
@@ -214,7 +236,7 @@ def _run_single(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
 
 def _run_dataset(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
     dataset_cfg = runner.config.dataset
-    dataset_path = dataset_cfg.jsonl_path or args.dataset_jsonl
+    dataset_path = dataset_cfg.jsonl_path
     if not dataset_path:
         raise ValueError("Dataset mode requires --dataset-jsonl.")
 

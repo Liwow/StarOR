@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from ttrl_or.types import Stage
 
@@ -9,10 +9,12 @@ You are given an optimization problem in natural language.
 Task:
 {task_description}
 
-Step 1 (SCHEMA): output a compact JSON schema for entities and data fields.
+Step 1 (SCHEMA + SKILL): output a compact JSON object that includes both structured schema and modeling skill hints.
 Requirements:
 - only JSON
-- include keys: entities, data_fields, assumptions
+- include keys: schema, skill
+- schema must include: entities, data_fields, assumptions
+- skill must include: modeling_patterns, decomposition_plan, solver_tips and cautions (a list of likely modeling pitfalls for this instance) 
 """.strip(),
     Stage.SET_PARAM_VAR: """
 You are modeling an optimization task.

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
@@ -86,9 +86,18 @@ class MockPolicyBackend(PolicyBackend):
     def _candidate_bank(stage: Stage) -> list[tuple[float, str]]:
         if stage == Stage.SCHEMA:
             return [
-                (0.68, '{"entities": ["items"], "data_fields": ["cost", "value", "capacity"], "assumptions": ["single objective"]}'),
-                (0.61, '{"entities": ["jobs", "machines"], "data_fields": ["processing_time", "deadline"], "assumptions": ["deterministic"]}'),
-                (0.49, '{"entities": ["routes"], "data_fields": ["distance", "demand", "fleet_size"], "assumptions": ["static demand"]}'),
+                (
+                    0.68,
+                    '{"schema":{"entities":["items"],"data_fields":["cost","value","capacity"],"assumptions":["single objective"]},"skill":{"modeling_patterns":["knapsack-like binary selection"],"decomposition_plan":["extract index set","define value/cost parameters","build capacity constraint"],"solver_tips":["prefer MILP with binary vars"]},"cautions":["units of cost/value must be consistent"]}',
+                ),
+                (
+                    0.61,
+                    '{"schema":{"entities":["jobs","machines"],"data_fields":["processing_time","deadline"],"assumptions":["deterministic"]},"skill":{"modeling_patterns":["single-machine scheduling"],"decomposition_plan":["define job index","derive completion variables","encode lateness penalty"],"solver_tips":["use linearized tardiness constraints"]},"cautions":["check due-date inequality directions"]}',
+                ),
+                (
+                    0.49,
+                    '{"schema":{"entities":["routes"],"data_fields":["distance","demand","fleet_size"],"assumptions":["static demand"]},"skill":{"modeling_patterns":["vehicle routing style flow model"],"decomposition_plan":["define node/arc sets","add flow conservation","add capacity linking"],"solver_tips":["watch subtour constraints"]},"cautions":["ensure depot degree constraints"]}',
+                ),
             ]
         if stage == Stage.SET_PARAM_VAR:
             return [
@@ -166,3 +175,4 @@ def _code_variant_broken() -> str:
 def solve(instance: dict) -> dict:
     return {"objective": float(undefined_symbol), "status": "fail"}
 """.strip()
+
