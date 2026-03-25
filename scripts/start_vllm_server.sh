@@ -4,13 +4,12 @@ set -euo pipefail
 # ==================================
 # Edit Here: vLLM Common Parameters
 # ==================================
-CUDA_VISIBLE_DEVICES="0,1,2,3"
+CUDA_VISIBLE_DEVICES="0"
 MODEL_NAME_OR_PATH="/path/to/your/model"
 
 VLLM_HOST="0.0.0.0"
 VLLM_PORT=8000
-VLLM_DTYPE="bfloat16"
-VLLM_TENSOR_PARALLEL_SIZE=4
+VLLM_TENSOR_PARALLEL_SIZE=1
 VLLM_GPU_MEMORY_UTILIZATION=0.90
 VLLM_MAX_MODEL_LEN=16384
 
@@ -24,7 +23,6 @@ python -m vllm.entrypoints.openai.api_server \
   --model "${MODEL_NAME_OR_PATH}" \
   --host "${VLLM_HOST}" \
   --port "${VLLM_PORT}" \
-  --dtype "${VLLM_DTYPE}" \
   --tensor-parallel-size "${VLLM_TENSOR_PARALLEL_SIZE}" \
   --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION}" \
   --max-model-len "${VLLM_MAX_MODEL_LEN}"

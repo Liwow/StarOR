@@ -4,20 +4,20 @@ set -euo pipefail
 # =====================================
 # Edit Here: TTRL-OR Common Parameters
 # =====================================
-CUDA_VISIBLE_DEVICES="0,1,2,3"
+CUDA_VISIBLE_DEVICES="1"
 BACKEND="trl"                   
 MODEL_NAME_OR_PATH="/path/to/your/model"
 
 DATASET_JSONL="data/NL4OPT.jsonl"
 DATASET_LIMIT=20
-LOG_DIR="logs/ttrl_or_trl_run"
-OUT_JSON="outputs/ttrl_or_trl_run.json"
+LOG_DIR="logs/run"
+OUT_JSON="outputs/run.json"
 
 # MCTS
 GROUP_SIZE=8
 EXPAND_PER_NODE=3
 SIMULATIONS_PER_NODE=4
-ROLLOUT_K=2
+ROLLOUT_K=3
 MAX_NODES_PER_STAGE=12
 MCTS_STOP_ON_REWARD_ONE=false
 
@@ -28,18 +28,18 @@ ENABLE_PERTURB_REWARD=true
 
 # GRPO (common)
 GRPO_LR="3e-5"
-GRPO_MAX_STEPS=1
+GRPO_MAX_STEPS=2
 
 # Generation (common)
-TEMPERATURE=0.8
+TEMPERATURE=1.0
 TOP_P=0.95
-MAX_NEW_TOKENS=256
+MAX_NEW_TOKENS=4096
 
 # vLLM for TRL
 USE_VLLM=true
 VLLM_MODE="server"
 VLLM_GPU_MEMORY_UTILIZATION=0.85
-VLLM_TENSOR_PARALLEL_SIZE=4
+VLLM_TENSOR_PARALLEL_SIZE=1
 VLLM_MAX_MODEL_LEN=16384
 
 # Misc
