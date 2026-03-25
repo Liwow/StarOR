@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from ttrl_or.config import DatasetConfig, GRPOConfig
-from ttrl_or.dataset import build_instance_from_question
+from ttrl_or.mapping import build_mapping_extractor
 from ttrl_or.types import Generation, OptimizationTask, Stage, TrainingSample
 
 
@@ -29,28 +29,25 @@ class PolicyBackend(ABC):
 
     def prepare_task_context(self, task: OptimizationTask, dataset_config: DatasetConfig) -> dict[str, Any]:
         """
-        Pre-stage hook: derive numeric mapping and perturbation map from description
-        when explicit instance is not provided.
+        Pre-stage hook: build mapping/perturbation context via a pluggable extractor.
         """
-        used_description_extraction = False
-        if not task.instance:
-            task.instance = build_instance_from_question(
-                task.description,
-                max_numeric_features=dataset_config.max_numeric_features,
-                key_param_top_k=dataset_config.key_param_top_k,
-            )
-            used_description_extraction = True
+        extractor = build_mapping_extractor(dataset_config.mapping_extractor)
+        result = extractor.extract(task=task, dataset_config=dataset_config, backend=self)
 
-        from ttrl_or.reward.perturbation import build_perturbation_map
+        task.instance = result.instance
+        task.perturbation_map = result.perturbation_map
+        return dict(result.metadata)
 
-        task.perturbation_map = build_perturbation_map(task.instance)
-        return {
-            "used_description_extraction": used_description_extraction,
-            "num_instance_keys": len(task.instance),
-            "num_numeric_keys": int(task.perturbation_map.get("num_numeric_keys", 0)),
-            "num_focus_keys": int(task.perturbation_map.get("num_focus_keys", 0)),
-            "focus_keys": list(task.perturbation_map.get("focus_keys", []))[:16],
-        }
+    def generate_mapping_from_description(
+        self,
+        description: str,
+        dataset_config: DatasetConfig,
+    ) -> dict[str, Any] | str | None:
+        """
+        Optional hook for LLM-based mapping extraction.
+        Return a dict or JSON text, or None to fallback to rule extractor.
+        """
+        return None
 
     def generate_test_instances(self, task: OptimizationTask, k: int) -> list[dict[str, Any]]:
         """Optional: model-authored robustness tests (r3)."""

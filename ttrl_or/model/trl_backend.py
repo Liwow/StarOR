@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import gc
 import inspect
@@ -11,7 +11,7 @@ from typing import Any
 
 import torch
 
-from ttrl_or.config import GRPOConfig
+from ttrl_or.config import DatasetConfig, GRPOConfig
 from ttrl_or.model.backend import PolicyBackend
 from ttrl_or.types import Generation, OptimizationTask, Stage, TrainingSample
 
@@ -163,6 +163,48 @@ class TRLPolicyBackend(PolicyBackend):
             report["train_steps_per_second"] = float(metrics["train_steps_per_second"])
         return report
 
+    def generate_mapping_from_description(
+        self,
+        description: str,
+        dataset_config: DatasetConfig,
+    ) -> dict[str, Any] | str | None:
+        if self._model is None or self._tokenizer is None:
+            return None
+
+        prompt = _build_mapping_extraction_prompt(
+            description=description,
+            max_numeric_features=dataset_config.max_numeric_features,
+            key_param_top_k=dataset_config.key_param_top_k,
+        )
+
+        self._model.eval()
+        inputs = self._tokenizer(prompt, return_tensors="pt")
+        device = self._infer_device()
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        temperature = max(0.0, float(dataset_config.mapping_llm_temperature))
+        do_sample = temperature > 0.0
+
+        gen_kwargs: dict[str, Any] = {
+            "max_new_tokens": int(dataset_config.mapping_llm_max_new_tokens),
+            "pad_token_id": self._tokenizer.pad_token_id,
+            "eos_token_id": self._tokenizer.eos_token_id,
+        }
+        if do_sample:
+            gen_kwargs["do_sample"] = True
+            gen_kwargs["temperature"] = temperature
+            gen_kwargs["top_p"] = float(dataset_config.mapping_llm_top_p)
+        else:
+            gen_kwargs["do_sample"] = False
+
+        with torch.no_grad():
+            output = self._model.generate(**inputs, **gen_kwargs)
+
+        prompt_len = inputs["input_ids"].shape[1]
+        completion_ids = output[0][prompt_len:]
+        completion = self._tokenizer.decode(completion_ids, skip_special_tokens=True)
+        return completion.strip()
+
     def generate_test_instances(self, task: OptimizationTask, k: int) -> list[dict[str, Any]]:
         from ttrl_or.reward.perturbation import generate_perturbed_instances_from_map
 
@@ -195,6 +237,11 @@ class TRLPolicyBackend(PolicyBackend):
             "max_prompt_length": config.max_prompt_length,
             "max_completion_length": config.max_completion_length,
             "max_steps": config.max_steps,
+            "use_vllm": config.use_vllm,
+            "vllm_mode": config.vllm_mode,
+            "vllm_gpu_memory_utilization": config.vllm_gpu_memory_utilization,
+            "vllm_tensor_parallel_size": config.vllm_tensor_parallel_size,
+            "vllm_max_model_len": config.vllm_max_model_len,
             "report_to": [],
             "save_strategy": "no",
             "logging_steps": 1,
@@ -284,6 +331,34 @@ class TRLPolicyBackend(PolicyBackend):
         return str(base)
 
 
+def _build_mapping_extraction_prompt(
+    description: str,
+    max_numeric_features: int,
+    key_param_top_k: int,
+) -> str:
+    return f"""
+You are an optimization-parameter extraction assistant.
+Extract a numeric parameter mapping from the task description.
+
+Return ONLY valid JSON (no markdown fences).
+Required JSON shape:
+{{
+  "instance": {{"param_name": number, ...}},
+  "key_param_keys": ["param_name_1", "param_name_2", ...]
+}}
+
+Rules:
+- Keep at most {max_numeric_features} numeric keys in instance.
+- key_param_keys should include at most {key_param_top_k} keys.
+- key_param_keys must be keys from instance.
+- Prefer numbers tied to objective/constraints (capacity, demand, budget, cost, profit, bounds).
+- No explanation text.
+
+Task description:
+{description}
+""".strip()
+
+
 def _normalize_text(value: Any) -> str:
     if isinstance(value, str):
         return value.strip()
@@ -354,5 +429,3 @@ def _import_datasets():
         return datasets
     except ImportError as exc:
         raise RuntimeError("TRL backend requires `datasets`. Install with: pip install datasets") from exc
-
-

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 
@@ -29,17 +29,26 @@ class GRPOConfig:
     gradient_accumulation_steps: int = 1
     num_generations: int = 2
     max_prompt_length: int = 4096
-    max_completion_length: int = 256
+    max_completion_length: int = 512
     max_steps: int = 3
+    use_vllm: bool = False
+    vllm_mode: str = "server"
+    vllm_gpu_memory_utilization: float = 0.85
+    vllm_tensor_parallel_size: int = 1
+    vllm_max_model_len: int = 16384
 
 
 @dataclass(slots=True)
 class DatasetConfig:
-    jsonl_path: str = "data\IndustryOR_fixedV2.jsonl"
+    jsonl_path: str = "data/IndustryOR_fixedV2.jsonl"
     start_index: int = 0
     limit: int = 0
     max_numeric_features: int = 16
     key_param_top_k: int = 8
+    mapping_extractor: str = "rule"
+    mapping_llm_max_new_tokens: int = 512
+    mapping_llm_temperature: float = 0.0
+    mapping_llm_top_p: float = 1.0
 
 
 @dataclass(slots=True)
@@ -51,3 +60,4 @@ class PipelineConfig:
     group_size: int = 8
     save_logs: bool = True
     log_dir: str = "logs"
+

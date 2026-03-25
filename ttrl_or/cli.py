@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -58,6 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset-limit", type=int, default=0)
     parser.add_argument("--dataset-max-numeric-features", type=int, default=256)
     parser.add_argument("--dataset-key-param-top-k", type=int, default=16)
+    parser.add_argument("--mapping-extractor", type=str, choices=["rule", "llm"], default="rule")
+    parser.add_argument("--mapping-llm-max-new-tokens", type=int, default=512)
+    parser.add_argument("--mapping-llm-temperature", type=float, default=0.0)
+    parser.add_argument("--mapping-llm-top-p", type=float, default=1.0)
 
     parser.add_argument("--backend", type=str, choices=["mock", "trl"], default="mock")
     parser.add_argument("--model-name", type=str, default="Qwen/Qwen2.5-1.5B-Instruct")
@@ -92,6 +96,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grpo-max-prompt-len", type=int, default=1024)
     parser.add_argument("--grpo-max-completion-len", type=int, default=256)
     parser.add_argument("--grpo-max-steps", type=int, default=1)
+    parser.add_argument("--grpo-use-vllm", action="store_true")
+    parser.add_argument("--grpo-vllm-mode", type=str, default="server")
+    parser.add_argument("--grpo-vllm-gpu-memory-utilization", type=float, default=0.85)
+    parser.add_argument("--grpo-vllm-tensor-parallel-size", type=int, default=1)
+    parser.add_argument("--grpo-vllm-max-model-len", type=int, default=4096)
 
     parser.add_argument("--log-dir", type=str, default="logs")
     parser.add_argument("--no-save-logs", action="store_true")
@@ -121,12 +130,21 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.grpo.max_prompt_length = args.grpo_max_prompt_len
     config.grpo.max_completion_length = args.grpo_max_completion_len
     config.grpo.max_steps = args.grpo_max_steps
+    config.grpo.use_vllm = args.grpo_use_vllm
+    config.grpo.vllm_mode = args.grpo_vllm_mode
+    config.grpo.vllm_gpu_memory_utilization = args.grpo_vllm_gpu_memory_utilization
+    config.grpo.vllm_tensor_parallel_size = args.grpo_vllm_tensor_parallel_size
+    config.grpo.vllm_max_model_len = args.grpo_vllm_max_model_len
 
     config.dataset.jsonl_path = args.dataset_jsonl
     config.dataset.start_index = args.dataset_start_index
     config.dataset.limit = args.dataset_limit
     config.dataset.max_numeric_features = args.dataset_max_numeric_features
     config.dataset.key_param_top_k = args.dataset_key_param_top_k
+    config.dataset.mapping_extractor = args.mapping_extractor
+    config.dataset.mapping_llm_max_new_tokens = args.mapping_llm_max_new_tokens
+    config.dataset.mapping_llm_temperature = args.mapping_llm_temperature
+    config.dataset.mapping_llm_top_p = args.mapping_llm_top_p
 
     config.log_dir = args.log_dir
     config.save_logs = not args.no_save_logs
@@ -156,6 +174,8 @@ def _run_single(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
         ),
         "num_trajectories": len(result.trajectories),
         "artifacts": (result.trace.artifacts if result.trace else {}),
+        "task_context": (result.trace.task_context if result.trace else {}),
+        "perturbation_map": (result.trace.perturbation_map if result.trace else {}),
     }
 
     if result.best_trajectory:
@@ -206,6 +226,7 @@ def _run_dataset(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
                     else None
                 ),
                 "artifacts": (result.trace.artifacts if result.trace else {}),
+                "task_context": (result.trace.task_context if result.trace else {}),
             }
         )
         print(f"[{idx}/{len(samples)}] {sample.sample_id} best_reward={best_reward}")

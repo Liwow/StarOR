@@ -1,4 +1,4 @@
-﻿# TTRL-OR
+# TTRL-OR
 
 A modular prototype for **test-time reinforcement learning** on optimization modeling tasks.
 
@@ -116,13 +116,21 @@ TRL backend (real GRPO updates via `trl`):
 python -m ttrl_or --backend trl --model-name Qwen/Qwen2.5-1.5B-Instruct --dataset-jsonl data/NL4OPT.jsonl --dataset-limit 20
 ```
 
+TRL + vLLM generation backend (optional, requires compatible `trl` + `vllm` environment):
+
+```bash
+python -m ttrl_or --backend trl --model-name Qwen/Qwen2.5-1.5B-Instruct --dataset-jsonl data/NL4OPT.jsonl --dataset-limit 20 --grpo-use-vllm --grpo-vllm-mode server --grpo-vllm-gpu-memory-utilization 0.85
+```
+
 Useful knobs:
 
 - MCTS: `--group-size`, `--expand-per-node`, `--simulations-per-node`, `--rollout-k`, `--max-nodes-per-stage`
 - Reward: `--consensus-window`, `--robustness-cases`, `--disable-perturb-reward`
   - `r3` perturbation now uses backend pre-extracted mapping (`focus_keys` + value map).
 - Dataset loader: `--dataset-start-index`, `--dataset-limit`, `--dataset-max-numeric-features`, `--dataset-key-param-top-k`
-- GRPO: `--grpo-lr`, `--grpo-batch-size`, `--grpo-grad-accum`, `--grpo-num-generations`, `--grpo-max-steps`
+  - Mapping extractor plugin: `--mapping-extractor rule|llm`
+  - LLM extractor knobs: `--mapping-llm-max-new-tokens`, `--mapping-llm-temperature`, `--mapping-llm-top-p`
+- GRPO: `--grpo-lr`, `--grpo-batch-size`, `--grpo-grad-accum`, `--grpo-num-generations`, `--grpo-max-steps`, `--grpo-use-vllm`, `--grpo-vllm-mode`, `--grpo-vllm-gpu-memory-utilization`, `--grpo-vllm-tensor-parallel-size`, `--grpo-vllm-max-model-len`
 - Logging: `--log-dir` and `--no-save-logs`
 - Generation: `--temperature`, `--top-p`, `--max-new-tokens`
 
@@ -177,12 +185,31 @@ All defaults are defined in `ttrl_or/config.py`.
 - `max_prompt_length`: truncation limit for prompt tokens.
 - `max_completion_length`: truncation limit for completion tokens.
 - `max_steps` (Key): GRPO optimizer steps per stage update call.
+- `use_vllm` (Key): whether TRL GRPO uses vLLM as generation backend.
+  - `False`: default HF generation path.
+  - `True`: pass vLLM options into TRL (effective only if your TRL version supports them).
+- `vllm_mode`: vLLM run mode passed to TRL (commonly `server` or `colocate`, depending on TRL version).
+- `vllm_gpu_memory_utilization` (Key): target fraction of GPU memory reserved by vLLM KV/cache scheduler.
+- `vllm_tensor_parallel_size` (Key): TP shard count for vLLM inference workers.
+- `vllm_max_model_len` (Key): max sequence length used by vLLM engine.
 
 ### PipelineConfig
 
 - `group_size` (Key): number of stage-4 candidates used in final reward reranking.
 - `save_logs`: whether to write per-task artifacts.
 - `log_dir`: output directory root for logs (default `logs/`).
+
+### DatasetConfig
+
+- `jsonl_path`: input raw dataset path for dataset mode.
+- `start_index`: start offset for dataset slicing.
+- `limit`: max number of samples to run (`0` means no limit).
+- `max_numeric_features`: cap on numeric features extracted into the mapping instance.
+- `key_param_top_k`: top-k key parameters used as perturbation focus candidates.
+- `mapping_extractor`: mapping strategy plugin (`rule` or `llm`).
+- `mapping_llm_max_new_tokens`: completion length for LLM extractor output.
+- `mapping_llm_temperature`: temperature for LLM extractor generation.
+- `mapping_llm_top_p`: top-p for LLM extractor generation.
 
 ## Recommended Starting Ranges
 
@@ -227,6 +254,7 @@ pytest -q
 - `ttrl_or/model/trl_backend.py`: TRL + PEFT LoRA backend for real GRPO updates
 - `ttrl_or/prompts/`: prompt templates and builder
 - `ttrl_or/dataset/`: raw dataset loading, instance construction, and optional unified normalization
+- `ttrl_or/mapping/`: pluggable mapping extractors (`rule` / `llm`)
 
 ## Notes
 
