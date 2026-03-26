@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
@@ -97,10 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lora-dropout", type=float, default=defaults.backend.lora_dropout)
 
     parser.add_argument("--group-size", type=int, default=defaults.group_size)
-    parser.add_argument("--expand-per-node", type=int, default=defaults.mcts.expand_per_node)
-    parser.add_argument("--simulations-per-node", type=int, default=defaults.mcts.simulations_per_node)
-    parser.add_argument("--rollout-k", type=int, default=defaults.mcts.rollout_k)
-    parser.add_argument("--max-nodes-per-stage", type=int, default=defaults.mcts.max_nodes_per_stage)
+    parser.add_argument("--max-iterations", type=int, default=defaults.mcts.max_iterations)
     parser.add_argument("--c-puct", type=float, default=defaults.mcts.c_puct)
     parser.add_argument("--mcts-stop-on-reward-one", action="store_true", default=defaults.mcts.stop_on_reward_one)
 
@@ -121,7 +118,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grpo-num-generations", type=int, default=defaults.grpo.num_generations)
     parser.add_argument("--grpo-max-prompt-len", type=int, default=defaults.grpo.max_prompt_length)
     parser.add_argument("--grpo-max-completion-len", type=int, default=defaults.grpo.max_completion_length)
-    parser.add_argument("--grpo-max-steps", type=int, default=defaults.grpo.max_steps)
 
     parser.add_argument("--grpo-use-vllm", action="store_true", default=defaults.grpo.use_vllm)
     parser.add_argument("--grpo-vllm-mode", type=str, default=defaults.grpo.vllm_mode)
@@ -147,10 +143,7 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.log_dir = args.log_dir
     config.save_logs = not args.no_save_logs
 
-    config.mcts.expand_per_node = args.expand_per_node
-    config.mcts.simulations_per_node = args.simulations_per_node
-    config.mcts.rollout_k = args.rollout_k
-    config.mcts.max_nodes_per_stage = args.max_nodes_per_stage
+    config.mcts.max_iterations = args.max_iterations
     config.mcts.c_puct = args.c_puct
     config.mcts.stop_on_reward_one = args.mcts_stop_on_reward_one
 
@@ -167,7 +160,6 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.grpo.num_generations = args.grpo_num_generations
     config.grpo.max_prompt_length = args.grpo_max_prompt_len
     config.grpo.max_completion_length = args.grpo_max_completion_len
-    config.grpo.max_steps = args.grpo_max_steps
     config.grpo.use_vllm = args.grpo_use_vllm
     config.grpo.vllm_mode = args.grpo_vllm_mode
     config.grpo.vllm_gpu_memory_utilization = args.grpo_vllm_gpu_memory_utilization

@@ -1,11 +1,11 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 set -euo pipefail
 
 # =====================================
 # Edit Here: TTRL-OR Common Parameters
 # =====================================
 CUDA_VISIBLE_DEVICES="0"
-BACKEND="trl"                   
+BACKEND="trl"
 MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
 
 DATASET_JSONL="data/NL4OPT.jsonl"
@@ -13,12 +13,10 @@ DATASET_LIMIT=20
 LOG_DIR="logs/run"
 OUT_JSON="outputs/run.json"
 
-# MCTS
+# MCTS (global-leaf selection)
 GROUP_SIZE=8
-EXPAND_PER_NODE=3
-SIMULATIONS_PER_NODE=4
-ROLLOUT_K=3
-MAX_NODES_PER_STAGE=12
+MAX_ITERATIONS=24
+C_PUCT=1.4
 MCTS_STOP_ON_REWARD_ONE=false
 
 # Reward
@@ -28,7 +26,7 @@ ENABLE_PERTURB_REWARD=true
 
 # GRPO (common)
 GRPO_LR="3e-5"
-GRPO_MAX_STEPS=2
+GRPO_NUM_GENERATIONS=4
 
 # Generation (common)
 TEMPERATURE=1.0
@@ -62,14 +60,12 @@ CMD=(python -m ttrl_or
   --dataset-jsonl "${DATASET_JSONL}"
   --dataset-limit "${DATASET_LIMIT}"
   --group-size "${GROUP_SIZE}"
-  --expand-per-node "${EXPAND_PER_NODE}"
-  --simulations-per-node "${SIMULATIONS_PER_NODE}"
-  --rollout-k "${ROLLOUT_K}"
-  --max-nodes-per-stage "${MAX_NODES_PER_STAGE}"
+  --max-iterations "${MAX_ITERATIONS}"
+  --c-puct "${C_PUCT}"
   --consensus-window "${CONSENSUS_WINDOW}"
   --robustness-cases "${ROBUSTNESS_CASES}"
   --grpo-lr "${GRPO_LR}"
-  --grpo-max-steps "${GRPO_MAX_STEPS}"
+  --grpo-num-generations "${GRPO_NUM_GENERATIONS}"
   --temperature "${TEMPERATURE}"
   --top-p "${TOP_P}"
   --max-new-tokens "${MAX_NEW_TOKENS}"

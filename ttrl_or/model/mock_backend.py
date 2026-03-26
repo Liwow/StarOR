@@ -49,6 +49,39 @@ class MockPolicyBackend(PolicyBackend):
             )
         return outputs
 
+
+    def grpo_rollout_group(
+        self,
+        stage: Stage,
+        prompt: str,
+        config: GRPOConfig,
+        reward_callback,
+    ) -> tuple[list[Generation], dict[str, Any]]:
+        k = max(1, int(config.num_generations))
+        gens = self.generate(stage, prompt, k)
+        out: list[Generation] = []
+        for ridx, gen in enumerate(gens):
+            reward_total = float(reward_callback(prompt, gen.text, ridx))
+            out.append(
+                Generation(
+                    text=gen.text,
+                    prior=gen.prior,
+                    metadata={
+                        **dict(gen.metadata),
+                        "rollout_index": ridx,
+                        "reward_total": reward_total,
+                    },
+                )
+            )
+        report = {
+            "updated": False,
+            "stage": stage.value,
+            "num_samples": len(out),
+            "backend": "mock",
+            "group_mode": "internal_rollout_mock",
+            "reason": "MockPolicyBackend does not train. Use TRLPolicyBackend for GRPO updates.",
+        }
+        return out, report
     def grpo_update(self, samples: list[TrainingSample], config: GRPOConfig, stage: Stage) -> dict[str, Any]:
         return {
             "updated": False,
@@ -175,4 +208,5 @@ def _code_variant_broken() -> str:
 def solve(instance: dict) -> dict:
     return {"objective": float(undefined_symbol), "status": "fail"}
 """.strip()
+
 

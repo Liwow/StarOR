@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from ttrl_or.config import MCTSConfig
+from ttrl_or.config import GRPOConfig, MCTSConfig
 from ttrl_or.mcts import FourStageMCTS
 from ttrl_or.prompts import DEFAULT_TEMPLATES, PromptBuilder
 from ttrl_or.types import Generation, OptimizationTask, RewardBreakdown, Stage, Trajectory
@@ -37,13 +37,7 @@ def _build_task() -> OptimizationTask:
 
 
 def test_mcts_can_stop_early_on_reward_one():
-    config = MCTSConfig(
-        expand_per_node=3,
-        simulations_per_node=5,
-        max_nodes_per_stage=8,
-        rollout_k=4,
-        stop_on_reward_one=True,
-    )
+    config = MCTSConfig(max_iterations=16, stop_on_reward_one=True)
     mcts = FourStageMCTS(
         backend=_FakeBackend(),
         prompt_builder=PromptBuilder(templates=DEFAULT_TEMPLATES),
@@ -51,28 +45,16 @@ def test_mcts_can_stop_early_on_reward_one():
         config=config,
     )
 
-    root = mcts.root()
-    frontier, records, early_stop_info = mcts.expand_stage(
-        task=_build_task(),
-        stage=Stage.SCHEMA,
-        parent_nodes=[root],
-        rollout_archive=[],
-    )
+    result = mcts.search(task=_build_task(), grpo_config=GRPOConfig(num_generations=4))
 
-    assert early_stop_info is not None
-    assert len(records) == 1
-    assert records[0].hit_reward_one is True
-    assert len(frontier) >= 1
+    assert result.stop_info.get("reason") == "reward_one"
+    assert len(result.records) == 1
+    assert result.records[0].stage == Stage.SCHEMA
+    assert result.records[0].hit_reward_one is True
 
 
-def test_mcts_without_early_stop_runs_full_simulations():
-    config = MCTSConfig(
-        expand_per_node=3,
-        simulations_per_node=5,
-        max_nodes_per_stage=8,
-        rollout_k=4,
-        stop_on_reward_one=False,
-    )
+def test_mcts_stops_after_reaching_code_when_no_reward_one_stop():
+    config = MCTSConfig(max_iterations=16, stop_on_reward_one=False)
     mcts = FourStageMCTS(
         backend=_FakeBackend(),
         prompt_builder=PromptBuilder(templates=DEFAULT_TEMPLATES),
@@ -80,13 +62,9 @@ def test_mcts_without_early_stop_runs_full_simulations():
         config=config,
     )
 
-    root = mcts.root()
-    _, records, early_stop_info = mcts.expand_stage(
-        task=_build_task(),
-        stage=Stage.SCHEMA,
-        parent_nodes=[root],
-        rollout_archive=[],
-    )
+    result = mcts.search(task=_build_task(), grpo_config=GRPOConfig(num_generations=4))
 
-    assert early_stop_info is None
-    assert len(records) == config.simulations_per_node
+    assert result.stop_info.get("reason") == "expanded_to_code"
+    assert any(record.stage == Stage.CODE for record in result.records)
+    assert result.best_trajectory is not None
+    assert result.best_reward == 1.0

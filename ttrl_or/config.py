@@ -5,11 +5,8 @@ from dataclasses import dataclass, field
 
 @dataclass(slots=True)
 class MCTSConfig:
-    expand_per_node: int = 4
-    simulations_per_node: int = 5
-    max_nodes_per_stage: int = 15
+    max_iterations: int = 16
     c_puct: float = 1.4
-    rollout_k: int = 3
     stop_on_reward_one: bool = False
 
 
@@ -28,10 +25,10 @@ class GRPOConfig:
     kl_coef: float = 0.0
     per_device_train_batch_size: int = 1
     gradient_accumulation_steps: int = 1
-    num_generations: int = 1
+    num_generations: int = 4
     max_prompt_length: int = 4096
     max_completion_length: int = 512
-    max_steps: int = 3
+
     use_vllm: bool = False
     vllm_mode: str = "server"
     vllm_gpu_memory_utilization: float = 0.85

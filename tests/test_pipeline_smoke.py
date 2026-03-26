@@ -9,10 +9,7 @@ from ttrl_or.types import Stage
 def test_pipeline_smoke_runs_end_to_end():
     config = PipelineConfig()
     config.group_size = 2
-    config.mcts.expand_per_node = 1
-    config.mcts.simulations_per_node = 1
-    config.mcts.rollout_k = 1
-    config.mcts.max_nodes_per_stage = 2
+    config.mcts.max_iterations = 8
     config.save_logs = False
 
     backend = MockPolicyBackend(seed=11)
@@ -37,10 +34,7 @@ def test_pipeline_smoke_runs_end_to_end():
 def test_pipeline_can_run_with_description_only_input():
     config = PipelineConfig()
     config.group_size = 2
-    config.mcts.expand_per_node = 1
-    config.mcts.simulations_per_node = 1
-    config.mcts.rollout_k = 1
-    config.mcts.max_nodes_per_stage = 2
+    config.mcts.max_iterations = 8
     config.save_logs = False
     config.reward.enable_perturb_reward = True
 
@@ -75,10 +69,7 @@ class _MockLLMMappingBackend(MockPolicyBackend):
 def test_pipeline_llm_mapping_extractor_uses_backend_hook():
     config = PipelineConfig()
     config.group_size = 2
-    config.mcts.expand_per_node = 1
-    config.mcts.simulations_per_node = 1
-    config.mcts.rollout_k = 1
-    config.mcts.max_nodes_per_stage = 2
+    config.mcts.max_iterations = 8
     config.save_logs = False
     config.reward.enable_perturb_reward = True
     config.dataset.mapping_extractor = "llm"

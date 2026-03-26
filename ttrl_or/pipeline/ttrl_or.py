@@ -9,11 +9,10 @@ from typing import Any
 
 from ttrl_or.config import PipelineConfig
 from ttrl_or.mcts import FourStageMCTS
-from ttrl_or.mcts.tree import StageExpansionRecord
 from ttrl_or.model.backend import PolicyBackend
 from ttrl_or.prompts import DEFAULT_TEMPLATES, PromptBuilder
 from ttrl_or.reward import TTRLRewardCalculator
-from ttrl_or.types import OptimizationTask, RunTrace, STAGE_ORDER, Stage, StageTrace, TrainingSample, Trajectory
+from ttrl_or.types import OptimizationTask, RunTrace, STAGE_ORDER, Stage, StageTrace, Trajectory
 
 
 @dataclass(slots=True)
@@ -62,71 +61,50 @@ class TTRLORRunner:
                 config=self.config.mcts,
             )
 
-            root = mcts.root()
-            frontier = [root]
+            search_result = mcts.search(task=task, grpo_config=self.config.grpo)
+            records = search_result.records
+            stop_info = dict(search_result.stop_info or {})
+
             stage_reports: dict[str, dict] = {}
-            early_stop_candidate: Trajectory | None = None
-            stopped_early_stage: Stage | None = None
-            stopped_early_info: dict = {}
 
-            # Four-layer loop with online GRPO: each selected child's rollout_k group triggers one update.
             for stage in STAGE_ORDER:
-                frontier_in = len(frontier)
-
-                # Keep provisional consensus local to the current stage only.
-                stage_rollout_archive: list[Trajectory] = []
-                stage_update_reports: list[dict[str, Any]] = []
-
-                def _on_rollout_group(record: StageExpansionRecord) -> dict[str, Any]:
-                    samples = self._samples_from_record(stage=stage, record=record)
-                    update_report = self.backend.grpo_update(samples, self.config.grpo, stage)
-                    report = dict(update_report)
-                    report["group_id"] = record.group_id
-                    report["simulation_index"] = record.simulation_index
-                    report["rollout_k"] = len(record.rollout_details)
-                    stage_update_reports.append(report)
-                    return report
-
-                frontier, records, early_stop_info = mcts.expand_stage(
-                    task=task,
-                    stage=stage,
-                    parent_nodes=frontier,
-                    rollout_archive=stage_rollout_archive,
-                    on_rollout_group=_on_rollout_group,
-                )
-
-                stage_samples = sum(len(record.rollout_details) for record in records)
+                stage_records = [r for r in records if r.stage == stage]
+                stage_samples = len(stage_records)
+                stage_update_reports = self._collect_group_reports(stage_records)
                 grpo_report = self._summarize_stage_grpo(
                     stage=stage,
                     stage_samples=stage_samples,
                     update_reports=stage_update_reports,
                 )
 
+                stage_stop = bool(stop_info.get("stage", "") == stage.value)
                 stage_report = dict(grpo_report)
-                stage_report["mcts_early_stop"] = early_stop_info is not None
-                if early_stop_info is not None:
-                    stage_report["mcts_early_stop_info"] = early_stop_info
+                stage_report["mcts_stop"] = stage_stop
+                if stage_stop:
+                    stage_report["mcts_stop_info"] = dict(stop_info)
                 stage_reports[stage.value] = stage_report
 
                 trace.stages.append(
                     StageTrace(
                         stage=stage.value,
-                        num_frontier_in=frontier_in,
-                        num_frontier_out=len(frontier),
+                        num_frontier_in=len({r.parent_id for r in stage_records}),
+                        num_frontier_out=len({r.node_id for r in stage_records}),
                         stage_samples=stage_samples,
                         grpo_report=grpo_report,
-                        mcts_early_stop=(early_stop_info is not None),
-                        mcts_early_stop_info=(early_stop_info or {}),
+                        mcts_early_stop=stage_stop,
+                        mcts_early_stop_info=(dict(stop_info) if stage_stop else {}),
                         expansions=[
                             {
+                                "iteration": record.iteration,
                                 "node_id": record.node_id,
                                 "parent_id": record.parent_id,
                                 "group_id": record.group_id,
                                 "simulation_index": record.simulation_index,
+                                "rollout_index": record.rollout_index,
                                 "prior": record.prior,
                                 "was_expanded": record.was_expanded,
                                 "hit_reward_one": record.hit_reward_one,
-                                "mean_reward": record.reward,
+                                "reward": record.reward,
                                 "child_q_before": record.child_q_before,
                                 "child_q_after": record.child_q_after,
                                 "child_visits_before": record.child_visits_before,
@@ -139,60 +117,29 @@ class TTRLORRunner:
                                 "grpo_report": record.grpo_report,
                                 "completion_preview": record.completion[:300],
                             }
-                            for record in records
+                            for record in stage_records
                         ],
                     )
                 )
 
-                if early_stop_info is not None:
-                    stopped_early_stage = stage
-                    stopped_early_info = dict(early_stop_info)
-                    target_tid = str(early_stop_info.get("trajectory_id", ""))
-                    matched = [record.trajectory for record in records if record.trajectory.trajectory_id == target_tid]
-                    if matched:
-                        early_stop_candidate = matched[0]
-                    elif records:
-                        early_stop_candidate = max(records, key=lambda x: x.reward).trajectory
-                    break
-
-            if early_stop_candidate is not None:
-                group_trajectories = rewarder.finalize_group([early_stop_candidate])
-                best = self._pick_best_by_reward(group_trajectories, [])
-                final_selection = {
-                    "num_code_nodes": len(group_trajectories),
-                    "num_selected": len(group_trajectories),
-                    "selection_basis": "reward",
-                    "stopped_early": True,
-                    "stop_stage": stopped_early_stage.value if stopped_early_stage else "",
-                    "stop_info": stopped_early_info,
-                    "selected_nodes": [],
-                }
-            else:
-                code_nodes = frontier
-                ranked_code_nodes = sorted(code_nodes, key=lambda node: (node.q_value, node.visits), reverse=True)
-                selected_nodes = ranked_code_nodes[: self.config.group_size]
-
-                # Final answer is selected by finalized reward (not by Q value).
-                group_trajectories = [node.to_partial_trajectory() for node in selected_nodes]
+            best = search_result.best_trajectory
+            if best is not None:
+                group_trajectories = [best]
+            elif search_result.code_nodes:
+                group_trajectories = [node.to_partial_trajectory() for node in search_result.code_nodes]
                 group_trajectories = rewarder.finalize_group(group_trajectories)
-                best = self._pick_best_by_reward(group_trajectories, selected_nodes)
+                best = self._pick_best_by_reward(group_trajectories, search_result.code_nodes)
+            else:
+                group_trajectories = []
 
-                final_selection = {
-                    "num_code_nodes": len(code_nodes),
-                    "num_selected": len(selected_nodes),
-                    "selection_basis": "reward",
-                    "stopped_early": False,
-                    "selected_nodes": [
-                        {
-                            "node_id": node.node_id,
-                            "q_value": node.q_value,
-                            "visits": node.visits,
-                            "prior": node.prior,
-                        }
-                        for node in selected_nodes
-                    ],
-                }
-
+            final_selection = {
+                "selection_basis": "global_search_reward",
+                "stop_info": stop_info,
+                "num_records": len(records),
+                "num_code_nodes": len(search_result.code_nodes),
+                "best_reward": (best.reward.total if best and best.reward else None),
+                "best_trajectory_id": (best.trajectory_id if best else ""),
+            }
             stage_reports["final_selection"] = final_selection
 
             mcts_stats = self._build_mcts_stats(trace)
@@ -213,7 +160,6 @@ class TTRLORRunner:
                 trace=trace,
             )
         finally:
-            # Drop temporary LoRA/adapters before the next instance.
             self.backend.end_episode()
 
     def run_from_text(
@@ -315,28 +261,18 @@ class TTRLORRunner:
         }
 
     @staticmethod
-    def _samples_from_record(stage: Stage, record: StageExpansionRecord) -> list[TrainingSample]:
-        samples: list[TrainingSample] = []
-        for detail in record.rollout_details:
-            reward_obj = detail.get("reward", {})
-            reward_total = float(reward_obj.get("total", record.reward))
-            samples.append(
-                TrainingSample(
-                    stage=stage,
-                    prompt=record.prompt,
-                    completion=record.completion,
-                    reward=reward_total,
-                    group_id=record.group_id,
-                    trajectory_id=str(detail.get("trajectory_id", "")),
-                    metadata={
-                        "node_id": record.node_id,
-                        "parent_id": record.parent_id,
-                        "simulation_index": record.simulation_index,
-                        "rollout_index": int(detail.get("rollout_index", 0)),
-                    },
-                )
-            )
-        return samples
+    def _collect_group_reports(records) -> list[dict[str, Any]]:
+        by_group: dict[str, dict[str, Any]] = {}
+        for record in records:
+            if not record.group_id:
+                continue
+            if record.group_id in by_group:
+                continue
+            report = dict(record.grpo_report or {})
+            report["group_id"] = record.group_id
+            report["iteration"] = record.iteration
+            by_group[record.group_id] = report
+        return list(by_group.values())
 
     @staticmethod
     def _summarize_stage_grpo(stage: Stage, stage_samples: int, update_reports: list[dict[str, Any]]) -> dict[str, Any]:
@@ -344,7 +280,7 @@ class TTRLORRunner:
         train_runtimes = [float(r["train_runtime"]) for r in update_reports if "train_runtime" in r]
 
         summary: dict[str, Any] = {
-            "mode": "online_per_selected_node",
+            "mode": "global_leaf_select_internal_group_rollout",
             "stage": stage.value,
             "num_updates": len(update_reports),
             "num_samples": stage_samples,

@@ -4,7 +4,6 @@ import gc
 import inspect
 import math
 import tempfile
-from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -103,6 +102,104 @@ class TRLPolicyBackend(PolicyBackend):
             )
         return generations
 
+
+    def grpo_rollout_group(
+        self,
+        stage: Stage,
+        prompt: str,
+        config: GRPOConfig,
+        reward_callback,
+    ) -> tuple[list[Generation], dict[str, Any]]:
+        if self._model is None or self._tokenizer is None:
+            raise RuntimeError("Episode not initialized. Call begin_episode() before grpo_rollout_group().")
+
+        trl = _import_trl()
+        datasets = _import_datasets()
+
+        k = int(config.num_generations)
+        if k < 2:
+            return [], {
+                "updated": False,
+                "stage": stage.value,
+                "backend": "trl",
+                "reason": "grpo_requires_num_generations_ge_2",
+                "requested_num_generations": k,
+            }
+
+        train_dataset = datasets.Dataset.from_list([{"prompt": prompt}])
+        captured: list[Generation] = []
+        cursor = 0
+
+        def reward_func(prompts, completions, **kwargs):
+            nonlocal cursor
+            rewards: list[float] = []
+            for prompt_text, completion_text in zip(prompts, completions, strict=False):
+                p = _normalize_text(prompt_text)
+                c = _normalize_text(completion_text)
+
+                if len(captured) < k:
+                    ridx = len(captured)
+                    reward_total = float(reward_callback(p, c, ridx))
+                    prior = 1.0 / float(max(1, k))
+                    captured.append(
+                        Generation(
+                            text=c,
+                            prior=prior,
+                            metadata={
+                                "stage": stage.value,
+                                "rollout_index": ridx,
+                                "reward_total": reward_total,
+                            },
+                        )
+                    )
+                else:
+                    ridx = cursor % k
+                    reward_total = float(captured[ridx].metadata.get("reward_total", 0.0))
+
+                rewards.append(reward_total)
+                cursor += 1
+            return rewards
+
+        output_dir = self._stage_output_dir(stage)
+        trl_args = self._build_trl_grpo_args(
+            config,
+            output_dir,
+            num_generations=k
+        )
+
+        trainer_kwargs = {
+            "model": self._model,
+            "args": trl_args,
+            "reward_funcs": reward_func,
+            "train_dataset": train_dataset,
+        }
+        trainer_sig = inspect.signature(trl.GRPOTrainer.__init__)
+        if "processing_class" in trainer_sig.parameters:
+            trainer_kwargs["processing_class"] = self._tokenizer
+        elif "tokenizer" in trainer_sig.parameters:
+            trainer_kwargs["tokenizer"] = self._tokenizer
+
+        trainer = trl.GRPOTrainer(**trainer_kwargs)
+        train_result = trainer.train()
+        metrics = dict(getattr(train_result, "metrics", {}) or {})
+
+        report: dict[str, Any] = {
+            "updated": True,
+            "stage": stage.value,
+            "backend": "trl",
+            "num_groups": 1,
+            "num_samples": len(captured),
+            "num_generations": k,
+            "group_mode": "internal_rollout_strict",
+        }
+        if "train_loss" in metrics:
+            report["train_loss"] = float(metrics["train_loss"])
+        if "train_runtime" in metrics:
+            report["train_runtime"] = float(metrics["train_runtime"])
+        if "train_steps_per_second" in metrics:
+            report["train_steps_per_second"] = float(metrics["train_steps_per_second"])
+
+        return captured, report
     def grpo_update(self, samples: list[TrainingSample], config: GRPOConfig, stage: Stage) -> dict[str, Any]:
         if not samples:
             return {"updated": False, "stage": stage.value, "num_samples": 0, "backend": "trl"}
@@ -113,25 +210,66 @@ class TRLPolicyBackend(PolicyBackend):
         trl = _import_trl()
         datasets = _import_datasets()
 
-        prompt_rows = [{"prompt": sample.prompt} for sample in samples]
-        train_dataset = datasets.Dataset.from_list(prompt_rows)
+        # Strict online mode: one MCTS selected-node group per GRPO update.
+        group_ids = {str(s.group_id or "") for s in samples}
+        if len(group_ids) != 1:
+            return {
+                "updated": False,
+                "stage": stage.value,
+                "num_samples": len(samples),
+                "backend": "trl",
+                "reason": "expect_single_group_per_update",
+                "group_ids": sorted(group_ids),
+            }
 
-        reward_lookup_exact, reward_lookup_prompt = _build_reward_lookup(samples)
+        prompts = {_normalize_text(s.prompt) for s in samples}
+        if len(prompts) != 1:
+            return {
+                "updated": False,
+                "stage": stage.value,
+                "num_samples": len(samples),
+                "backend": "trl",
+                "reason": "expect_single_prompt_per_group",
+                "num_prompts": len(prompts),
+            }
 
-        def reward_func(prompts, completions, **kwargs):
-            rewards: list[float] = []
-            for prompt_text, completion_text in zip(prompts, completions, strict=False):
+        group_id = next(iter(group_ids))
+        prompt = next(iter(prompts))
+
+        ordered = sorted(samples, key=lambda s: int((s.metadata or {}).get("rollout_index", 0)))
+        rewards = [float(s.reward) for s in ordered]
+
+        if len(rewards) < 2:
+            return {
+                "updated": False,
+                "stage": stage.value,
+                "num_samples": len(samples),
+                "backend": "trl",
+                "reason": "grpo_requires_at_least_2_group_rewards",
+                "available_group_size": len(rewards),
+                "group_id": group_id,
+            }
+
+        train_dataset = datasets.Dataset.from_list([{"prompt": prompt}])
+        num_generations_used = int(len(rewards))
+
+        cursor = 0
+
+        def reward_func(prompts_batch, completions, **kwargs):
+            nonlocal cursor
+            out: list[float] = []
+            for prompt_text in prompts_batch:
                 p = _normalize_text(prompt_text)
-                c = _normalize_text(completion_text)
-                exact_key = (p, c)
-                if exact_key in reward_lookup_exact:
-                    rewards.append(reward_lookup_exact[exact_key])
-                else:
-                    rewards.append(reward_lookup_prompt.get(p, 0.0))
-            return rewards
+                if p != prompt:
+                    out.append(sum(rewards) / len(rewards))
+                    continue
+                idx = cursor % len(rewards)
+                out.append(float(rewards[idx]))
+                cursor += 1
+            return out
 
         output_dir = self._stage_output_dir(stage)
-        trl_args = self._build_trl_grpo_args(config, output_dir)
+        trl_args = self._build_trl_grpo_args(config, output_dir, num_generations=num_generations_used)
 
         trainer_kwargs = {
             "model": self._model,
@@ -154,6 +292,9 @@ class TRLPolicyBackend(PolicyBackend):
             "stage": stage.value,
             "num_samples": len(samples),
             "backend": "trl",
+            "group_id": group_id,
+            "num_generations": int(num_generations_used),
+            "group_mode": "strict_single_group",
         }
         if "train_loss" in metrics:
             report["train_loss"] = float(metrics["train_loss"])
@@ -224,7 +365,7 @@ class TRLPolicyBackend(PolicyBackend):
             fallback.append(case)
         return fallback
 
-    def _build_trl_grpo_args(self, config: GRPOConfig, output_dir: str):
+    def _build_trl_grpo_args(self, config: GRPOConfig, output_dir: str, num_generations: int | None = None):
         trl = _import_trl()
 
         kwargs = {
@@ -233,10 +374,10 @@ class TRLPolicyBackend(PolicyBackend):
             "beta": config.kl_coef,
             "per_device_train_batch_size": config.per_device_train_batch_size,
             "gradient_accumulation_steps": config.gradient_accumulation_steps,
-            "num_generations": config.num_generations,
+            "num_generations": int(num_generations if num_generations is not None else config.num_generations),
             "max_prompt_length": config.max_prompt_length,
             "max_completion_length": config.max_completion_length,
-            "max_steps": config.max_steps,
+            "max_steps": 1,
             "use_vllm": config.use_vllm,
             "vllm_mode": config.vllm_mode,
             "vllm_gpu_memory_utilization": config.vllm_gpu_memory_utilization,
@@ -376,19 +517,6 @@ def _normalize_text(value: Any) -> str:
     return str(value).strip()
 
 
-def _build_reward_lookup(samples: list[TrainingSample]) -> tuple[dict[tuple[str, str], float], dict[str, float]]:
-    exact: dict[tuple[str, str], float] = {}
-    prompt_bucket: dict[str, list[float]] = defaultdict(list)
-
-    for sample in samples:
-        p = _normalize_text(sample.prompt)
-        c = _normalize_text(sample.completion)
-        exact[(p, c)] = float(sample.reward)
-        prompt_bucket[p].append(float(sample.reward))
-
-    prompt_mean = {k: sum(v) / len(v) for k, v in prompt_bucket.items()}
-    return exact, prompt_mean
-
 
 def _import_transformers():
     try:
@@ -429,3 +557,8 @@ def _import_datasets():
         return datasets
     except ImportError as exc:
         raise RuntimeError("TRL backend requires `datasets`. Install with: pip install datasets") from exc
+
+
+
+
+

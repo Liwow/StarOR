@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Any
@@ -26,6 +26,30 @@ class PolicyBackend(ABC):
     @abstractmethod
     def grpo_update(self, samples: list[TrainingSample], config: GRPOConfig, stage: Stage) -> dict[str, Any]:
         """Apply one GRPO-style update step using stage samples."""
+    def grpo_rollout_group(
+        self,
+        stage: Stage,
+        prompt: str,
+        config: GRPOConfig,
+        reward_callback,
+    ) -> tuple[list[Generation], dict[str, Any]]:
+        """
+        Optional unified hook for internal rollout + policy update on one prompt group.
+        Default fallback uses plain generation with no training update.
+        """
+        n = max(1, int(config.num_generations))
+        generations = self.generate(stage, prompt, n)
+        for ridx, gen in enumerate(generations):
+            gen.metadata["reward_total"] = float(reward_callback(prompt, gen.text, ridx))
+            gen.metadata["rollout_index"] = ridx
+
+        return generations, {
+            "updated": False,
+            "stage": stage.value,
+            "num_samples": len(generations),
+            "backend": type(self).__name__,
+            "reason": "fallback_generation_no_trainer_update",
+        }
 
     def prepare_task_context(self, task: OptimizationTask, dataset_config: DatasetConfig) -> dict[str, Any]:
         """
@@ -52,3 +76,4 @@ class PolicyBackend(ABC):
     def generate_test_instances(self, task: OptimizationTask, k: int) -> list[dict[str, Any]]:
         """Optional: model-authored robustness tests (r3)."""
         return []
+
