@@ -4,9 +4,9 @@ set -euo pipefail
 # =====================================
 # Edit Here: TTRL-OR Common Parameters
 # =====================================
-CUDA_VISIBLE_DEVICES="1"
+CUDA_VISIBLE_DEVICES="0"
 BACKEND="trl"                   
-MODEL_NAME_OR_PATH="/path/to/your/model"
+MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
 
 DATASET_JSONL="data/NL4OPT.jsonl"
 DATASET_LIMIT=20
@@ -33,10 +33,10 @@ GRPO_MAX_STEPS=2
 # Generation (common)
 TEMPERATURE=1.0
 TOP_P=0.95
-MAX_NEW_TOKENS=4096
+MAX_NEW_TOKENS=2048
 
 # vLLM for TRL
-USE_VLLM=true
+USE_VLLM=false
 VLLM_MODE="server"
 VLLM_GPU_MEMORY_UTILIZATION=0.85
 VLLM_TENSOR_PARALLEL_SIZE=1

@@ -4,7 +4,7 @@ set -euo pipefail
 # ==================================
 # Edit Here: vLLM Common Parameters
 # ==================================
-CUDA_VISIBLE_DEVICES="0"
+CUDA_VISIBLE_DEVICES="1"
 MODEL_NAME_OR_PATH="/path/to/your/model"
 
 VLLM_HOST="0.0.0.0"

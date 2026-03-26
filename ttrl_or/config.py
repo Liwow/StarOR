@@ -28,7 +28,7 @@ class GRPOConfig:
     kl_coef: float = 0.0
     per_device_train_batch_size: int = 1
     gradient_accumulation_steps: int = 1
-    num_generations: int = 2
+    num_generations: int = 1
     max_prompt_length: int = 4096
     max_completion_length: int = 512
     max_steps: int = 3
