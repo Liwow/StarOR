@@ -12,9 +12,6 @@ from ttrl_or.reward.executor import PythonCodeExecutor
 from ttrl_or.reward.perturbation import generate_perturbed_instances_from_map
 from ttrl_or.types import OptimizationTask, RewardBreakdown, Trajectory
 
-_NUMERIC_REL_TOL = 0.005  # 0.5%
-
-
 @dataclass(slots=True)
 class TTRLRewardCalculator(RewardCalculator):
     task: OptimizationTask
@@ -111,7 +108,10 @@ class TTRLRewardCalculator(RewardCalculator):
 
     def _compute_numeric_r1(self, candidate: float) -> tuple[float, str]:
         pool = self._global_numeric_pool
-        if len(pool) < 3:
+        min_pool = max(1, int(self.config.global_consensus_min_pool))
+        rel_tol = max(0.0, float(self.config.global_consensus_rel_tol))
+
+        if len(pool) < min_pool:
             if not pool:
                 return 1.0, f"oom:{self._order_of_magnitude(candidate)}"
 
@@ -119,16 +119,17 @@ class TTRLRewardCalculator(RewardCalculator):
             consensus = any(self._order_of_magnitude(v) == cand_oom for v in pool)
             return (1.0 if consensus else 0.0), f"oom:{cand_oom}"
 
-        ref, votes = self._majority_numeric_reference(pool)
+        ref, votes = self._majority_numeric_reference(pool, rel_tol=rel_tol)
         if ref is None or votes <= 0:
             return 0.0, ""
 
-        in_consensus = self._within_rel_tol(candidate, ref, _NUMERIC_REL_TOL)
-        return (1.0 if in_consensus else 0.0), f"ref:{ref:.6f}|votes:{votes}|tol:{_NUMERIC_REL_TOL}"
+        in_consensus = self._within_rel_tol(candidate, ref, rel_tol)
+        return (1.0 if in_consensus else 0.0), f"ref:{ref:.6f}|votes:{votes}|tol:{rel_tol}"
 
     def _compute_signature_r1(self, signature: str) -> tuple[float, str]:
         pool = [s for s in self._global_signature_pool if s and s != "EXEC_ERROR"]
-        if len(pool) < 3:
+        min_pool = max(1, int(self.config.global_consensus_min_pool))
+        if len(pool) < min_pool:
             if not pool:
                 return 1.0, signature
             return (1.0 if signature in pool else 0.0), signature
@@ -245,13 +246,13 @@ class TTRLRewardCalculator(RewardCalculator):
         base = max(abs(ref), 1e-12)
         return abs(value - ref) <= rel_tol * base
 
-    def _majority_numeric_reference(self, values: list[float]) -> tuple[float | None, int]:
+    def _majority_numeric_reference(self, values: list[float], rel_tol: float) -> tuple[float | None, int]:
         if not values:
             return None, 0
 
         best_members: list[float] = []
         for anchor in values:
-            members = [v for v in values if self._within_rel_tol(v, anchor, _NUMERIC_REL_TOL)]
+            members = [v for v in values if self._within_rel_tol(v, anchor, rel_tol)]
             if len(members) > len(best_members):
                 best_members = members
 
@@ -260,3 +261,6 @@ class TTRLRewardCalculator(RewardCalculator):
 
         ref = sum(best_members) / len(best_members)
         return ref, len(best_members)
+
+
+

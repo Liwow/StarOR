@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import gc
 import inspect
@@ -368,13 +368,21 @@ class TRLPolicyBackend(PolicyBackend):
     def _build_trl_grpo_args(self, config: GRPOConfig, output_dir: str, num_generations: int | None = None):
         trl = _import_trl()
 
+        used_num_generations = int(num_generations if num_generations is not None else config.num_generations)
+        used_generation_batch_size = self._resolve_generation_batch_size(
+            configured_generation_batch_size=int(config.generation_batch_size),
+            per_device_train_batch_size=int(config.per_device_train_batch_size),
+            num_generations=used_num_generations,
+        )
+
         kwargs = {
             "output_dir": output_dir,
             "learning_rate": config.learning_rate,
             "beta": config.kl_coef,
             "per_device_train_batch_size": config.per_device_train_batch_size,
             "gradient_accumulation_steps": config.gradient_accumulation_steps,
-            "num_generations": int(num_generations if num_generations is not None else config.num_generations),
+            "num_generations": used_num_generations,
+            "generation_batch_size": used_generation_batch_size,
             "max_prompt_length": config.max_prompt_length,
             "max_completion_length": config.max_completion_length,
             "max_steps": 1,
@@ -391,6 +399,24 @@ class TRLPolicyBackend(PolicyBackend):
         init_sig = inspect.signature(trl.GRPOConfig.__init__)
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in init_sig.parameters}
         return trl.GRPOConfig(**filtered_kwargs)
+
+    @staticmethod
+    def _resolve_generation_batch_size(
+        configured_generation_batch_size: int,
+        per_device_train_batch_size: int,
+        num_generations: int,
+    ) -> int:
+        k = max(1, int(num_generations))
+
+        if configured_generation_batch_size > 0:
+            gen_bs = int(configured_generation_batch_size)
+        else:
+            gen_bs = max(k, int(per_device_train_batch_size))
+
+        if gen_bs % k != 0:
+            gen_bs = ((gen_bs + k - 1) // k) * k
+
+        return max(k, gen_bs)
 
     def _load_fresh_episode_model(self) -> None:
         transformers = _import_transformers()
@@ -557,6 +583,8 @@ def _import_datasets():
         return datasets
     except ImportError as exc:
         raise RuntimeError("TRL backend requires `datasets`. Install with: pip install datasets") from exc
+
+
 
 
 

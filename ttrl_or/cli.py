@@ -104,6 +104,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--consensus-window", type=int, default=defaults.reward.local_consensus_window)
     parser.add_argument("--robustness-cases", type=int, default=defaults.reward.robustness_cases)
     parser.add_argument("--code-timeout-sec", type=int, default=defaults.reward.code_timeout_sec)
+    parser.add_argument("--global-consensus-min-pool", type=int, default=defaults.reward.global_consensus_min_pool)
+    parser.add_argument("--global-consensus-rel-tol", type=float, default=defaults.reward.global_consensus_rel_tol)
 
     perturb_group = parser.add_mutually_exclusive_group()
     perturb_group.add_argument("--enable-perturb-reward", dest="enable_perturb_reward", action="store_true")
@@ -116,6 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grpo-batch-size", type=int, default=defaults.grpo.per_device_train_batch_size)
     parser.add_argument("--grpo-grad-accum", type=int, default=defaults.grpo.gradient_accumulation_steps)
     parser.add_argument("--grpo-num-generations", type=int, default=defaults.grpo.num_generations)
+    parser.add_argument("--grpo-generation-batch-size", type=int, default=defaults.grpo.generation_batch_size)
     parser.add_argument("--grpo-max-prompt-len", type=int, default=defaults.grpo.max_prompt_length)
     parser.add_argument("--grpo-max-completion-len", type=int, default=defaults.grpo.max_completion_length)
 
@@ -150,6 +153,8 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.reward.local_consensus_window = args.consensus_window
     config.reward.robustness_cases = args.robustness_cases
     config.reward.code_timeout_sec = args.code_timeout_sec
+    config.reward.global_consensus_min_pool = args.global_consensus_min_pool
+    config.reward.global_consensus_rel_tol = args.global_consensus_rel_tol
     config.reward.enable_perturb_reward = args.enable_perturb_reward
 
     config.grpo.learning_rate = args.grpo_lr
@@ -158,6 +163,7 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.grpo.per_device_train_batch_size = args.grpo_batch_size
     config.grpo.gradient_accumulation_steps = args.grpo_grad_accum
     config.grpo.num_generations = args.grpo_num_generations
+    config.grpo.generation_batch_size = args.grpo_generation_batch_size
     config.grpo.max_prompt_length = args.grpo_max_prompt_len
     config.grpo.max_completion_length = args.grpo_max_completion_len
     config.grpo.use_vllm = args.grpo_use_vllm
@@ -300,3 +306,4 @@ def main() -> int:
         print(json.dumps(output, ensure_ascii=False, indent=2))
 
     return 0
+

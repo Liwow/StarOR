@@ -12,7 +12,7 @@ Pipeline:
 
 Each stage uses MCTS with PUCT and rollout-to-code evaluation. Inside a stage, each selected node triggers one internal TRL-GRPO rollout group (`num_generations = k`), which simultaneously updates LoRA and expands `k` children for that stage. At the end of stage 4, final candidates are reranked by finalized reward to choose the answer, then LoRA is dropped before the next task.
 
-Provisional consensus (`r1`) is computed with a **stage-local sliding window**, so each stage only votes against recent rollouts from that same stage.
+Provisional consensus (`r1`) now uses a **global consensus pool** per task instance: when pool size is small it uses order-of-magnitude matching, and once pool is large enough it switches to majority voting with relative tolerance.
 
 ## Core Design Goals
 
@@ -164,12 +164,12 @@ Set `USE_VLLM=false` in `scripts/run.sh`, then run the same script.
 Useful knobs:
 
 - MCTS: `--group-size`, `--max-iterations`, `--c-puct`, `--mcts-stop-on-reward-one`
-- Reward: `--consensus-window`, `--robustness-cases`, `--code-timeout-sec`, `--enable-perturb-reward`, `--disable-perturb-reward`
+- Reward: `--consensus-window`, `--global-consensus-min-pool`, `--global-consensus-rel-tol`, `--robustness-cases`, `--code-timeout-sec`, `--enable-perturb-reward`, `--disable-perturb-reward`
   - `r3` perturbation now uses backend pre-extracted mapping (`focus_keys` + value map).
 - Dataset loader: `--dataset-start-index`, `--dataset-limit`, `--dataset-max-numeric-features`, `--dataset-key-param-top-k`
   - Mapping extractor plugin: `--mapping-extractor rule|llm`
   - LLM extractor knobs: `--mapping-llm-max-new-tokens`, `--mapping-llm-temperature`, `--mapping-llm-top-p`
-- GRPO: `--grpo-lr`, `--grpo-batch-size`, `--grpo-grad-accum`, `--grpo-num-generations`, `--grpo-use-vllm`, `--grpo-vllm-mode`, `--grpo-vllm-gpu-memory-utilization`, `--grpo-vllm-tensor-parallel-size`, `--grpo-vllm-max-model-len`
+- GRPO: `--grpo-lr`, `--grpo-batch-size`, `--grpo-grad-accum`, `--grpo-num-generations`, `--grpo-generation-batch-size`, `--grpo-use-vllm`, `--grpo-vllm-mode`, `--grpo-vllm-gpu-memory-utilization`, `--grpo-vllm-tensor-parallel-size`, `--grpo-vllm-max-model-len`
 - Logging: `--log-dir` and `--no-save-logs`
 - Backend/model: `--backend`, `--model-name`, `--model-path`, `--seed`, `--torch-dtype`, `--trust-remote-code`
 - Generation: `--temperature`, `--top-p`, `--max-new-tokens`
@@ -215,7 +215,7 @@ All defaults are defined in `ttrl_or/config.py`.
 - `per_device_train_batch_size` (Key): per-device batch size for GRPO.
 - `gradient_accumulation_steps` (Key): accumulation factor.
   - Effective batch is `batch_size * grad_accum`.
-- `num_generations` (Key): generations per selected-node rollout group. This directly controls how many stage children are expanded from one selected node.
+- `num_generations` (Key): generations per selected-node rollout group. This directly controls how many stage children are expanded from one selected node.`r`n- `generation_batch_size` (Key): TRL generation batch size. `0` means auto, and runtime will round it up to a multiple of `num_generations` to avoid GRPOConfig divisibility errors.
 - `max_prompt_length`: truncation limit for prompt tokens.
 - `max_completion_length`: truncation limit for completion tokens.
 - `use_vllm` (Key): whether TRL GRPO uses vLLM as generation backend.
@@ -306,6 +306,7 @@ pytest -q
 - `MockPolicyBackend` intentionally does not train.
 - `TRLPolicyBackend` creates temporary LoRA adapters per task instance and drops them at episode end.
 - If `trl/peft/datasets` are missing, `--backend trl` will raise a clear install error.
+
 
 
 

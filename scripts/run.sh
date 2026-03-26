@@ -21,12 +21,15 @@ MCTS_STOP_ON_REWARD_ONE=false
 
 # Reward
 CONSENSUS_WINDOW=64
+GLOBAL_CONSENSUS_MIN_POOL=3
+GLOBAL_CONSENSUS_REL_TOL=0.005
 ROBUSTNESS_CASES=3
 ENABLE_PERTURB_REWARD=true
 
 # GRPO (common)
 GRPO_LR="3e-5"
 GRPO_NUM_GENERATIONS=4
+GRPO_GENERATION_BATCH_SIZE=0  # 0 = auto align to num_generations
 
 # Generation (common)
 TEMPERATURE=1.0
@@ -63,9 +66,12 @@ CMD=(python -m ttrl_or
   --max-iterations "${MAX_ITERATIONS}"
   --c-puct "${C_PUCT}"
   --consensus-window "${CONSENSUS_WINDOW}"
+  --global-consensus-min-pool "${GLOBAL_CONSENSUS_MIN_POOL}"
+  --global-consensus-rel-tol "${GLOBAL_CONSENSUS_REL_TOL}"
   --robustness-cases "${ROBUSTNESS_CASES}"
   --grpo-lr "${GRPO_LR}"
   --grpo-num-generations "${GRPO_NUM_GENERATIONS}"
+  --grpo-generation-batch-size "${GRPO_GENERATION_BATCH_SIZE}"
   --temperature "${TEMPERATURE}"
   --top-p "${TOP_P}"
   --max-new-tokens "${MAX_NEW_TOKENS}"

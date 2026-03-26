@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 
@@ -12,10 +12,12 @@ class MCTSConfig:
 
 @dataclass(slots=True)
 class RewardConfig:
-    code_timeout_sec: int = 6
+    code_timeout_sec: int = 30
     robustness_cases: int = 3
     local_consensus_window: int = 32
     enable_perturb_reward: bool = False
+    global_consensus_min_pool: int = 3
+    global_consensus_rel_tol: float = 0.005
 
 
 @dataclass(slots=True)
@@ -25,7 +27,8 @@ class GRPOConfig:
     kl_coef: float = 0.0
     per_device_train_batch_size: int = 1
     gradient_accumulation_steps: int = 1
-    num_generations: int = 4
+    num_generations: int = 3
+    generation_batch_size: int = 0
     max_prompt_length: int = 4096
     max_completion_length: int = 512
 

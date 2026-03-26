@@ -52,7 +52,7 @@ Task:
 Previous stages:
 {history}
 
-Step 4 (CODE): output Python code only.
+Step 4 (CODE): output Python code only. 
 Rules:
 - define function solve(instance: dict) -> dict
 - return at least {{"objective": float, "status": str}}
