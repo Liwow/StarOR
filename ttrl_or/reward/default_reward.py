@@ -1,5 +1,7 @@
 ﻿from __future__ import annotations
 
+import json
+import math
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -10,6 +12,8 @@ from ttrl_or.reward.executor import PythonCodeExecutor
 from ttrl_or.reward.perturbation import generate_perturbed_instances_from_map
 from ttrl_or.types import OptimizationTask, RewardBreakdown, Trajectory
 
+_NUMERIC_REL_TOL = 0.005  # 0.5%
+
 
 @dataclass(slots=True)
 class TTRLRewardCalculator(RewardCalculator):
@@ -18,18 +22,19 @@ class TTRLRewardCalculator(RewardCalculator):
     config: RewardConfig
     executor: PythonCodeExecutor = field(init=False)
     _exec_cache: dict[str, object] = field(default_factory=dict, init=False)
+    _global_numeric_pool: list[float] = field(default_factory=list, init=False)
+    _global_signature_pool: list[str] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
         self.executor = PythonCodeExecutor(timeout_sec=self.config.code_timeout_sec)
 
     def provisional_reward(self, trajectory: Trajectory, explored: list[Trajectory]) -> RewardBreakdown:
         execution = self._execute(trajectory)
+        r1, consensus = self.compute_r1(execution.success, execution.signature, execution.output)
 
-        # Stage-local sliding window for consensus (no cross-stage leakage).
-        scoped = self._windowed_explored(explored)
-        consensus = self._majority_signature(self._collect_signatures(scoped))
+        if execution.success:
+            self._update_global_pool(execution.signature, execution.output)
 
-        r1 = self.compute_r1(execution.success, execution.signature, consensus)
         if r1 == 1.0:
             r3, r3_meta = self._compute_r3_with_details(trajectory)
             total = self.combine_rewards(r1=r1, r2=0.0, r3=r3)
@@ -58,19 +63,13 @@ class TTRLRewardCalculator(RewardCalculator):
         )
 
     def finalize_group(self, trajectories: list[Trajectory]) -> list[Trajectory]:
-        signatures: list[str] = []
-        exec_results = {}
         for traj in trajectories:
-            res = self._execute(traj)
-            exec_results[traj.trajectory_id] = res
-            if res.success:
-                signatures.append(res.signature)
+            exec_result = self._execute(traj)
+            r1, consensus = self.compute_r1(exec_result.success, exec_result.signature, exec_result.output)
 
-        consensus = self._majority_signature(signatures)
+            if exec_result.success:
+                self._update_global_pool(exec_result.signature, exec_result.output)
 
-        for traj in trajectories:
-            exec_result = exec_results[traj.trajectory_id]
-            r1 = self.compute_r1(exec_result.success, exec_result.signature, consensus)
             if r1 == 1.0:
                 r3, r3_meta = self._compute_r3_with_details(traj)
                 total = self.combine_rewards(r1=r1, r2=0.0, r3=r3)
@@ -99,12 +98,43 @@ class TTRLRewardCalculator(RewardCalculator):
                 )
         return trajectories
 
-    def compute_r1(self, execution_success: bool, signature: str, consensus: str) -> float:
+    def compute_r1(self, execution_success: bool, signature: str, output: object | None = None) -> tuple[float, str]:
         if not execution_success:
-            return 0.0
-        if not consensus:
-            return 0.0
-        return 1.0 if signature == consensus else 0.0
+            return 0.0, ""
+
+        numeric = self._extract_objective_numeric(output)
+
+        if numeric is not None:
+            return self._compute_numeric_r1(numeric)
+
+        return self._compute_signature_r1(signature)
+
+    def _compute_numeric_r1(self, candidate: float) -> tuple[float, str]:
+        pool = self._global_numeric_pool
+        if len(pool) < 3:
+            if not pool:
+                return 1.0, f"oom:{self._order_of_magnitude(candidate)}"
+
+            cand_oom = self._order_of_magnitude(candidate)
+            consensus = any(self._order_of_magnitude(v) == cand_oom for v in pool)
+            return (1.0 if consensus else 0.0), f"oom:{cand_oom}"
+
+        ref, votes = self._majority_numeric_reference(pool)
+        if ref is None or votes <= 0:
+            return 0.0, ""
+
+        in_consensus = self._within_rel_tol(candidate, ref, _NUMERIC_REL_TOL)
+        return (1.0 if in_consensus else 0.0), f"ref:{ref:.6f}|votes:{votes}|tol:{_NUMERIC_REL_TOL}"
+
+    def _compute_signature_r1(self, signature: str) -> tuple[float, str]:
+        pool = [s for s in self._global_signature_pool if s and s != "EXEC_ERROR"]
+        if len(pool) < 3:
+            if not pool:
+                return 1.0, signature
+            return (1.0 if signature in pool else 0.0), signature
+
+        majority = Counter(pool).most_common(1)[0][0]
+        return (1.0 if signature == majority else 0.0), majority
 
     @staticmethod
     def compute_r2(execution_success: bool) -> float:
@@ -176,24 +206,57 @@ class TTRLRewardCalculator(RewardCalculator):
         self._exec_cache[trajectory.trajectory_id] = result
         return result
 
-    def _windowed_explored(self, explored: list[Trajectory]) -> list[Trajectory]:
-        window = self.config.local_consensus_window
-        if window <= 0:
-            return explored
-        return explored[-window:]
+    def _update_global_pool(self, signature: str, output: object | None) -> None:
+        numeric = self._extract_objective_numeric(output)
+        if numeric is not None:
+            self._global_numeric_pool.append(float(numeric))
+            return
 
-    def _collect_signatures(self, trajectories: list[Trajectory]) -> list[str]:
-        signatures: list[str] = []
-        for traj in trajectories:
-            res = self._execute(traj)
-            if res.success:
-                signatures.append(res.signature)
-        return signatures
+        if signature and signature != "EXEC_ERROR":
+            self._global_signature_pool.append(signature)
 
     @staticmethod
-    def _majority_signature(signatures: list[str]) -> str:
-        valid = [s for s in signatures if s and s != "EXEC_ERROR"]
-        if not valid:
-            return ""
-        return Counter(valid).most_common(1)[0][0]
+    def _extract_objective_numeric(output: object | None) -> float | None:
+        if isinstance(output, dict):
+            objective = output.get("objective")
+            if isinstance(objective, (int, float)) and not isinstance(objective, bool):
+                return float(objective)
 
+        if isinstance(output, str):
+            try:
+                maybe = json.loads(output)
+            except Exception:
+                return None
+            if isinstance(maybe, dict):
+                objective = maybe.get("objective")
+                if isinstance(objective, (int, float)) and not isinstance(objective, bool):
+                    return float(objective)
+
+        return None
+
+    @staticmethod
+    def _order_of_magnitude(value: float) -> int:
+        if value == 0:
+            return 0
+        return int(math.floor(math.log10(abs(value))))
+
+    @staticmethod
+    def _within_rel_tol(value: float, ref: float, rel_tol: float) -> bool:
+        base = max(abs(ref), 1e-12)
+        return abs(value - ref) <= rel_tol * base
+
+    def _majority_numeric_reference(self, values: list[float]) -> tuple[float | None, int]:
+        if not values:
+            return None, 0
+
+        best_members: list[float] = []
+        for anchor in values:
+            members = [v for v in values if self._within_rel_tol(v, anchor, _NUMERIC_REL_TOL)]
+            if len(members) > len(best_members):
+                best_members = members
+
+        if not best_members:
+            return None, 0
+
+        ref = sum(best_members) / len(best_members)
+        return ref, len(best_members)
