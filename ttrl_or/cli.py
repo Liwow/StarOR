@@ -96,7 +96,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lora-alpha", type=int, default=defaults.backend.lora_alpha)
     parser.add_argument("--lora-dropout", type=float, default=defaults.backend.lora_dropout)
 
-    parser.add_argument("--group-size", type=int, default=defaults.group_size)
     parser.add_argument("--max-iterations", type=int, default=defaults.mcts.max_iterations)
     parser.add_argument("--c-puct", type=float, default=defaults.mcts.c_puct)
     parser.add_argument("--mcts-stop-on-reward-one", action="store_true", default=defaults.mcts.stop_on_reward_one)
@@ -142,7 +141,6 @@ def build_parser() -> argparse.ArgumentParser:
 def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config = PipelineConfig()
 
-    config.group_size = args.group_size
     config.log_dir = args.log_dir
     config.save_logs = not args.no_save_logs
 
@@ -306,4 +304,3 @@ def main() -> int:
         print(json.dumps(output, ensure_ascii=False, indent=2))
 
     return 0
-

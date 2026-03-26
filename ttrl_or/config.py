@@ -74,6 +74,5 @@ class PipelineConfig:
     grpo: GRPOConfig = field(default_factory=GRPOConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     backend: BackendConfig = field(default_factory=BackendConfig)
-    group_size: int = 8
     save_logs: bool = True
     log_dir: str = "logs"
