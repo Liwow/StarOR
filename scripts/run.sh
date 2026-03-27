@@ -41,7 +41,7 @@ MAX_NEW_TOKENS=2048
 
 # vLLM for TRL
 USE_VLLM=true
-VLLM_MODE="colocate" # server | colocate
+VLLM_MODE="server" # server | colocate
 VLLM_GPU_MEMORY_UTILIZATION=0.75
 VLLM_TENSOR_PARALLEL_SIZE=1
 VLLM_MAX_MODEL_LEN=16384
@@ -77,6 +77,13 @@ if (( NPROC_PER_NODE == 1 && VLLM_TENSOR_PARALLEL_SIZE > 1 )); then
   echo "[WARN] NPROC_PER_NODE=1 but VLLM_TENSOR_PARALLEL_SIZE=${VLLM_TENSOR_PARALLEL_SIZE}."
   echo "[WARN] Runtime may auto-fallback TP to 1."
 fi
+
+if (( NPROC_PER_NODE > 1 )) && [[ "${USE_VLLM}" == "true" ]] && [[ "${VLLM_MODE}" == "colocate" ]]; then
+  echo "[WARN] multi-process training with vLLM colocate is unstable and may duplicate GPU memory/processes."
+  echo "[WARN] Auto-disabling USE_VLLM for this run. Use VLLM_MODE=server if you need external vLLM."
+  USE_VLLM=false
+fi
+
 
 MODEL_ARG=(--model-name "${MODEL_NAME_OR_PATH}")
 if [[ -d "${MODEL_NAME_OR_PATH}" ]]; then

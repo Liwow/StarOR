@@ -135,7 +135,7 @@ All launch scripts are under `scripts/`.
 1. Edit common parameters in `scripts/run.sh`
 
 - `CUDA_VISIBLE_DEVICES`
-- `NPROC_PER_NODE`
+- `NPROC_PER_NODE` (training process count)
   - single-card: `NPROC_PER_NODE=1`
   - multi-card: `NPROC_PER_NODE=2` (or 4)
 - `MODEL_NAME_OR_PATH`
@@ -164,6 +164,8 @@ scripts/run.sh
 4. If you do not want vLLM
 
 Set `USE_VLLM=false` in `scripts/run.sh`, then run the same script.
+
+Note: in `scripts/run.sh`, if `NPROC_PER_NODE>1` and `VLLM_MODE=colocate`, the script will auto-disable `USE_VLLM` to avoid duplicated GPU memory usage.
 
 Useful knobs:
 
@@ -303,6 +305,9 @@ pytest -q
 - `MockPolicyBackend` intentionally does not train.
 - `TRLPolicyBackend` creates temporary LoRA adapters per task instance and drops them at episode end.
 - If `trl/peft/datasets` are missing, `--backend trl` will raise a clear install error.
+
+
+
 
 
 

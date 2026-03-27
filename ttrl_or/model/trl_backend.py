@@ -449,12 +449,26 @@ class TRLPolicyBackend(PolicyBackend):
             num_generations=used_num_generations,
         )
 
+        rank = _env_int("RANK", 0)
+        world_size = _world_size()
         effective_use_vllm = bool(config.use_vllm) if force_use_vllm is None else bool(force_use_vllm)
+
+        # Multi-process + colocate tends to start duplicate vLLM engines per rank.
+        # Disable this combination to avoid doubled memory/process contention.
+        if effective_use_vllm and world_size > 1 and str(config.vllm_mode).lower() == "colocate":
+            if rank == 0:
+                print(
+                    "[GRPO][WARN] Disabling use_vllm for multi-process colocate mode "
+                    f"(world_size={world_size}, vllm_mode={config.vllm_mode}). "
+                    "Use server mode for external vLLM, or keep use_vllm=False for stable multi-GPU training."
+                )
+            effective_use_vllm = False
+
         effective_vllm_tp = _effective_vllm_tensor_parallel_size(
             requested_tp=int(config.vllm_tensor_parallel_size),
             use_vllm=effective_use_vllm,
-            rank=_env_int("RANK", 0),
-            world_size=max(1, _env_int("WORLD_SIZE", 1)),
+            rank=rank,
+            world_size=world_size,
         )
 
         kwargs = {
@@ -486,6 +500,7 @@ class TRLPolicyBackend(PolicyBackend):
                 print(f"[GRPO][WARN] TRL GRPOConfig does not support {missing}; vLLM path may be inactive.")
                 self._warned_vllm_unsupported = True
         return trl.GRPOConfig(**filtered_kwargs)
+
     @staticmethod
     def _resolve_generation_batch_size(
         configured_generation_batch_size: int,
@@ -509,14 +524,47 @@ class TRLPolicyBackend(PolicyBackend):
         peft = _import_peft()
 
         dtype = self._resolve_torch_dtype()
+        rank = _env_int("RANK", 0)
+        local_rank = _local_rank()
+        world_size = _world_size()
+
         model_kwargs: dict[str, Any] = {
-            "torch_dtype": dtype,
             "trust_remote_code": self.trust_remote_code,
         }
-        if torch.cuda.is_available():
-            model_kwargs["device_map"] = "auto"
+        if dtype != "auto":
+            model_kwargs["dtype"] = dtype
 
-        base_model = transformers.AutoModelForCausalLM.from_pretrained(self.model_name_or_path, **model_kwargs)
+        if torch.cuda.is_available():
+            # In multi-process training, each rank must bind to one GPU only.
+            if world_size > 1:
+                local_rank = min(local_rank, max(0, torch.cuda.device_count() - 1))
+                torch.cuda.set_device(local_rank)
+                model_kwargs["device_map"] = {"": local_rank}
+                if rank == 0:
+                    print(
+                        "[MODEL] multi-process load: binding each rank to one GPU "
+                        f"(world_size={world_size})."
+                    )
+            else:
+                model_kwargs["device_map"] = "auto"
+
+        try:
+            base_model = transformers.AutoModelForCausalLM.from_pretrained(self.model_name_or_path, **model_kwargs)
+        except TypeError as exc:
+            # Backward compatibility for transformers versions that still expect torch_dtype.
+            msg = str(exc)
+            if "dtype" in model_kwargs and ("unexpected keyword" in msg or "got an unexpected" in msg):
+                fallback_kwargs = dict(model_kwargs)
+                fallback_kwargs.pop("dtype", None)
+                if dtype != "auto":
+                    fallback_kwargs["torch_dtype"] = dtype
+                base_model = transformers.AutoModelForCausalLM.from_pretrained(
+                    self.model_name_or_path,
+                    **fallback_kwargs,
+                )
+            else:
+                raise
+
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             self.model_name_or_path,
             trust_remote_code=self.trust_remote_code,
@@ -674,6 +722,15 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+
+
+def _world_size() -> int:
+    return max(1, _env_int("WORLD_SIZE", 1))
+
+
+def _local_rank() -> int:
+    # torchrun sets LOCAL_RANK; fallback to RANK for safety.
+    return _env_int("LOCAL_RANK", _env_int("RANK", 0))
 
 def _effective_vllm_tensor_parallel_size(
     requested_tp: int,
