@@ -128,31 +128,34 @@ TRL + vLLM generation backend (optional, requires compatible `trl` + `vllm` envi
 python -m ttrl_or --backend trl --model-name model/Qwen/Qwen3-4B-Instruct-2507 --dataset-jsonl data/NL4OPT.jsonl --dataset-limit 20 --grpo-use-vllm --grpo-vllm-mode server --grpo-vllm-gpu-memory-utilization 0.85
 ```
 
-## Scripted Launch (4 GPUs)
+## Scripted Launch (Single or Multi GPU)
 
-All launch scripts are under `scripts/` and default to single-node 4-GPU setup.
+All launch scripts are under `scripts/`.
 
-1. Edit common parameters directly in scripts
+1. Edit common parameters in `scripts/run.sh`
 
-- `scripts/start_vllm_server.sh`
-  - `CUDA_VISIBLE_DEVICES`
-  - `MODEL_NAME_OR_PATH`
-  - `VLLM_TENSOR_PARALLEL_SIZE` (for 4 cards, keep `4`)
-- `scripts/run.sh`
-  - `CUDA_VISIBLE_DEVICES`
-  - `MODEL_NAME_OR_PATH`
-  - `DATASET_JSONL`, `DATASET_LIMIT`
-  - `USE_VLLM`, `VLLM_MODE`
+- `CUDA_VISIBLE_DEVICES`
+- `NPROC_PER_NODE`
+  - single-card: `NPROC_PER_NODE=1`
+  - multi-card: `NPROC_PER_NODE=2` (or 4)
+- `MODEL_NAME_OR_PATH`
+- `DATASET_JSONL`, `DATASET_LIMIT`
+- `USE_VLLM`, `VLLM_MODE`
 
-2. Terminal A: start vLLM service (TRL server mode)
+`run.sh` now auto-selects launcher:
+- `NPROC_PER_NODE=1` -> `python -m ttrl_or ...`
+- `NPROC_PER_NODE>1` -> `torchrun --nproc_per_node=N -m ttrl_or ...`
+
+2. (Optional) Terminal A: start vLLM service for server mode
 
 ```bash
 chmod +x scripts/*.sh
 scripts/start_vllm_server.sh
 ```
+
 Important: for `--grpo-vllm-mode server`, do NOT start plain `vllm.entrypoints.openai.api_server` directly. Use `trl vllm-serve` (our script does this by default), otherwise TRL can fail on `init_communicator` with 404.
 
-3. Terminal B: run TTRL-OR + TRL
+3. Terminal B: run training
 
 ```bash
 scripts/run.sh
@@ -300,6 +303,7 @@ pytest -q
 - `MockPolicyBackend` intentionally does not train.
 - `TRLPolicyBackend` creates temporary LoRA adapters per task instance and drops them at episode end.
 - If `trl/peft/datasets` are missing, `--backend trl` will raise a clear install error.
+
 
 
 

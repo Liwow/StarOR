@@ -5,7 +5,10 @@ set -euo pipefail
 # Edit Here: TTRL-OR Common Parameters
 # =====================================
 CUDA_VISIBLE_DEVICES="0"
-# 2卡建议: CUDA_VISIBLE_DEVICES="0,1" 且 VLLM_MODE="colocate" + VLLM_TENSOR_PARALLEL_SIZE=2
+# Set 1 for single-card, 2/4 for multi-card (must be <= visible GPU count)
+NPROC_PER_NODE=1
+MASTER_PORT=29500
+
 BACKEND="trl"
 MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
 
@@ -51,12 +54,36 @@ TRUST_REMOTE_CODE=false
 export CUDA_VISIBLE_DEVICES
 mkdir -p "$(dirname "${OUT_JSON}")" "${LOG_DIR}"
 
+visible_gpu_count() {
+  local ids="${1// /}"
+  if [[ -z "$ids" ]]; then
+    echo 0
+    return
+  fi
+  awk -F',' '{print NF}' <<< "$ids"
+}
+
+VISIBLE_GPU_COUNT="$(visible_gpu_count "${CUDA_VISIBLE_DEVICES}")"
+if (( NPROC_PER_NODE < 1 )); then
+  echo "[ERROR] NPROC_PER_NODE must be >= 1"
+  exit 1
+fi
+if (( NPROC_PER_NODE > VISIBLE_GPU_COUNT )); then
+  echo "[ERROR] NPROC_PER_NODE=${NPROC_PER_NODE} > visible GPUs=${VISIBLE_GPU_COUNT} (CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES})"
+  exit 1
+fi
+
+if (( NPROC_PER_NODE == 1 && VLLM_TENSOR_PARALLEL_SIZE > 1 )); then
+  echo "[WARN] NPROC_PER_NODE=1 but VLLM_TENSOR_PARALLEL_SIZE=${VLLM_TENSOR_PARALLEL_SIZE}."
+  echo "[WARN] Runtime may auto-fallback TP to 1."
+fi
+
 MODEL_ARG=(--model-name "${MODEL_NAME_OR_PATH}")
 if [[ -d "${MODEL_NAME_OR_PATH}" ]]; then
   MODEL_ARG=(--model-path "${MODEL_NAME_OR_PATH}")
 fi
 
-CMD=(python -m ttrl_or
+BASE_CMD=(-m ttrl_or
   --backend "${BACKEND}"
   "${MODEL_ARG[@]}"
   --seed "${SEED}"
@@ -84,23 +111,30 @@ CMD=(python -m ttrl_or
 )
 
 if [[ "${MCTS_STOP_ON_REWARD_ONE}" == "true" ]]; then
-  CMD+=(--mcts-stop-on-reward-one)
+  BASE_CMD+=(--mcts-stop-on-reward-one)
 fi
 
 if [[ "${ENABLE_R3_REWARD}" != "true" ]]; then
-  CMD+=(--disable-r3-reward)
+  BASE_CMD+=(--disable-r3-reward)
 fi
 
 if [[ "${USE_VLLM}" == "true" ]]; then
-  CMD+=(--grpo-use-vllm)
+  BASE_CMD+=(--grpo-use-vllm)
 fi
 
 if [[ "${TRUST_REMOTE_CODE}" == "true" ]]; then
-  CMD+=(--trust-remote-code)
+  BASE_CMD+=(--trust-remote-code)
+fi
+
+if (( NPROC_PER_NODE > 1 )); then
+  CMD=(torchrun --standalone --nproc_per_node "${NPROC_PER_NODE}" --master_port "${MASTER_PORT}" "${BASE_CMD[@]}")
+else
+  CMD=(python "${BASE_CMD[@]}")
 fi
 
 echo "[TTRL-OR] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
-echo "[TTRL-OR] BACKEND=${BACKEND} MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH}"
+echo "[TTRL-OR] NPROC_PER_NODE=${NPROC_PER_NODE} BACKEND=${BACKEND}"
+echo "[TTRL-OR] MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH}"
 echo "[TTRL-OR] DATASET_JSONL=${DATASET_JSONL} LIMIT=${DATASET_LIMIT}"
 
 echo "[TTRL-OR] Running command:"

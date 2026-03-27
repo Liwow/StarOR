@@ -1,3 +1,14 @@
+# schema + skill
+# set + parameter + var
+# obj + con
+# model2code
+
+prompt_schema = """
+"""
+
+prompt_skill = """
+"""
+
 prompt_set = '''
 !!! MANDATORY FORMAT RULES !!!
 1. MUST contain ### Sets Definition: header + ## Set: subheader
@@ -33,7 +44,7 @@ prompt_parameters = '''
 - Parameter names correspond to set elements (e.g., set {a,c} → fat_a, fat_c; same prefixes)
 - Descriptions match problem semantics (use exact names, e.g., "lemon mix" not "mix")
 - No missing/redundant parameters (only those affecting objectives/constraints)
-- Validation before output: ① Indexes exist in set? ② Values/units/data types complete? ③ Names consistent? ④ No missing/redundant?
+- Validation before output: 1. Indexes exist in set? 2. Values/units/data types complete? 3. Names consistent? 4. No missing/redundant?
 
 ### Correct Example:
 problem: An accounting firm uses full-time (f: 8h/shift, $300/shift) and part-time (p: 4h/shift, $100/shift) workers; needs 450h labor, $15000 budget.
