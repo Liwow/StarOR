@@ -4,5 +4,4 @@ __pycache__/
 .venv/
 .data
 logs/
-scripts/
 outputs/
