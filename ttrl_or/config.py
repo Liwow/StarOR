@@ -17,7 +17,7 @@ class RewardConfig:
     enable_r3_reward: bool = True
     global_consensus_min_pool: int = 3
     global_consensus_rel_tol: float = 0.005
-    code_executor_mode: str = "sandbox"
+    code_executor_mode: str = "sandbox" #sandbox or subprocess
 
 
 @dataclass(slots=True)
@@ -32,7 +32,7 @@ class GRPOConfig:
     max_completion_length: int = 2048
 
     use_vllm: bool = False
-    vllm_mode: str = "colocate"
+    vllm_mode: str = "server"
     vllm_gpu_memory_utilization: float = 0.85
     vllm_tensor_parallel_size: int = 1
     vllm_max_model_len: int = 16384
