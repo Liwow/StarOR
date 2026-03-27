@@ -1,9 +1,9 @@
 ﻿from __future__ import annotations
 
 import gc
-import os
 import inspect
 import math
+import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,11 +19,11 @@ from ttrl_or.types import Generation, OptimizationTask, Stage, TrainingSample
 @dataclass(slots=True)
 class TRLPolicyBackend(PolicyBackend):
     """
-    Real training backend using Hugging Face + TRL GRPOTrainer.
+    Training backend using Hugging Face + TRL GRPOTrainer.
 
-    Notes:
-    - Requires optional deps: trl, peft, datasets, transformers.
-    - Uses temporary LoRA adapters for each task episode.
+    Key behavior:
+    - Optional base-model reuse across task episodes.
+    - Optional LoRA reset at episode start (without reloading base model).
     """
 
     model_name_or_path: str
@@ -35,6 +35,8 @@ class TRLPolicyBackend(PolicyBackend):
     lora_r: int = 8
     lora_alpha: int = 16
     lora_dropout: float = 0.05
+    reuse_base_model_across_tasks: bool = True
+    reset_lora_on_begin_episode: bool = True
     lora_target_modules: tuple[str, ...] = (
         "q_proj",
         "k_proj",
@@ -55,17 +57,22 @@ class TRLPolicyBackend(PolicyBackend):
         self._episode_key = task.task_id
         self._grpo_call_index = 0
         self._warned_vllm_unsupported = False
-        self._load_fresh_episode_model()
+
+        if self._model is None or self._tokenizer is None:
+            self._load_fresh_episode_model()
+        elif self.reset_lora_on_begin_episode:
+            self._reset_lora_state()
+
+        if self._model is not None:
+            self._model.train()
 
     def end_episode(self) -> None:
         self._episode_key = ""
         self._grpo_call_index = 0
         self._warned_vllm_unsupported = False
-        self._model = None
-        self._tokenizer = None
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+
+        if not self.reuse_base_model_across_tasks:
+            self._unload_model()
 
     def generate(self, stage: Stage, prompt: str, n: int) -> list[Generation]:
         if self._model is None or self._tokenizer is None:
@@ -109,7 +116,6 @@ class TRLPolicyBackend(PolicyBackend):
             )
         return generations
 
-
     def grpo_rollout_group(
         self,
         stage: Stage,
@@ -135,18 +141,19 @@ class TRLPolicyBackend(PolicyBackend):
 
         train_dataset = datasets.Dataset.from_list([{"prompt": prompt}])
         captured: list[Generation] = []
-        cursor = 0
 
         def reward_func(prompts, completions, **kwargs):
-            nonlocal cursor
             rewards: list[float] = []
             for prompt_text, completion_text in zip(prompts, completions, strict=False):
                 p = _normalize_text(prompt_text)
                 c = _normalize_text(completion_text)
 
+                ridx = len(captured)
+                if ridx >= k:
+                    ridx = ridx % k
+                reward_total = float(reward_callback(p, c, ridx))
+
                 if len(captured) < k:
-                    ridx = len(captured)
-                    reward_total = float(reward_callback(p, c, ridx))
                     prior = 1.0 / float(max(1, k))
                     captured.append(
                         Generation(
@@ -159,26 +166,18 @@ class TRLPolicyBackend(PolicyBackend):
                             },
                         )
                     )
-                else:
-                    ridx = cursor % k
-                    reward_total = float(captured[ridx].metadata.get("reward_total", 0.0))
-
                 rewards.append(reward_total)
-                cursor += 1
             return rewards
 
         output_dir = self._stage_output_dir(stage)
-        trl_args = self._build_trl_grpo_args(
-            config,
-            output_dir,
-            num_generations=k
-        )
+        trl_args = self._build_trl_grpo_args(config, output_dir, num_generations=k)
 
         self._grpo_call_index += 1
         call_index = int(self._grpo_call_index)
         rank = _env_int("RANK", 0)
         world_size = max(1, _env_int("WORLD_SIZE", 1))
         prompt_tokens = int(self._tokenizer(prompt, return_tensors="pt")["input_ids"].shape[1])
+
         if rank == 0:
             print(
                 f"[GRPO] start task={self._episode_key} call={call_index} "
@@ -199,37 +198,14 @@ class TRLPolicyBackend(PolicyBackend):
         elif "tokenizer" in trainer_sig.parameters:
             trainer_kwargs["tokenizer"] = self._tokenizer
 
-        fallback_disable_vllm = False
-        try:
-            trainer = trl.GRPOTrainer(**trainer_kwargs)
-            train_result = trainer.train()
-        except Exception as exc:
-            should_fallback = (
-                bool(config.use_vllm)
-                and bool(config.vllm_fallback_disable_on_error)
-                and _looks_like_vllm_comm_error(exc)
-            )
-            if not should_fallback:
-                raise
-
-            fallback_disable_vllm = True
-            if rank == 0:
-                print(
-                    "[GRPO][WARN] vLLM communication failed; fallback to use_vllm=False for this rollout. "
-                    f"reason={type(exc).__name__}: {exc}"
-                )
-
-            captured.clear()
-            cursor = 0
-            trl_args = self._build_trl_grpo_args(
-                config,
-                output_dir,
-                num_generations=k,
-                force_use_vllm=False,
-            )
-            trainer_kwargs["args"] = trl_args
-            trainer = trl.GRPOTrainer(**trainer_kwargs)
-            train_result = trainer.train()
+        train_result, used_fallback = self._train_with_optional_vllm_fallback(
+            trainer_kwargs=trainer_kwargs,
+            config=config,
+            stage=stage,
+            output_dir=output_dir,
+            num_generations=k,
+            on_fallback_reset=captured.clear,
+        )
 
         metrics = dict(getattr(train_result, "metrics", {}) or {})
         if rank == 0:
@@ -240,7 +216,6 @@ class TRLPolicyBackend(PolicyBackend):
                 f"train_runtime={metrics.get('train_runtime', 'n/a')}"
             )
 
-
         report: dict[str, Any] = {
             "updated": True,
             "stage": stage.value,
@@ -248,13 +223,13 @@ class TRLPolicyBackend(PolicyBackend):
             "num_groups": 1,
             "num_samples": len(captured),
             "num_generations": k,
-            "generation_batch_size": int(trl_args.generation_batch_size),
-            "max_steps": int(getattr(trl_args, "max_steps", 1)),
+            "generation_batch_size": int(trainer_kwargs["args"].generation_batch_size),
+            "max_steps": int(getattr(trainer_kwargs["args"], "max_steps", 1)),
             "group_mode": "internal_rollout_strict",
             "grpo_call_index": call_index,
             "rank": rank,
             "world_size": world_size,
-            "fallback_disable_vllm": fallback_disable_vllm,
+            "fallback_disable_vllm": used_fallback,
         }
         if "train_loss" in metrics:
             report["train_loss"] = float(metrics["train_loss"])
@@ -264,6 +239,7 @@ class TRLPolicyBackend(PolicyBackend):
             report["train_steps_per_second"] = float(metrics["train_steps_per_second"])
 
         return captured, report
+
     def grpo_update(self, samples: list[TrainingSample], config: GRPOConfig, stage: Stage) -> dict[str, Any]:
         if not samples:
             return {"updated": False, "stage": stage.value, "num_samples": 0, "backend": "trl"}
@@ -274,18 +250,6 @@ class TRLPolicyBackend(PolicyBackend):
         trl = _import_trl()
         datasets = _import_datasets()
 
-        # Strict online mode: one MCTS selected-node group per GRPO update.
-        group_ids = {str(s.group_id or "") for s in samples}
-        if len(group_ids) != 1:
-            return {
-                "updated": False,
-                "stage": stage.value,
-                "num_samples": len(samples),
-                "backend": "trl",
-                "reason": "expect_single_group_per_update",
-                "group_ids": sorted(group_ids),
-            }
-
         prompts = {_normalize_text(s.prompt) for s in samples}
         if len(prompts) != 1:
             return {
@@ -293,46 +257,37 @@ class TRLPolicyBackend(PolicyBackend):
                 "stage": stage.value,
                 "num_samples": len(samples),
                 "backend": "trl",
-                "reason": "expect_single_prompt_per_group",
+                "reason": "expect_single_prompt_for_manual_grpo_update",
                 "num_prompts": len(prompts),
             }
 
-        group_id = next(iter(group_ids))
-        prompt = next(iter(prompts))
-
         ordered = sorted(samples, key=lambda s: int((s.metadata or {}).get("rollout_index", 0)))
         rewards = [float(s.reward) for s in ordered]
-
         if len(rewards) < 2:
             return {
                 "updated": False,
                 "stage": stage.value,
                 "num_samples": len(samples),
                 "backend": "trl",
-                "reason": "grpo_requires_at_least_2_group_rewards",
-                "available_group_size": len(rewards),
-                "group_id": group_id,
+                "reason": "grpo_requires_at_least_2_rewards",
             }
 
+        prompt = next(iter(prompts))
         train_dataset = datasets.Dataset.from_list([{"prompt": prompt}])
-        num_generations_used = int(len(rewards))
 
         cursor = 0
 
         def reward_func(prompts_batch, completions, **kwargs):
             nonlocal cursor
             out: list[float] = []
-            for prompt_text in prompts_batch:
-                p = _normalize_text(prompt_text)
-                if p != prompt:
-                    out.append(sum(rewards) / len(rewards))
-                    continue
+            for _ in zip(prompts_batch, completions, strict=False):
                 idx = cursor % len(rewards)
                 out.append(float(rewards[idx]))
                 cursor += 1
             return out
 
         output_dir = self._stage_output_dir(stage)
+        num_generations_used = int(len(rewards))
         trl_args = self._build_trl_grpo_args(config, output_dir, num_generations=num_generations_used)
 
         trainer_kwargs = {
@@ -347,48 +302,24 @@ class TRLPolicyBackend(PolicyBackend):
         elif "tokenizer" in trainer_sig.parameters:
             trainer_kwargs["tokenizer"] = self._tokenizer
 
-        fallback_disable_vllm = False
-        try:
-            trainer = trl.GRPOTrainer(**trainer_kwargs)
-            train_result = trainer.train()
-        except Exception as exc:
-            should_fallback = (
-                bool(config.use_vllm)
-                and bool(config.vllm_fallback_disable_on_error)
-                and _looks_like_vllm_comm_error(exc)
-            )
-            if not should_fallback:
-                raise
-
-            fallback_disable_vllm = True
-            if rank == 0:
-                print(
-                    "[GRPO][WARN] vLLM communication failed; fallback to use_vllm=False for this rollout. "
-                    f"reason={type(exc).__name__}: {exc}"
-                )
-
-            captured.clear()
-            cursor = 0
-            trl_args = self._build_trl_grpo_args(
-                config,
-                output_dir,
-                num_generations=k,
-                force_use_vllm=False,
-            )
-            trainer_kwargs["args"] = trl_args
-            trainer = trl.GRPOTrainer(**trainer_kwargs)
-            train_result = trainer.train()
+        train_result, used_fallback = self._train_with_optional_vllm_fallback(
+            trainer_kwargs=trainer_kwargs,
+            config=config,
+            stage=stage,
+            output_dir=output_dir,
+            num_generations=num_generations_used,
+            on_fallback_reset=None,
+        )
 
         metrics = dict(getattr(train_result, "metrics", {}) or {})
-
         report: dict[str, Any] = {
             "updated": True,
             "stage": stage.value,
             "num_samples": len(samples),
             "backend": "trl",
-            "group_id": group_id,
-            "num_generations": int(num_generations_used),
-            "group_mode": "strict_single_group",
+            "num_generations": num_generations_used,
+            "fallback_disable_vllm": used_fallback,
+            "group_mode": "manual_reward_binding",
         }
         if "train_loss" in metrics:
             report["train_loss"] = float(metrics["train_loss"])
@@ -459,6 +390,49 @@ class TRLPolicyBackend(PolicyBackend):
             fallback.append(case)
         return fallback
 
+    def _train_with_optional_vllm_fallback(
+        self,
+        trainer_kwargs: dict[str, Any],
+        config: GRPOConfig,
+        stage: Stage,
+        output_dir: str,
+        num_generations: int,
+        on_fallback_reset,
+    ) -> tuple[Any, bool]:
+        trl = _import_trl()
+        rank = _env_int("RANK", 0)
+
+        try:
+            trainer = trl.GRPOTrainer(**trainer_kwargs)
+            return trainer.train(), False
+        except Exception as exc:
+            should_fallback = (
+                bool(config.use_vllm)
+                and bool(config.vllm_fallback_disable_on_error)
+                and _looks_like_vllm_comm_error(exc)
+            )
+            if not should_fallback:
+                raise
+
+            if rank == 0:
+                print(
+                    "[GRPO][WARN] vLLM communication failed; fallback to use_vllm=False for this update. "
+                    f"stage={stage.value} reason={type(exc).__name__}: {exc}"
+                )
+
+            if callable(on_fallback_reset):
+                on_fallback_reset()
+
+            trl_args = self._build_trl_grpo_args(
+                config,
+                output_dir,
+                num_generations=num_generations,
+                force_use_vllm=False,
+            )
+            trainer_kwargs["args"] = trl_args
+            trainer = trl.GRPOTrainer(**trainer_kwargs)
+            return trainer.train(), True
+
     def _build_trl_grpo_args(
         self,
         config: GRPOConfig,
@@ -476,6 +450,12 @@ class TRLPolicyBackend(PolicyBackend):
         )
 
         effective_use_vllm = bool(config.use_vllm) if force_use_vllm is None else bool(force_use_vllm)
+        effective_vllm_tp = _effective_vllm_tensor_parallel_size(
+            requested_tp=int(config.vllm_tensor_parallel_size),
+            use_vllm=effective_use_vllm,
+            rank=_env_int("RANK", 0),
+            world_size=max(1, _env_int("WORLD_SIZE", 1)),
+        )
 
         kwargs = {
             "output_dir": output_dir,
@@ -491,7 +471,7 @@ class TRLPolicyBackend(PolicyBackend):
             "use_vllm": effective_use_vllm,
             "vllm_mode": config.vllm_mode,
             "vllm_gpu_memory_utilization": config.vllm_gpu_memory_utilization,
-            "vllm_tensor_parallel_size": config.vllm_tensor_parallel_size,
+            "vllm_tensor_parallel_size": effective_vllm_tp,
             "vllm_max_model_len": config.vllm_max_model_len,
             "report_to": [],
             "save_strategy": "no",
@@ -506,7 +486,6 @@ class TRLPolicyBackend(PolicyBackend):
                 print(f"[GRPO][WARN] TRL GRPOConfig does not support {missing}; vLLM path may be inactive.")
                 self._warned_vllm_unsupported = True
         return trl.GRPOConfig(**filtered_kwargs)
-
     @staticmethod
     def _resolve_generation_batch_size(
         configured_generation_batch_size: int,
@@ -539,7 +518,8 @@ class TRLPolicyBackend(PolicyBackend):
 
         base_model = transformers.AutoModelForCausalLM.from_pretrained(self.model_name_or_path, **model_kwargs)
         tokenizer = transformers.AutoTokenizer.from_pretrained(
-            self.model_name_or_path, trust_remote_code=self.trust_remote_code
+            self.model_name_or_path,
+            trust_remote_code=self.trust_remote_code,
         )
 
         if tokenizer.pad_token is None:
@@ -559,6 +539,41 @@ class TRLPolicyBackend(PolicyBackend):
 
         self._model = model
         self._tokenizer = tokenizer
+
+    def _reset_lora_state(self) -> None:
+        if self._model is None:
+            return
+
+        reset_a = 0
+        reset_b = 0
+
+        for name, param in self._model.named_parameters():
+            if not param.requires_grad:
+                continue
+            lname = name.lower()
+            if "lora_a" in lname:
+                with torch.no_grad():
+                    if param.ndim >= 2:
+                        torch.nn.init.kaiming_uniform_(param, a=math.sqrt(5))
+                    else:
+                        fan_in = max(1, int(param.numel()))
+                        bound = 1.0 / math.sqrt(fan_in)
+                        torch.nn.init.uniform_(param, -bound, bound)
+                reset_a += 1
+            elif "lora_b" in lname:
+                with torch.no_grad():
+                    torch.nn.init.zeros_(param)
+                reset_b += 1
+
+        if reset_a == 0 and reset_b == 0:
+            print("[GRPO][WARN] reset_lora_on_begin_episode=True, but no LoRA trainable params were reset.")
+
+    def _unload_model(self) -> None:
+        self._model = None
+        self._tokenizer = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def _resolve_torch_dtype(self):
         if self.torch_dtype == "auto":
@@ -641,15 +656,12 @@ def _normalize_text(value: Any) -> str:
         chunks: list[str] = []
         for item in value:
             if isinstance(item, dict):
-                content = item.get("content", "")
-                chunks.append(str(content))
+                chunks.append(str(item.get("content", "")))
             else:
                 chunks.append(str(item))
         return "\n".join(chunks).strip()
 
     return str(value).strip()
-
-
 
 
 def _env_int(name: str, default: int) -> int:
@@ -660,12 +672,42 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+
+def _effective_vllm_tensor_parallel_size(
+    requested_tp: int,
+    use_vllm: bool,
+    rank: int,
+    world_size: int,
+) -> int:
+    if not use_vllm:
+        return max(1, int(requested_tp))
+
+    tp = max(1, int(requested_tp))
+    ws = max(1, int(world_size))
+
+    if ws % tp == 0:
+        return tp
+
+    # Choose the largest valid divisor <= requested tp; fallback to 1.
+    valid = [d for d in range(1, ws + 1) if ws % d == 0 and d <= tp]
+    fallback = max(valid) if valid else 1
+
+    if rank == 0:
+        print(
+            "[GRPO][WARN] Invalid vLLM tensor_parallel_size for current WORLD_SIZE; "
+            f"requested_tp={tp}, world_size={ws}, using_tp={fallback}. "
+            "If you need tp>1, launch with torchrun so WORLD_SIZE matches."
+        )
+
+    return fallback
 def _import_transformers():
     try:
         import transformers  # type: ignore
 
         return transformers
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
             "TRL backend requires a working `transformers` install. "
             "Please install or repair it with: pip install transformers"
@@ -678,9 +720,7 @@ def _import_trl():
 
         return trl
     except ImportError as exc:
-        raise RuntimeError(
-            "TRL backend requires `trl`. Install with: pip install trl datasets peft"
-        ) from exc
+        raise RuntimeError("TRL backend requires `trl`. Install with: pip install trl datasets peft") from exc
 
 
 def _import_peft():
@@ -700,6 +740,7 @@ def _import_datasets():
     except ImportError as exc:
         raise RuntimeError("TRL backend requires `datasets`. Install with: pip install datasets") from exc
 
+
 def _looks_like_vllm_comm_error(exc: Exception) -> bool:
     text = f"{type(exc).__name__}: {exc}".lower()
     keys = (
@@ -709,5 +750,8 @@ def _looks_like_vllm_comm_error(exc: Exception) -> bool:
         "socketpollconnect",
         "remote process exited",
         "vllm_client",
+        "tensor parallel size",
+        "must divide world size",
     )
     return any(k in text for k in keys)
+

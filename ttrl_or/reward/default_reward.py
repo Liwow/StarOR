@@ -25,7 +25,10 @@ class TTRLRewardCalculator(RewardCalculator):
     _global_signature_pool: list[str] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
-        self.executor = PythonCodeExecutor(timeout_sec=self.config.code_timeout_sec)
+        self.executor = PythonCodeExecutor(
+            timeout_sec=self.config.code_timeout_sec,
+            mode=self.config.code_executor_mode,
+        )
 
     def provisional_reward(self, trajectory: Trajectory, explored: list[Trajectory]) -> RewardBreakdown:
         execution, exec_cache_hit = self._execute(trajectory)
@@ -291,3 +294,5 @@ class TTRLRewardCalculator(RewardCalculator):
 
         ref = sum(best_members) / len(best_members)
         return ref, len(best_members)
+
+

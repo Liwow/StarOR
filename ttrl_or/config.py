@@ -17,6 +17,7 @@ class RewardConfig:
     enable_r3_reward: bool = True
     global_consensus_min_pool: int = 3
     global_consensus_rel_tol: float = 0.005
+    code_executor_mode: str = "sandbox"
 
 
 @dataclass(slots=True)
@@ -64,6 +65,8 @@ class BackendConfig:
     lora_r: int = 8
     lora_alpha: int = 16
     lora_dropout: float = 0.05
+    reuse_base_model_across_tasks: bool = True
+    reset_lora_on_begin_episode: bool = True
 
 
 @dataclass(slots=True)

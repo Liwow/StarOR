@@ -74,6 +74,8 @@ def _build_backend(config: PipelineConfig):
         lora_r=backend_cfg.lora_r,
         lora_alpha=backend_cfg.lora_alpha,
         lora_dropout=backend_cfg.lora_dropout,
+        reuse_base_model_across_tasks=backend_cfg.reuse_base_model_across_tasks,
+        reset_lora_on_begin_episode=backend_cfg.reset_lora_on_begin_episode,
     )
 
 
@@ -117,6 +119,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lora-r", type=int, default=defaults.backend.lora_r)
     parser.add_argument("--lora-alpha", type=int, default=defaults.backend.lora_alpha)
     parser.add_argument("--lora-dropout", type=float, default=defaults.backend.lora_dropout)
+    parser.add_argument(
+        "--no-reuse-base-model-across-tasks",
+        action="store_false",
+        dest="reuse_base_model_across_tasks",
+    )
+    parser.add_argument(
+        "--no-reset-lora-on-begin-episode",
+        action="store_false",
+        dest="reset_lora_on_begin_episode",
+    )
+    parser.set_defaults(
+        reuse_base_model_across_tasks=defaults.backend.reuse_base_model_across_tasks,
+        reset_lora_on_begin_episode=defaults.backend.reset_lora_on_begin_episode,
+    )
 
     parser.add_argument("--max-iterations", type=int, default=defaults.mcts.max_iterations)
     parser.add_argument("--c-puct", type=float, default=defaults.mcts.c_puct)
@@ -124,6 +140,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--robustness-cases", type=int, default=defaults.reward.robustness_cases)
     parser.add_argument("--code-timeout-sec", type=int, default=defaults.reward.code_timeout_sec)
+    parser.add_argument(
+        "--code-executor-mode",
+        type=str,
+        choices=["subprocess", "sandbox"],
+        default=defaults.reward.code_executor_mode,
+    )
     parser.add_argument("--global-consensus-min-pool", type=int, default=defaults.reward.global_consensus_min_pool)
     parser.add_argument("--global-consensus-rel-tol", type=float, default=defaults.reward.global_consensus_rel_tol)
 
@@ -175,6 +197,7 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
 
     config.reward.robustness_cases = args.robustness_cases
     config.reward.code_timeout_sec = args.code_timeout_sec
+    config.reward.code_executor_mode = args.code_executor_mode
     config.reward.global_consensus_min_pool = args.global_consensus_min_pool
     config.reward.global_consensus_rel_tol = args.global_consensus_rel_tol
     config.reward.enable_r3_reward = args.enable_r3_reward
@@ -216,6 +239,8 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.backend.lora_r = args.lora_r
     config.backend.lora_alpha = args.lora_alpha
     config.backend.lora_dropout = args.lora_dropout
+    config.backend.reuse_base_model_across_tasks = args.reuse_base_model_across_tasks
+    config.backend.reset_lora_on_begin_episode = args.reset_lora_on_begin_episode
 
     return config
 
