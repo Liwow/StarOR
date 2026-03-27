@@ -1,11 +1,19 @@
-from __future__ import annotations
-from pickle import OBJ
+﻿from __future__ import annotations
 
 from ttrl_or.types import Stage
-from notice_prompts import SCHEMA_SKILL_NOTICE, SET_PARA_VAR_NOTICE, OBJ_CON_NOTICE, CODE_NOTICE
 
-DEFAULT_TEMPLATES: dict[Stage, str] = {
-    Stage.SCHEMA: f"""
+from .notice_prompts import CODE_NOTICE, OBJ_CON_NOTICE, SCHEMA_SKILL_NOTICE, SET_PARA_VAR_NOTICE
+
+
+def _append_notice(base: str, notice: str) -> str:
+    base_text = (base or "").strip()
+    notice_text = (notice or "").strip()
+    if not notice_text:
+        return base_text
+    return f"{base_text}\n\n{notice_text}".strip()
+
+
+SCHEMA_TEMPLATE = """
 You are the first stage of a 4-stage OR modeling pipeline.
 
 Task:
@@ -20,9 +28,9 @@ Do NOT define full sets, parameters, or variables.
 Do NOT write the objective function.
 Do NOT write formal constraints.
 Do NOT generate code.
-{SCHEMA_SKILL_NOTICE}
-""".strip(),
-    Stage.SET_PARAM_VAR: f"""
+""".strip()
+
+SET_PARAM_VAR_TEMPLATE = """
 You are continuing a 4-stage OR modeling pipeline.
 
 Task:
@@ -55,9 +63,9 @@ Your job in this stage is to convert the schema from previous stages into:
 Do NOT write the objective function.
 Do NOT write the constraints.
 Do NOT generate code.
-{SET_PARA_VAR_NOTICE}
-""".strip(),
-    Stage.OBJ_CONS: f"""
+""".strip()
+
+OBJ_CONS_TEMPLATE = """
 You are continuing a 4-stage OR modeling pipeline.
 
 Task:
@@ -86,10 +94,10 @@ STRICTLY based on the sets, parameters, and variables defined in previous stages
 
 Do NOT redefine sets/parameters/variables unless absolutely necessary for consistency.
 Do NOT generate code.
-{OBJ_CON_NOTICE}
-""".strip(),
-    Stage.CODE: f"""
-you are continuing a 4-stage OR modeling pipeline.
+""".strip()
+
+CODE_TEMPLATE = """
+You are continuing a 4-stage OR modeling pipeline.
 
 Task:
 {task_description}
@@ -104,12 +112,17 @@ Your job is to translate the finalized optimization model into executable Gurobi
 You must faithfully translate the existing model.
 You are NOT allowed to correct, reinterpret, simplify, or redesign the model.
 Even if the model seems imperfect, you must still translate it as given.
-{CODE_NOTICE}
-""".strip(),
+""".strip()
+
+DEFAULT_TEMPLATES: dict[Stage, str] = {
+    Stage.SCHEMA: _append_notice(SCHEMA_TEMPLATE, SCHEMA_SKILL_NOTICE),
+    Stage.SET_PARAM_VAR: _append_notice(SET_PARAM_VAR_TEMPLATE, SET_PARA_VAR_NOTICE),
+    Stage.OBJ_CONS: _append_notice(OBJ_CONS_TEMPLATE, OBJ_CON_NOTICE),
+    Stage.CODE: _append_notice(CODE_TEMPLATE, CODE_NOTICE),
 }
 
-DEFAULT_ROLLOUT_TEMPLATES: dict[Stage, str] = {
-    Stage.SCHEMA: f"""
+
+SCHEMA_ROLLOUT_TEMPLATE = """
 ### ROLLOUT_CONTINUATION
 After completing the current-stage output above, continue and finish downstream stages in order: {remaining_stages}.
 Do not rewrite previous-stage content.
@@ -125,10 +138,9 @@ Use exact tags below for machine parsing:
 ...python code...
 </Gurobi_code>
 </ROLLOUT_STAGE_CODE>
+""".strip()
 
-{CODE_NOTICE}
-""".strip(),
-    Stage.SET_PARAM_VAR: f"""
+SET_PARAM_VAR_ROLLOUT_TEMPLATE = """
 ### ROLLOUT_CONTINUATION
 After completing the current-stage output above, continue and finish downstream stages in order: {remaining_stages}.
 Use exact tags below for machine parsing:
@@ -140,10 +152,9 @@ Use exact tags below for machine parsing:
 ...python code...
 </Gurobi_code>
 </ROLLOUT_STAGE_CODE>
+""".strip()
 
-{CODE_NOTICE}
-""".strip(),
-    Stage.OBJ_CONS: f"""
+OBJ_CONS_ROLLOUT_TEMPLATE = """
 ### ROLLOUT_CONTINUATION
 After completing the current-stage output above, continue and finish downstream stage: {remaining_stages}.
 Use exact tags below for machine parsing:
@@ -152,11 +163,11 @@ Use exact tags below for machine parsing:
 ...python code...
 </Gurobi_code>
 </ROLLOUT_STAGE_CODE>
+""".strip()
 
-{CODE_NOTICE}
-""".strip(),
+DEFAULT_ROLLOUT_TEMPLATES: dict[Stage, str] = {
+    Stage.SCHEMA: _append_notice(SCHEMA_ROLLOUT_TEMPLATE, CODE_NOTICE),
+    Stage.SET_PARAM_VAR: _append_notice(SET_PARAM_VAR_ROLLOUT_TEMPLATE, CODE_NOTICE),
+    Stage.OBJ_CONS: _append_notice(OBJ_CONS_ROLLOUT_TEMPLATE, CODE_NOTICE),
     Stage.CODE: "",
 }
-
-
-
