@@ -14,8 +14,7 @@ class MCTSConfig:
 class RewardConfig:
     code_timeout_sec: int = 30
     robustness_cases: int = 3
-    local_consensus_window: int = 32
-    enable_perturb_reward: bool = False
+    enable_r3_reward: bool = True
     global_consensus_min_pool: int = 3
     global_consensus_rel_tol: float = 0.005
 
@@ -23,14 +22,13 @@ class RewardConfig:
 @dataclass(slots=True)
 class GRPOConfig:
     learning_rate: float = 3e-5
-    clip_range: float = 0.2
     kl_coef: float = 0.0
     per_device_train_batch_size: int = 1
     gradient_accumulation_steps: int = 1
     num_generations: int = 3
     generation_batch_size: int = 0
-    max_prompt_length: int = 4096
-    max_completion_length: int = 512
+    max_prompt_length: int = 8192
+    max_completion_length: int = 2048
 
     use_vllm: bool = False
     vllm_mode: str = "server"
@@ -55,11 +53,11 @@ class DatasetConfig:
 @dataclass(slots=True)
 class BackendConfig:
     backend: str = "mock"
-    model_name_or_path: str = "Qwen/Qwen2.5-1.5B-Instruct"
+    model_name_or_path: str = ""
     seed: int = 7
     temperature: float = 0.8
     top_p: float = 0.95
-    max_new_tokens: int = 256
+    max_new_tokens: int = 2048
     torch_dtype: str = "auto"
     trust_remote_code: bool = False
     lora_r: int = 8

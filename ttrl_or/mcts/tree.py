@@ -52,6 +52,7 @@ class SearchRunResult:
     best_trajectory: Trajectory | None
     best_reward: float
     code_nodes: list[SearchNode]
+    iteration_logs: list[dict[str, Any]] = field(default_factory=list)
 
 
 class FourStageMCTS:
@@ -79,6 +80,7 @@ class FourStageMCTS:
     ) -> SearchRunResult:
         root = self.root()
         records: list[StageExpansionRecord] = []
+        iteration_logs: list[dict[str, Any]] = []
         best_trajectory: Trajectory | None = None
         best_reward = float("-inf")
 
@@ -106,7 +108,10 @@ class FourStageMCTS:
                 }
                 break
 
-            selected = self._select_leaf(leaves)
+            ranked_leaves = self._rank_leaves(leaves)
+            selected = ranked_leaves[0][0]
+            selected_score = float(ranked_leaves[0][1])
+
             next_stage = self._next_stage(selected.stage)
             if next_stage is None:
                 continue
@@ -151,11 +156,18 @@ class FourStageMCTS:
             if not group_rollouts:
                 continue
 
+            hit_reward_one = False
+            reward_one_payload: dict[str, Any] = {}
+            rollout_summaries: list[dict[str, Any]] = []
+            processed_group_rollouts: list[dict[str, Any]] = []
+
             for ridx, rollout in enumerate(group_rollouts):
                 child = rollout["child"]
                 completed = rollout["trajectory"]
                 reward_obj = rollout["reward_obj"]
                 reward_total = float(rollout["reward_total"])
+
+                processed_group_rollouts.append(rollout)
 
                 if ridx < len(generations):
                     child.prior = max(1e-6, float(generations[ridx].prior))
@@ -183,7 +195,7 @@ class FourStageMCTS:
                     "priors": {s.value: p for s, p in completed.priors.items()},
                 }
 
-                hit_reward_one = bool(self.config.stop_on_reward_one and reward_total >= 1.0)
+                current_hit_reward_one = bool(self.config.stop_on_reward_one and reward_total >= 1.0)
 
                 records.append(
                     StageExpansionRecord(
@@ -196,7 +208,7 @@ class FourStageMCTS:
                         trajectory=completed,
                         prior=child.prior,
                         was_expanded=True,
-                        hit_reward_one=hit_reward_one,
+                        hit_reward_one=current_hit_reward_one,
                         child_q_before=child_q_before,
                         child_visits_before=child_visits_before,
                         child_q_after=child.q_value,
@@ -214,12 +226,28 @@ class FourStageMCTS:
                     )
                 )
 
+                rollout_summaries.append(
+                    {
+                        "rollout_index": ridx,
+                        "node_id": child.node_id,
+                        "reward": {
+                            "r1": reward_obj.r1,
+                            "r2": reward_obj.r2,
+                            "r3": reward_obj.r3,
+                            "total": reward_obj.total,
+                        },
+                        "prior": child.prior,
+                        "completion_preview": child.text[:240],
+                    }
+                )
+
                 if reward_total > best_reward:
                     best_reward = reward_total
                     best_trajectory = completed
 
-                if hit_reward_one:
-                    stop_info = {
+                if current_hit_reward_one:
+                    hit_reward_one = True
+                    reward_one_payload = {
                         "reason": "reward_one",
                         "iteration": iter_idx,
                         "stage": next_stage.value,
@@ -227,14 +255,67 @@ class FourStageMCTS:
                         "trajectory_id": completed.trajectory_id,
                         "reward_total": reward_total,
                     }
-                    return SearchRunResult(
-                        root=root,
-                        records=records,
-                        stop_info=stop_info,
-                        best_trajectory=best_trajectory,
-                        best_reward=best_reward,
-                        code_nodes=self._collect_code_nodes(root),
-                    )
+                    break
+
+            if not processed_group_rollouts:
+                continue
+
+            best_rollout = max(processed_group_rollouts, key=lambda x: float(x.get("reward_total", float("-inf"))))
+            best_rollout_obj = best_rollout["reward_obj"]
+            best_rollout_child = best_rollout["child"]
+
+            iteration_logs.append(
+                {
+                    "iteration": iter_idx,
+                    "stage": next_stage.value,
+                    "selected_leaf": {
+                        "node_id": selected.node_id,
+                        "leaf_stage": selected.stage.value if selected.stage else "<ROOT>",
+                        "score": selected_score,
+                        "q": selected.q_value,
+                        "visits": selected.visits,
+                    },
+                    "leaf_candidates": [
+                        {
+                            "node_id": node.node_id,
+                            "leaf_stage": node.stage.value if node.stage else "<ROOT>",
+                            "score": float(score),
+                            "q": node.q_value,
+                            "visits": node.visits,
+                            "parent_id": node.parent.node_id if node.parent else "",
+                        }
+                        for node, score in ranked_leaves
+                    ],
+                    "group_id": group_id,
+                    "num_rollouts": len(rollout_summaries),
+                    "rollouts": rollout_summaries,
+                    "best_rollout": {
+                        "rollout_index": int(best_rollout.get("rollout_index", -1)),
+                        "node_id": best_rollout_child.node_id,
+                        "reward": {
+                            "r1": best_rollout_obj.r1,
+                            "r2": best_rollout_obj.r2,
+                            "r3": best_rollout_obj.r3,
+                            "total": best_rollout_obj.total,
+                        },
+                        "prior": best_rollout_child.prior,
+                        "completion": best_rollout_child.text,
+                    },
+                    "grpo_report": dict(grpo_report),
+                }
+            )
+
+            if hit_reward_one:
+                stop_info = reward_one_payload
+                return SearchRunResult(
+                    root=root,
+                    records=records,
+                    stop_info=stop_info,
+                    best_trajectory=best_trajectory,
+                    best_reward=best_reward,
+                    code_nodes=self._collect_code_nodes(root),
+                    iteration_logs=iteration_logs,
+                )
 
             if next_stage == Stage.CODE:
                 stop_info = {
@@ -254,6 +335,7 @@ class FourStageMCTS:
             best_trajectory=best_trajectory,
             best_reward=best_reward,
             code_nodes=self._collect_code_nodes(root),
+            iteration_logs=iteration_logs,
         )
 
     def _run_internal_grpo_rollout(
@@ -304,16 +386,15 @@ class FourStageMCTS:
 
         return partial
 
-    def _select_leaf(self, leaves: list[SearchNode]) -> SearchNode:
-        if len(leaves) == 1:
-            return leaves[0]
+    def _rank_leaves(self, leaves: list[SearchNode]) -> list[tuple[SearchNode, float]]:
+        ranked = [(node, self._leaf_score(node)) for node in leaves]
+        ranked.sort(key=lambda item: item[1], reverse=True)
+        return ranked
 
-        def _score(node: SearchNode) -> float:
-            if node.parent is None:
-                return node.q_value
-            return self.selector.score(node.parent, node)
-
-        return max(leaves, key=_score)
+    def _leaf_score(self, node: SearchNode) -> float:
+        if node.parent is None:
+            return float(node.q_value)
+        return float(self.selector.score(node.parent, node))
 
     @staticmethod
     def _backpropagate(node: SearchNode, reward: float) -> None:
@@ -386,7 +467,52 @@ class FourStageMCTS:
             ]
             return "\n".join(keep).strip() or cleaned
 
+        if stage == Stage.CODE:
+            return FourStageMCTS._sanitize_code_payload(cleaned)
+
         return cleaned
 
+    @staticmethod
+    def _sanitize_code_payload(text: str) -> str:
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return cleaned
 
+        lines = cleaned.splitlines()
 
+        in_block = False
+        block_lines: list[str] = []
+        blocks: list[str] = []
+        for line in lines:
+            if line.strip().startswith("```"):
+                if in_block:
+                    blocks.append("\n".join(block_lines).strip())
+                    block_lines = []
+                    in_block = False
+                else:
+                    in_block = True
+                continue
+            if in_block:
+                block_lines.append(line)
+
+        if in_block and block_lines:
+            blocks.append("\n".join(block_lines).strip())
+
+        if blocks:
+            cleaned = max(blocks, key=len)
+        else:
+            cleaned = "\n".join(ln for ln in lines if not ln.strip().startswith("```"))
+
+        code_lines = cleaned.splitlines()
+        start_idx = None
+        for idx, line in enumerate(code_lines):
+            stripped = line.strip()
+            if stripped.startswith(("import ", "from ", "def solve(", "@", "class ")):
+                start_idx = idx
+                break
+
+        if start_idx is not None:
+            code_lines = code_lines[start_idx:]
+
+        cleaned = "\n".join(code_lines).strip()
+        return cleaned

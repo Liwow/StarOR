@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from ttrl_or.types import Stage
 
@@ -52,10 +52,13 @@ Task:
 Previous stages:
 {history}
 
-Step 4 (CODE): output Python code only. 
+Step 4 (CODE): output only complete executable Python code.
 Rules:
+- first non-empty line must be Python code (import/from/def), never natural language
 - define function solve(instance: dict) -> dict
 - return at least {{"objective": float, "status": str}}
+- do not repeat instructions, do not add bullet lists
 - no markdown fences
 """.strip(),
 }
+

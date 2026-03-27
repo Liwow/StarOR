@@ -144,12 +144,13 @@ All launch scripts are under `scripts/` and default to single-node 4-GPU setup.
   - `DATASET_JSONL`, `DATASET_LIMIT`
   - `USE_VLLM`, `VLLM_MODE`
 
-2. Terminal A: start vLLM service
+2. Terminal A: start vLLM service (TRL server mode)
 
 ```bash
 chmod +x scripts/*.sh
 scripts/start_vllm_server.sh
 ```
+Important: for `--grpo-vllm-mode server`, do NOT start plain `vllm.entrypoints.openai.api_server` directly. Use `trl vllm-serve` (our script does this by default), otherwise TRL can fail on `init_communicator` with 404.
 
 3. Terminal B: run TTRL-OR + TRL
 
@@ -164,12 +165,12 @@ Set `USE_VLLM=false` in `scripts/run.sh`, then run the same script.
 Useful knobs:
 
 - MCTS: `--max-iterations`, `--c-puct`, `--mcts-stop-on-reward-one`
-- Reward: `--consensus-window`, `--global-consensus-min-pool`, `--global-consensus-rel-tol`, `--robustness-cases`, `--code-timeout-sec`, `--enable-perturb-reward`, `--disable-perturb-reward`
+- Reward: `--global-consensus-min-pool`, `--global-consensus-rel-tol`, `--robustness-cases`, `--code-timeout-sec`, `--enable-r3-reward`, `--disable-r3-reward`
   - `r3` perturbation now uses backend pre-extracted mapping (`focus_keys` + value map).
 - Dataset loader: `--dataset-start-index`, `--dataset-limit`, `--dataset-max-numeric-features`, `--dataset-key-param-top-k`
   - Mapping extractor plugin: `--mapping-extractor rule|llm`
   - LLM extractor knobs: `--mapping-llm-max-new-tokens`, `--mapping-llm-temperature`, `--mapping-llm-top-p`
-- GRPO: `--grpo-lr`, `--grpo-batch-size`, `--grpo-grad-accum`, `--grpo-num-generations`, `--grpo-generation-batch-size`, `--grpo-use-vllm`, `--grpo-vllm-mode`, `--grpo-vllm-gpu-memory-utilization`, `--grpo-vllm-tensor-parallel-size`, `--grpo-vllm-max-model-len`
+- GRPO: `--grpo-lr`, `--grpo-batch-size`, `--grpo-grad-accum`, `--grpo-num-generations`, `--grpo-generation-batch-size`, `--grpo-max-completion-len`, `--grpo-use-vllm`, `--grpo-vllm-mode`, `--grpo-vllm-gpu-memory-utilization`, `--grpo-vllm-tensor-parallel-size`, `--grpo-vllm-max-model-len`
 - Logging: `--log-dir` and `--no-save-logs`
 - Backend/model: `--backend`, `--model-name`, `--model-path`, `--seed`, `--torch-dtype`, `--trust-remote-code`
 - Generation: `--temperature`, `--top-p`, `--max-new-tokens`
@@ -197,10 +198,7 @@ All defaults are defined in `ttrl_or/config.py`.
 - `robustness_cases` (Key): number of perturbed tests for `r3`.
   - Larger => stronger robustness filter.
   - Increases execution cost.
-- `local_consensus_window` (Key): stage-local sliding window size for provisional `r1` consensus.
-  - `<= 0` means use all explored rollouts in current stage.
-  - Smaller window tracks recent behavior; larger window stabilizes vote.
-- `enable_perturb_reward` (Key): switch to enable/disable perturbation-based `r3`.
+- `enable_r3_reward` (Key): switch to enable/disable `r3` robustness testing.
   - `True`: run key-parameter perturbation tests for robustness reward.
   - `False`: skip perturbation tests and treat `r3` as passed (`1.0`).
 
@@ -208,16 +206,16 @@ All defaults are defined in `ttrl_or/config.py`.
 
 - `learning_rate` (Key): optimizer learning rate for GRPO update.
   - Primary stability knob.
-- `clip_range`: policy ratio clip range.
-  - Larger can update faster but less stable.
 - `kl_coef`: KL penalty weight.
   - Higher keeps policy closer to reference behavior.
 - `per_device_train_batch_size` (Key): per-device batch size for GRPO.
 - `gradient_accumulation_steps` (Key): accumulation factor.
   - Effective batch is `batch_size * grad_accum`.
-- `num_generations` (Key): generations per selected-node rollout group. This directly controls how many stage children are expanded from one selected node.`r`n- `generation_batch_size` (Key): TRL generation batch size. `0` means auto, and runtime will round it up to a multiple of `num_generations` to avoid GRPOConfig divisibility errors.
+- `num_generations` (Key): generations per selected-node rollout group. This directly controls how many stage children are expanded from one selected node.
+- `generation_batch_size` (Key): TRL generation batch size. `0` means auto, and runtime will round it up to a multiple of `num_generations` to avoid GRPOConfig divisibility errors.
 - `max_prompt_length`: truncation limit for prompt tokens.
-- `max_completion_length`: truncation limit for completion tokens.
+- `max_completion_length`: truncation limit for completion tokens.
+
 - `use_vllm` (Key): whether TRL GRPO uses vLLM as generation backend.
   - `False`: default HF generation path.
   - `True`: pass vLLM options into TRL (effective only if your TRL version supports them).
@@ -259,7 +257,6 @@ All defaults are defined in `ttrl_or/config.py`.
 - `max_iterations`: `8` to `64`
 - `num_generations`: `2` to `6`
 - `c_puct`: `1.0` to `2.0`
-- `local_consensus_window`: `16` to `128`
 - `learning_rate`: `1e-5` to `1e-4`
 
 ## Logs and Artifacts
@@ -267,8 +264,8 @@ All defaults are defined in `ttrl_or/config.py`.
 By default each instance writes logs under `logs/<task_id>/`:
 
 - `run_summary.json`: task info, config, stage reports, final selection, best trajectory summary
+- `mcts_iterations.jsonl`: concise per-iteration logs (selected stage, all leaf PUCT scores, rollout rewards, best rollout full completion)
 - `stage_events.jsonl`: detailed per-stage/per-expansion events
-  - prior probability
   - rollout reward details (`r1/r2/r3/total`)
   - Q/visit before and after updates
   - GRPO report per selected-node group (and stage summary)
@@ -303,6 +300,9 @@ pytest -q
 - `MockPolicyBackend` intentionally does not train.
 - `TRLPolicyBackend` creates temporary LoRA adapters per task instance and drops them at episode end.
 - If `trl/peft/datasets` are missing, `--backend trl` will raise a clear install error.
+
+
+
 
 
 

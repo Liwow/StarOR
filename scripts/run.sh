@@ -16,19 +16,19 @@ OUT_JSON="outputs/run.json"
 # MCTS (global-leaf selection)
 MAX_ITERATIONS=16
 C_PUCT=1.4
-MCTS_STOP_ON_REWARD_ONE=false
+MCTS_STOP_ON_REWARD_ONE=true
 
 # Reward
-CONSENSUS_WINDOW=64
 GLOBAL_CONSENSUS_MIN_POOL=3
 GLOBAL_CONSENSUS_REL_TOL=0.005
 ROBUSTNESS_CASES=3
-ENABLE_PERTURB_REWARD=true
+ENABLE_R3_REWARD=false
 
 # GRPO (common)
 GRPO_LR="3e-5"
 GRPO_NUM_GENERATIONS=4
 GRPO_GENERATION_BATCH_SIZE=0  # 0 = auto align to num_generations
+GRPO_MAX_COMPLETION_LEN=2048
 
 # Generation (common)
 TEMPERATURE=1.0
@@ -37,7 +37,7 @@ MAX_NEW_TOKENS=2048
 
 # vLLM for TRL
 USE_VLLM=true
-VLLM_MODE="server"
+VLLM_MODE="server" # colocate
 VLLM_GPU_MEMORY_UTILIZATION=0.75
 VLLM_TENSOR_PARALLEL_SIZE=1
 VLLM_MAX_MODEL_LEN=16384
@@ -63,13 +63,13 @@ CMD=(python -m ttrl_or
   --dataset-limit "${DATASET_LIMIT}"
   --max-iterations "${MAX_ITERATIONS}"
   --c-puct "${C_PUCT}"
-  --consensus-window "${CONSENSUS_WINDOW}"
   --global-consensus-min-pool "${GLOBAL_CONSENSUS_MIN_POOL}"
   --global-consensus-rel-tol "${GLOBAL_CONSENSUS_REL_TOL}"
   --robustness-cases "${ROBUSTNESS_CASES}"
   --grpo-lr "${GRPO_LR}"
   --grpo-num-generations "${GRPO_NUM_GENERATIONS}"
   --grpo-generation-batch-size "${GRPO_GENERATION_BATCH_SIZE}"
+  --grpo-max-completion-len "${GRPO_MAX_COMPLETION_LEN}"
   --temperature "${TEMPERATURE}"
   --top-p "${TOP_P}"
   --max-new-tokens "${MAX_NEW_TOKENS}"
@@ -86,8 +86,8 @@ if [[ "${MCTS_STOP_ON_REWARD_ONE}" == "true" ]]; then
   CMD+=(--mcts-stop-on-reward-one)
 fi
 
-if [[ "${ENABLE_PERTURB_REWARD}" != "true" ]]; then
-  CMD+=(--disable-perturb-reward)
+if [[ "${ENABLE_R3_REWARD}" != "true" ]]; then
+  CMD+=(--disable-r3-reward)
 fi
 
 if [[ "${USE_VLLM}" == "true" ]]; then

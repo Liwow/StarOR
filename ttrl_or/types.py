@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -115,6 +115,7 @@ class RunTrace:
     task_context: dict[str, Any] = field(default_factory=dict)
     config: dict[str, Any] = field(default_factory=dict)
     stages: list[StageTrace] = field(default_factory=list)
+    iteration_logs: list[dict[str, Any]] = field(default_factory=list)
     final_selection: dict[str, Any] = field(default_factory=dict)
     best_trajectory: dict[str, Any] = field(default_factory=dict)
     artifacts: dict[str, str] = field(default_factory=dict)

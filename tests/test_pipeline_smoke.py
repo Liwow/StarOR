@@ -34,7 +34,7 @@ def test_pipeline_can_run_with_description_only_input():
     config = PipelineConfig()
     config.mcts.max_iterations = 8
     config.save_logs = False
-    config.reward.enable_perturb_reward = True
+    config.reward.enable_r3_reward = True
 
     backend = MockPolicyBackend(seed=13)
     runner = TTRLORRunner(backend=backend, config=config)
@@ -68,7 +68,7 @@ def test_pipeline_llm_mapping_extractor_uses_backend_hook():
     config = PipelineConfig()
     config.mcts.max_iterations = 8
     config.save_logs = False
-    config.reward.enable_perturb_reward = True
+    config.reward.enable_r3_reward = True
     config.dataset.mapping_extractor = "llm"
 
     backend = _MockLLMMappingBackend(seed=21)
@@ -85,3 +85,4 @@ def test_pipeline_llm_mapping_extractor_uses_backend_hook():
     assert result.trace.task_context.get("llm_used") is True
     assert "budget" in result.trace.instance
     assert "capacity" in result.trace.instance
+

@@ -47,7 +47,8 @@ class TTRLORRunner:
                 "reward": asdict(self.config.reward),
                 "grpo": asdict(self.config.grpo),
                 "dataset": asdict(self.config.dataset),
-                "backend": asdict(self.config.backend),            },
+                "backend": asdict(self.config.backend),
+            },
         )
 
         try:
@@ -62,6 +63,8 @@ class TTRLORRunner:
             search_result = mcts.search(task=task, grpo_config=self.config.grpo)
             records = search_result.records
             stop_info = dict(search_result.stop_info or {})
+            iteration_logs = list(search_result.iteration_logs or [])
+            trace.iteration_logs = iteration_logs
 
             stage_reports: dict[str, dict] = {}
 
@@ -147,7 +150,7 @@ class TTRLORRunner:
             trace.best_trajectory = self._best_trace(best)
 
             if self.config.save_logs:
-                artifacts = self._save_trace_artifacts(trace, group_trajectories, best, mcts_stats)
+                artifacts = self._save_trace_artifacts(trace, group_trajectories, best, mcts_stats, iteration_logs)
                 trace.artifacts = artifacts
 
             return TaskRunResult(
@@ -195,6 +198,7 @@ class TTRLORRunner:
         trajectories: list[Trajectory],
         best: Trajectory | None,
         mcts_stats: dict,
+        iteration_logs: list[dict[str, Any]],
     ) -> dict[str, str]:
         run_dir = Path(self.config.log_dir) / trace.task_id
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -204,6 +208,7 @@ class TTRLORRunner:
         trajectories_path = run_dir / "final_trajectories.json"
         best_code_path = run_dir / "best_code.py"
         mcts_stats_path = run_dir / "mcts_stats.json"
+        iter_logs_path = run_dir / "mcts_iterations.jsonl"
 
         summary_payload = {
             "task_id": trace.task_id,
@@ -221,6 +226,10 @@ class TTRLORRunner:
         with stages_path.open("w", encoding="utf-8") as f:
             for stage_trace in trace.stages:
                 f.write(json.dumps(asdict(stage_trace), ensure_ascii=False) + "\n")
+
+        with iter_logs_path.open("w", encoding="utf-8") as f:
+            for item in iteration_logs:
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
         traj_payload = [
             {
@@ -243,6 +252,7 @@ class TTRLORRunner:
             "run_dir": str(run_dir.resolve()),
             "run_summary": str(summary_path.resolve()),
             "stage_events": str(stages_path.resolve()),
+            "mcts_iterations": str(iter_logs_path.resolve()),
             "mcts_stats": str(mcts_stats_path.resolve()),
             "final_trajectories": str(trajectories_path.resolve()),
             "best_code": str(best_code_path.resolve()),
@@ -345,5 +355,3 @@ class TTRLORRunner:
             "total_grpo_samples": total_grpo_samples,
             "per_stage": per_stage,
         }
-
-

@@ -152,9 +152,11 @@ class TTRLRewardCalculator(RewardCalculator):
         return r2 * 0.2
 
     def _compute_r3_with_details(self, trajectory: Trajectory) -> tuple[float, dict]:
-        if not self.config.enable_perturb_reward:
+        r3_enabled = bool(self.config.enable_r3_reward)
+        if not r3_enabled:
             return 1.0, {
                 "enabled": False,
+                "enable_r3_reward": bool(self.config.enable_r3_reward),
                 "reason": "disabled_by_config",
                 "num_cases": 0,
             }
@@ -261,6 +263,9 @@ class TTRLRewardCalculator(RewardCalculator):
 
         ref = sum(best_members) / len(best_members)
         return ref, len(best_members)
+
+
+
 
 
 

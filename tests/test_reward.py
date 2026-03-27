@@ -124,7 +124,7 @@ def test_r1_global_pool_majority_vote_with_relative_tolerance():
         backend.end_episode()
 
 
-def test_disable_perturb_reward_short_circuits_r3():
+def test_disable_r3_reward_short_circuits_r3():
     task = OptimizationTask(
         task_id="reward-3",
         description="Disable perturb reward",
@@ -134,7 +134,7 @@ def test_disable_perturb_reward_short_circuits_r3():
     backend.begin_episode(task)
 
     try:
-        config = RewardConfig(enable_perturb_reward=False)
+        config = RewardConfig(enable_r3_reward=False)
         rewarder = TTRLRewardCalculator(task=task, backend=backend, config=config)
 
         explored = [Trajectory(trajectory_id="e1", outputs={Stage.CODE: _GOOD_CODE})]
@@ -147,3 +147,4 @@ def test_disable_perturb_reward_short_circuits_r3():
         assert reward.metadata["r3"]["enabled"] is False
     finally:
         backend.end_episode()
+

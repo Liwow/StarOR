@@ -100,19 +100,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--c-puct", type=float, default=defaults.mcts.c_puct)
     parser.add_argument("--mcts-stop-on-reward-one", action="store_true", default=defaults.mcts.stop_on_reward_one)
 
-    parser.add_argument("--consensus-window", type=int, default=defaults.reward.local_consensus_window)
     parser.add_argument("--robustness-cases", type=int, default=defaults.reward.robustness_cases)
     parser.add_argument("--code-timeout-sec", type=int, default=defaults.reward.code_timeout_sec)
     parser.add_argument("--global-consensus-min-pool", type=int, default=defaults.reward.global_consensus_min_pool)
     parser.add_argument("--global-consensus-rel-tol", type=float, default=defaults.reward.global_consensus_rel_tol)
 
-    perturb_group = parser.add_mutually_exclusive_group()
-    perturb_group.add_argument("--enable-perturb-reward", dest="enable_perturb_reward", action="store_true")
-    perturb_group.add_argument("--disable-perturb-reward", dest="enable_perturb_reward", action="store_false")
-    parser.set_defaults(enable_perturb_reward=defaults.reward.enable_perturb_reward)
+    r3_group = parser.add_mutually_exclusive_group()
+    r3_group.add_argument("--enable-r3-reward", dest="enable_r3_reward", action="store_true")
+    r3_group.add_argument("--disable-r3-reward", dest="enable_r3_reward", action="store_false")
+    parser.set_defaults(enable_r3_reward=defaults.reward.enable_r3_reward)
 
     parser.add_argument("--grpo-lr", type=float, default=defaults.grpo.learning_rate)
-    parser.add_argument("--grpo-clip", type=float, default=defaults.grpo.clip_range)
     parser.add_argument("--grpo-kl", type=float, default=defaults.grpo.kl_coef)
     parser.add_argument("--grpo-batch-size", type=int, default=defaults.grpo.per_device_train_batch_size)
     parser.add_argument("--grpo-grad-accum", type=int, default=defaults.grpo.gradient_accumulation_steps)
@@ -148,15 +146,13 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.mcts.c_puct = args.c_puct
     config.mcts.stop_on_reward_one = args.mcts_stop_on_reward_one
 
-    config.reward.local_consensus_window = args.consensus_window
     config.reward.robustness_cases = args.robustness_cases
     config.reward.code_timeout_sec = args.code_timeout_sec
     config.reward.global_consensus_min_pool = args.global_consensus_min_pool
     config.reward.global_consensus_rel_tol = args.global_consensus_rel_tol
-    config.reward.enable_perturb_reward = args.enable_perturb_reward
+    config.reward.enable_r3_reward = args.enable_r3_reward
 
     config.grpo.learning_rate = args.grpo_lr
-    config.grpo.clip_range = args.grpo_clip
     config.grpo.kl_coef = args.grpo_kl
     config.grpo.per_device_train_batch_size = args.grpo_batch_size
     config.grpo.gradient_accumulation_steps = args.grpo_grad_accum
