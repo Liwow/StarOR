@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
@@ -388,10 +388,5 @@ class FourStageMCTS:
 
         return cleaned
 
-    @staticmethod
-    def pick_group_trajectories(code_nodes: list[SearchNode], group_size: int) -> list[Trajectory]:
-        ranked = sorted(code_nodes, key=lambda node: (node.q_value, node.visits), reverse=True)
-        picked: list[Trajectory] = []
-        for node in ranked[:group_size]:
-            picked.append(node.to_partial_trajectory())
-        return picked
+
+

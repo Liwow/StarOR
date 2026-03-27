@@ -163,7 +163,7 @@ Set `USE_VLLM=false` in `scripts/run.sh`, then run the same script.
 
 Useful knobs:
 
-- MCTS: `--group-size`, `--max-iterations`, `--c-puct`, `--mcts-stop-on-reward-one`
+- MCTS: `--max-iterations`, `--c-puct`, `--mcts-stop-on-reward-one`
 - Reward: `--consensus-window`, `--global-consensus-min-pool`, `--global-consensus-rel-tol`, `--robustness-cases`, `--code-timeout-sec`, `--enable-perturb-reward`, `--disable-perturb-reward`
   - `r3` perturbation now uses backend pre-extracted mapping (`focus_keys` + value map).
 - Dataset loader: `--dataset-start-index`, `--dataset-limit`, `--dataset-max-numeric-features`, `--dataset-key-param-top-k`
@@ -239,8 +239,6 @@ All defaults are defined in `ttrl_or/config.py`.
 - `lora_r`, `lora_alpha`, `lora_dropout`: LoRA adapter hyperparameters in TRL backend.
 
 ### PipelineConfig
-
-- `group_size` (Key): number of stage-4 candidates used in final reward reranking.
 - `save_logs`: whether to write per-task artifacts.
 - `log_dir`: output directory root for logs (default `logs/`).
 
@@ -262,7 +260,6 @@ All defaults are defined in `ttrl_or/config.py`.
 - `num_generations`: `2` to `6`
 - `c_puct`: `1.0` to `2.0`
 - `local_consensus_window`: `16` to `128`
-- `group_size`: `4` to `16`
 - `learning_rate`: `1e-5` to `1e-4`
 
 ## Logs and Artifacts
@@ -306,6 +303,9 @@ pytest -q
 - `MockPolicyBackend` intentionally does not train.
 - `TRLPolicyBackend` creates temporary LoRA adapters per task instance and drops them at episode end.
 - If `trl/peft/datasets` are missing, `--backend trl` will raise a clear install error.
+
+
+
 
 
 

@@ -14,7 +14,6 @@ LOG_DIR="logs/run"
 OUT_JSON="outputs/run.json"
 
 # MCTS (global-leaf selection)
-GROUP_SIZE=8
 MAX_ITERATIONS=16
 C_PUCT=1.4
 MCTS_STOP_ON_REWARD_ONE=false
@@ -62,7 +61,6 @@ CMD=(python -m ttrl_or
   --seed "${SEED}"
   --dataset-jsonl "${DATASET_JSONL}"
   --dataset-limit "${DATASET_LIMIT}"
-  --group-size "${GROUP_SIZE}"
   --max-iterations "${MAX_ITERATIONS}"
   --c-puct "${C_PUCT}"
   --consensus-window "${CONSENSUS_WINDOW}"
