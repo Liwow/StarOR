@@ -5,7 +5,7 @@ set -euo pipefail
 # Edit Here: TRL vLLM Server Params
 # ==================================
 CUDA_VISIBLE_DEVICES="1"
-MODEL_NAME_OR_PATH="/path/to/your/model"
+MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
 
 VLLM_HOST="0.0.0.0"
 VLLM_PORT=8000
