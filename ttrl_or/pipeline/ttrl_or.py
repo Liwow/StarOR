@@ -33,6 +33,8 @@ class TTRLORRunner:
     def run_task(self, task: OptimizationTask) -> TaskRunResult:
         self.backend.begin_episode(task)
         task_context = self.backend.prepare_task_context(task, self.config.dataset)
+        if task.gold_answer:
+            task_context["gold_answer"] = task.gold_answer
 
         backend_name = type(self.backend).__name__
         trace = RunTrace(
@@ -168,11 +170,13 @@ class TTRLORRunner:
         description: str,
         instance: dict | None = None,
         task_id: str | None = None,
+        gold_answer: str | None = None,
     ) -> TaskRunResult:
         task = OptimizationTask(
             task_id=task_id or str(uuid.uuid4()),
             description=description,
             instance=instance or {},
+            gold_answer=(gold_answer or ""),
         )
         return self.run_task(task)
 
@@ -209,6 +213,7 @@ class TTRLORRunner:
         best_code_path = run_dir / "best_code.py"
         mcts_stats_path = run_dir / "mcts_stats.json"
         iter_logs_path = run_dir / "mcts_iterations.jsonl"
+        result_path = run_dir / "result.json"
 
         summary_payload = {
             "task_id": trace.task_id,
@@ -248,6 +253,13 @@ class TTRLORRunner:
         else:
             best_code_path.write_text("", encoding="utf-8")
 
+        result_payload = {
+            "best_code": best.code if best is not None else "",
+            "obj_answer": self._best_obj_answer(best),
+            "gold_answer": str(trace.task_context.get("gold_answer", "")),
+        }
+        result_path.write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
         return {
             "run_dir": str(run_dir.resolve()),
             "run_summary": str(summary_path.resolve()),
@@ -256,7 +268,15 @@ class TTRLORRunner:
             "mcts_stats": str(mcts_stats_path.resolve()),
             "final_trajectories": str(trajectories_path.resolve()),
             "best_code": str(best_code_path.resolve()),
+            "result_json": str(result_path.resolve()),
         }
+
+    @staticmethod
+    def _best_obj_answer(best: Trajectory | None) -> Any:
+        if best is None or best.reward is None:
+            return None
+        metadata = best.reward.metadata or {}
+        return metadata.get("obj_answer")
 
     @staticmethod
     def _best_trace(best: Trajectory | None) -> dict:

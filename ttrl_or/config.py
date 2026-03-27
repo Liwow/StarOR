@@ -31,10 +31,11 @@ class GRPOConfig:
     max_completion_length: int = 2048
 
     use_vllm: bool = False
-    vllm_mode: str = "server"
+    vllm_mode: str = "colocate"
     vllm_gpu_memory_utilization: float = 0.85
     vllm_tensor_parallel_size: int = 1
     vllm_max_model_len: int = 16384
+    vllm_fallback_disable_on_error: bool = True
 
 
 @dataclass(slots=True)

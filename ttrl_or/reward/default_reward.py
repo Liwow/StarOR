@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections import Counter
@@ -10,7 +11,8 @@ from ttrl_or.model.backend import PolicyBackend
 from ttrl_or.reward.base import RewardCalculator
 from ttrl_or.reward.executor import PythonCodeExecutor
 from ttrl_or.reward.perturbation import generate_perturbed_instances_from_map
-from ttrl_or.types import OptimizationTask, RewardBreakdown, Trajectory
+from ttrl_or.types import ExecutionResult, OptimizationTask, RewardBreakdown, Trajectory
+
 
 @dataclass(slots=True)
 class TTRLRewardCalculator(RewardCalculator):
@@ -18,7 +20,7 @@ class TTRLRewardCalculator(RewardCalculator):
     backend: PolicyBackend
     config: RewardConfig
     executor: PythonCodeExecutor = field(init=False)
-    _exec_cache: dict[str, object] = field(default_factory=dict, init=False)
+    _exec_cache: dict[str, ExecutionResult] = field(default_factory=dict, init=False)
     _global_numeric_pool: list[float] = field(default_factory=list, init=False)
     _global_signature_pool: list[str] = field(default_factory=list, init=False)
 
@@ -26,11 +28,18 @@ class TTRLRewardCalculator(RewardCalculator):
         self.executor = PythonCodeExecutor(timeout_sec=self.config.code_timeout_sec)
 
     def provisional_reward(self, trajectory: Trajectory, explored: list[Trajectory]) -> RewardBreakdown:
-        execution = self._execute(trajectory)
+        execution, exec_cache_hit = self._execute(trajectory)
         r1, consensus = self.compute_r1(execution.success, execution.signature, execution.output)
 
         if execution.success:
             self._update_global_pool(execution.signature, execution.output)
+
+        obj_answer = self._extract_objective_numeric(execution.output)
+        common_meta = {
+            "exec_elapsed_sec": float(execution.elapsed_sec),
+            "exec_cache_hit": bool(exec_cache_hit),
+            "obj_answer": obj_answer,
+        }
 
         if r1 == 1.0:
             r3, r3_meta = self._compute_r3_with_details(trajectory)
@@ -43,7 +52,7 @@ class TTRLRewardCalculator(RewardCalculator):
                 consensus_signature=consensus,
                 execution_success=execution.success,
                 robustness_success=(r3 == 1.0),
-                metadata={"r3": r3_meta},
+                metadata={"r3": r3_meta, **common_meta},
             )
 
         r2 = self.compute_r2(execution.success)
@@ -56,16 +65,23 @@ class TTRLRewardCalculator(RewardCalculator):
             consensus_signature=consensus,
             execution_success=execution.success,
             robustness_success=False,
-            metadata={},
+            metadata=common_meta,
         )
 
     def finalize_group(self, trajectories: list[Trajectory]) -> list[Trajectory]:
         for traj in trajectories:
-            exec_result = self._execute(traj)
+            exec_result, exec_cache_hit = self._execute(traj)
             r1, consensus = self.compute_r1(exec_result.success, exec_result.signature, exec_result.output)
 
             if exec_result.success:
                 self._update_global_pool(exec_result.signature, exec_result.output)
+
+            obj_answer = self._extract_objective_numeric(exec_result.output)
+            common_meta = {
+                "exec_elapsed_sec": float(exec_result.elapsed_sec),
+                "exec_cache_hit": bool(exec_cache_hit),
+                "obj_answer": obj_answer,
+            }
 
             if r1 == 1.0:
                 r3, r3_meta = self._compute_r3_with_details(traj)
@@ -78,7 +94,7 @@ class TTRLRewardCalculator(RewardCalculator):
                     consensus_signature=consensus,
                     execution_success=exec_result.success,
                     robustness_success=(r3 == 1.0),
-                    metadata={"r3": r3_meta},
+                    metadata={"r3": r3_meta, **common_meta},
                 )
             else:
                 r2 = self.compute_r2(exec_result.success)
@@ -91,7 +107,7 @@ class TTRLRewardCalculator(RewardCalculator):
                     consensus_signature=consensus,
                     execution_success=exec_result.success,
                     robustness_success=False,
-                    metadata={},
+                    metadata=common_meta,
                 )
         return trajectories
 
@@ -100,7 +116,6 @@ class TTRLRewardCalculator(RewardCalculator):
             return 0.0, ""
 
         numeric = self._extract_objective_numeric(output)
-
         if numeric is not None:
             return self._compute_numeric_r1(numeric)
 
@@ -164,7 +179,11 @@ class TTRLRewardCalculator(RewardCalculator):
         tests = self.backend.generate_test_instances(self.task, self.config.robustness_cases)
         source = "backend"
         if not tests:
-            tests = generate_perturbed_instances_from_map(self.task.instance, self.task.perturbation_map, self.config.robustness_cases)
+            tests = generate_perturbed_instances_from_map(
+                self.task.instance,
+                self.task.perturbation_map,
+                self.config.robustness_cases,
+            )
             source = "heuristic"
 
         if not tests:
@@ -183,6 +202,7 @@ class TTRLRewardCalculator(RewardCalculator):
                 "case_index": idx,
                 "success": res.success,
                 "signature": res.signature,
+                "elapsed_sec": float(res.elapsed_sec),
                 "changes": case_meta.get("changes", []) if isinstance(case_meta, dict) else [],
             }
             details.append(detail)
@@ -202,12 +222,20 @@ class TTRLRewardCalculator(RewardCalculator):
             "cases": details,
         }
 
-    def _execute(self, trajectory: Trajectory):
-        if trajectory.trajectory_id in self._exec_cache:
-            return self._exec_cache[trajectory.trajectory_id]
+    def _execute(self, trajectory: Trajectory) -> tuple[ExecutionResult, bool]:
+        cache_key = self._execution_cache_key(trajectory.code, self.task.instance)
+        if cache_key in self._exec_cache:
+            return self._exec_cache[cache_key], True
+
         result = self.executor.run(trajectory.code, self.task.instance)
-        self._exec_cache[trajectory.trajectory_id] = result
-        return result
+        self._exec_cache[cache_key] = result
+        return result, False
+
+    @staticmethod
+    def _execution_cache_key(code: str, instance: dict) -> str:
+        payload = {"code": code, "instance": instance}
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=repr)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def _update_global_pool(self, signature: str, output: object | None) -> None:
         numeric = self._extract_objective_numeric(output)
@@ -263,9 +291,3 @@ class TTRLRewardCalculator(RewardCalculator):
 
         ref = sum(best_members) / len(best_members)
         return ref, len(best_members)
-
-
-
-
-
-

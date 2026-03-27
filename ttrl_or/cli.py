@@ -2,12 +2,34 @@
 
 import argparse
 import json
+import os
+import time
 from pathlib import Path
 
 from ttrl_or.config import PipelineConfig
 from ttrl_or.dataset import load_jsonl_dataset
 from ttrl_or.model import MockPolicyBackend, TRLPolicyBackend, TRL_IMPORT_ERROR
 from ttrl_or.pipeline import TTRLORRunner
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _distributed_context() -> tuple[int, int]:
+    world_size = max(1, _env_int("WORLD_SIZE", 1))
+    rank = _env_int("RANK", 0)
+    if rank < 0:
+        rank = 0
+    if rank >= world_size:
+        rank = rank % world_size
+    return rank, world_size
 
 
 def _load_text(args: argparse.Namespace) -> str:
@@ -128,6 +150,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--grpo-vllm-tensor-parallel-size", type=int, default=defaults.grpo.vllm_tensor_parallel_size)
     parser.add_argument("--grpo-vllm-max-model-len", type=int, default=defaults.grpo.vllm_max_model_len)
+    parser.add_argument(
+        "--grpo-vllm-fallback-disable-on-error",
+        action="store_true",
+        default=defaults.grpo.vllm_fallback_disable_on_error,
+    )
 
     parser.add_argument("--log-dir", type=str, default=defaults.log_dir)
     parser.add_argument("--no-save-logs", action="store_true", default=not defaults.save_logs)
@@ -165,6 +192,7 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.grpo.vllm_gpu_memory_utilization = args.grpo_vllm_gpu_memory_utilization
     config.grpo.vllm_tensor_parallel_size = args.grpo_vllm_tensor_parallel_size
     config.grpo.vllm_max_model_len = args.grpo_vllm_max_model_len
+    config.grpo.vllm_fallback_disable_on_error = args.grpo_vllm_fallback_disable_on_error
 
     config.dataset.jsonl_path = args.dataset_jsonl
     config.dataset.start_index = args.dataset_start_index
@@ -240,21 +268,50 @@ def _run_dataset(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
     else:
         samples = all_samples[start:]
 
+    rank, world_size = _distributed_context()
+    if world_size > 1:
+        samples = [sample for i, sample in enumerate(samples) if i % world_size == rank]
+
+    print(
+        f"[dataset] rank={rank}/{world_size} num_samples={len(samples)} "
+        f"dataset={Path(dataset_path).resolve()}"
+    )
+
     runs: list[dict] = []
     for idx, sample in enumerate(samples, start=1):
+        t0 = time.time()
+        print(f"[rank {rank}] [{idx}/{len(samples)}] START sample_id={sample.sample_id}")
+
         result = runner.run_from_text(
             description=sample.question,
             instance=None,
             task_id=sample.sample_id,
+            gold_answer=sample.answer,
         )
 
         best_reward = result.best_trajectory.reward.total if result.best_trajectory and result.best_trajectory.reward else None
+        final_selection = result.stage_reports.get("final_selection", {})
+        stop_info = final_selection.get("stop_info", {}) if isinstance(final_selection, dict) else {}
+        stop_reason = str(stop_info.get("reason", ""))
+        mcts_iters = len(result.trace.iteration_logs) if result.trace else 0
+        grpo_updates = sum(
+            int(v.get("num_updates", 0))
+            for v in result.stage_reports.values()
+            if isinstance(v, dict) and "num_updates" in v
+        )
+        elapsed = time.time() - t0
+
         runs.append(
             {
                 "sample_id": sample.sample_id,
                 "dataset": sample.dataset,
                 "param_mode": sample.param_mode,
                 "reference_answer": sample.answer,
+                "rank": rank,
+                "world_size": world_size,
+                "mcts_iterations": mcts_iters,
+                "grpo_updates": grpo_updates,
+                "stop_reason": stop_reason,
                 "best_reward": best_reward,
                 "best_reward_components": (
                     {
@@ -270,12 +327,18 @@ def _run_dataset(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
                 "task_context": (result.trace.task_context if result.trace else {}),
             }
         )
-        print(f"[{idx}/{len(samples)}] {sample.sample_id} best_reward={best_reward}")
+        print(
+            f"[rank {rank}] [{idx}/{len(samples)}] DONE sample_id={sample.sample_id} "
+            f"best_reward={best_reward} stop={stop_reason or 'n/a'} "
+            f"mcts_iters={mcts_iters} grpo_updates={grpo_updates} elapsed_sec={elapsed:.2f}"
+        )
 
     return {
         "mode": "dataset",
         "dataset_jsonl": str(Path(dataset_path).resolve()),
         "backend": runner.config.backend.backend,
+        "rank": rank,
+        "world_size": world_size,
         "num_samples": len(samples),
         "runs": runs,
     }
@@ -295,7 +358,12 @@ def main() -> int:
         output = _run_single(args, runner)
 
     if args.out:
-        Path(args.out).write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+        out_path = Path(args.out)
+        rank, world_size = _distributed_context()
+        if world_size > 1:
+            suffix = out_path.suffix or ".json"
+            out_path = out_path.with_name(f"{out_path.stem}.rank{rank}{suffix}")
+        out_path.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     else:
         print(json.dumps(output, ensure_ascii=False, indent=2))
 

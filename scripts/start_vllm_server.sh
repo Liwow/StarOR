@@ -16,6 +16,9 @@ VLLM_MAX_MODEL_LEN=16384
 # server kind:
 # - trl: required for TRL GRPO server mode
 # - openai: plain vLLM OpenAI API server (will NOT work with TRL server mode)
+
+# NOTE: For TRL LoRA training, server mode may fail with NCCL in some notebook/distributed envs.
+# If you hit NCCL socket/remote-process errors, prefer run.sh with VLLM_MODE=colocate or enable fallback.
 SERVER_KIND="trl"
 
 export CUDA_VISIBLE_DEVICES

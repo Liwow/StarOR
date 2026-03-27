@@ -26,6 +26,7 @@ class OptimizationTask:
     description: str
     instance: dict[str, Any] = field(default_factory=dict)
     perturbation_map: dict[str, Any] = field(default_factory=dict)
+    gold_answer: str = ""
 
 
 @dataclass(slots=True)
@@ -43,6 +44,7 @@ class ExecutionResult:
     stderr: str = ""
     error_type: str | None = None
     signature: str = ""
+    elapsed_sec: float = 0.0
 
 
 @dataclass(slots=True)
@@ -112,6 +114,7 @@ class RunTrace:
     task_description: str
     instance: dict[str, Any]
     perturbation_map: dict[str, Any] = field(default_factory=dict)
+    gold_answer: str = ""
     task_context: dict[str, Any] = field(default_factory=dict)
     config: dict[str, Any] = field(default_factory=dict)
     stages: list[StageTrace] = field(default_factory=list)

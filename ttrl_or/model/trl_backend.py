@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import gc
+import os
 import inspect
 import math
 import tempfile
@@ -28,7 +29,7 @@ class TRLPolicyBackend(PolicyBackend):
     model_name_or_path: str
     temperature: float = 0.8
     top_p: float = 0.95
-    max_new_tokens: int = 256
+    max_new_tokens: int = 1024
     torch_dtype: str = "auto"
     trust_remote_code: bool = False
     lora_r: int = 8
@@ -47,13 +48,19 @@ class TRLPolicyBackend(PolicyBackend):
     _tokenizer: Any = field(init=False, default=None, repr=False)
     _model: Any = field(init=False, default=None, repr=False)
     _episode_key: str = field(init=False, default="", repr=False)
+    _grpo_call_index: int = field(init=False, default=0, repr=False)
+    _warned_vllm_unsupported: bool = field(init=False, default=False, repr=False)
 
     def begin_episode(self, task: OptimizationTask) -> None:
         self._episode_key = task.task_id
+        self._grpo_call_index = 0
+        self._warned_vllm_unsupported = False
         self._load_fresh_episode_model()
 
     def end_episode(self) -> None:
         self._episode_key = ""
+        self._grpo_call_index = 0
+        self._warned_vllm_unsupported = False
         self._model = None
         self._tokenizer = None
         gc.collect()
@@ -167,6 +174,19 @@ class TRLPolicyBackend(PolicyBackend):
             num_generations=k
         )
 
+        self._grpo_call_index += 1
+        call_index = int(self._grpo_call_index)
+        rank = _env_int("RANK", 0)
+        world_size = max(1, _env_int("WORLD_SIZE", 1))
+        prompt_tokens = int(self._tokenizer(prompt, return_tensors="pt")["input_ids"].shape[1])
+        if rank == 0:
+            print(
+                f"[GRPO] start task={self._episode_key} call={call_index} "
+                f"rank={rank}/{world_size} stage={stage.value} "
+                f"num_generations={k} prompt_tokens={prompt_tokens} "
+                f"use_vllm={bool(config.use_vllm)} vllm_mode={config.vllm_mode}"
+            )
+
         trainer_kwargs = {
             "model": self._model,
             "args": trl_args,
@@ -179,9 +199,47 @@ class TRLPolicyBackend(PolicyBackend):
         elif "tokenizer" in trainer_sig.parameters:
             trainer_kwargs["tokenizer"] = self._tokenizer
 
-        trainer = trl.GRPOTrainer(**trainer_kwargs)
-        train_result = trainer.train()
+        fallback_disable_vllm = False
+        try:
+            trainer = trl.GRPOTrainer(**trainer_kwargs)
+            train_result = trainer.train()
+        except Exception as exc:
+            should_fallback = (
+                bool(config.use_vllm)
+                and bool(config.vllm_fallback_disable_on_error)
+                and _looks_like_vllm_comm_error(exc)
+            )
+            if not should_fallback:
+                raise
+
+            fallback_disable_vllm = True
+            if rank == 0:
+                print(
+                    "[GRPO][WARN] vLLM communication failed; fallback to use_vllm=False for this rollout. "
+                    f"reason={type(exc).__name__}: {exc}"
+                )
+
+            captured.clear()
+            cursor = 0
+            trl_args = self._build_trl_grpo_args(
+                config,
+                output_dir,
+                num_generations=k,
+                force_use_vllm=False,
+            )
+            trainer_kwargs["args"] = trl_args
+            trainer = trl.GRPOTrainer(**trainer_kwargs)
+            train_result = trainer.train()
+
         metrics = dict(getattr(train_result, "metrics", {}) or {})
+        if rank == 0:
+            print(
+                f"[GRPO] done task={self._episode_key} call={call_index} "
+                f"rank={rank}/{world_size} stage={stage.value} "
+                f"num_samples={len(captured)} train_loss={metrics.get('train_loss', 'n/a')} "
+                f"train_runtime={metrics.get('train_runtime', 'n/a')}"
+            )
+
 
         report: dict[str, Any] = {
             "updated": True,
@@ -190,7 +248,13 @@ class TRLPolicyBackend(PolicyBackend):
             "num_groups": 1,
             "num_samples": len(captured),
             "num_generations": k,
+            "generation_batch_size": int(trl_args.generation_batch_size),
+            "max_steps": int(getattr(trl_args, "max_steps", 1)),
             "group_mode": "internal_rollout_strict",
+            "grpo_call_index": call_index,
+            "rank": rank,
+            "world_size": world_size,
+            "fallback_disable_vllm": fallback_disable_vllm,
         }
         if "train_loss" in metrics:
             report["train_loss"] = float(metrics["train_loss"])
@@ -283,8 +347,38 @@ class TRLPolicyBackend(PolicyBackend):
         elif "tokenizer" in trainer_sig.parameters:
             trainer_kwargs["tokenizer"] = self._tokenizer
 
-        trainer = trl.GRPOTrainer(**trainer_kwargs)
-        train_result = trainer.train()
+        fallback_disable_vllm = False
+        try:
+            trainer = trl.GRPOTrainer(**trainer_kwargs)
+            train_result = trainer.train()
+        except Exception as exc:
+            should_fallback = (
+                bool(config.use_vllm)
+                and bool(config.vllm_fallback_disable_on_error)
+                and _looks_like_vllm_comm_error(exc)
+            )
+            if not should_fallback:
+                raise
+
+            fallback_disable_vllm = True
+            if rank == 0:
+                print(
+                    "[GRPO][WARN] vLLM communication failed; fallback to use_vllm=False for this rollout. "
+                    f"reason={type(exc).__name__}: {exc}"
+                )
+
+            captured.clear()
+            cursor = 0
+            trl_args = self._build_trl_grpo_args(
+                config,
+                output_dir,
+                num_generations=k,
+                force_use_vllm=False,
+            )
+            trainer_kwargs["args"] = trl_args
+            trainer = trl.GRPOTrainer(**trainer_kwargs)
+            train_result = trainer.train()
+
         metrics = dict(getattr(train_result, "metrics", {}) or {})
 
         report: dict[str, Any] = {
@@ -365,7 +459,13 @@ class TRLPolicyBackend(PolicyBackend):
             fallback.append(case)
         return fallback
 
-    def _build_trl_grpo_args(self, config: GRPOConfig, output_dir: str, num_generations: int | None = None):
+    def _build_trl_grpo_args(
+        self,
+        config: GRPOConfig,
+        output_dir: str,
+        num_generations: int | None = None,
+        force_use_vllm: bool | None = None,
+    ):
         trl = _import_trl()
 
         used_num_generations = int(num_generations if num_generations is not None else config.num_generations)
@@ -374,6 +474,8 @@ class TRLPolicyBackend(PolicyBackend):
             per_device_train_batch_size=int(config.per_device_train_batch_size),
             num_generations=used_num_generations,
         )
+
+        effective_use_vllm = bool(config.use_vllm) if force_use_vllm is None else bool(force_use_vllm)
 
         kwargs = {
             "output_dir": output_dir,
@@ -386,7 +488,7 @@ class TRLPolicyBackend(PolicyBackend):
             "max_prompt_length": config.max_prompt_length,
             "max_completion_length": config.max_completion_length,
             "max_steps": 1,
-            "use_vllm": config.use_vllm,
+            "use_vllm": effective_use_vllm,
             "vllm_mode": config.vllm_mode,
             "vllm_gpu_memory_utilization": config.vllm_gpu_memory_utilization,
             "vllm_tensor_parallel_size": config.vllm_tensor_parallel_size,
@@ -398,6 +500,11 @@ class TRLPolicyBackend(PolicyBackend):
 
         init_sig = inspect.signature(trl.GRPOConfig.__init__)
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in init_sig.parameters}
+        if bool(config.use_vllm):
+            missing = [k for k in ("use_vllm", "vllm_mode") if k not in filtered_kwargs]
+            if missing and not self._warned_vllm_unsupported:
+                print(f"[GRPO][WARN] TRL GRPOConfig does not support {missing}; vLLM path may be inactive.")
+                self._warned_vllm_unsupported = True
         return trl.GRPOConfig(**filtered_kwargs)
 
     @staticmethod
@@ -544,6 +651,15 @@ def _normalize_text(value: Any) -> str:
 
 
 
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 def _import_transformers():
     try:
         import transformers  # type: ignore
@@ -584,9 +700,14 @@ def _import_datasets():
     except ImportError as exc:
         raise RuntimeError("TRL backend requires `datasets`. Install with: pip install datasets") from exc
 
-
-
-
-
-
-
+def _looks_like_vllm_comm_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    keys = (
+        "nccl error",
+        "pyncclcommunicator",
+        "init_communicator",
+        "socketpollconnect",
+        "remote process exited",
+        "vllm_client",
+    )
+    return any(k in text for k in keys)

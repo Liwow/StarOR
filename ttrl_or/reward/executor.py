@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,7 @@ class PythonCodeExecutor:
         self.timeout_sec = timeout_sec
 
     def run(self, code: str, instance: dict[str, Any]) -> ExecutionResult:
+        start = time.perf_counter()
         with tempfile.TemporaryDirectory(prefix="ttrl_or_") as td:
             temp_dir = Path(td)
             code_file = temp_dir / "solution.py"
@@ -59,13 +61,26 @@ class PythonCodeExecutor:
             code_file.write_text(code, encoding="utf-8")
             runner_file.write_text(_RUNNER_CODE, encoding="utf-8")
 
-            proc = subprocess.run(
-                [sys.executable, str(runner_file), str(code_file), json.dumps(instance)],
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_sec,
-            )
+            try:
+                proc = subprocess.run(
+                    [sys.executable, str(runner_file), str(code_file), json.dumps(instance)],
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_sec,
+                )
+            except subprocess.TimeoutExpired as exc:
+                elapsed = time.perf_counter() - start
+                return ExecutionResult(
+                    success=False,
+                    output={"ok": False, "error": "Execution timeout", "type": "Timeout"},
+                    stdout=str(exc.stdout or ""),
+                    stderr=str(exc.stderr or ""),
+                    error_type="Timeout",
+                    signature="EXEC_ERROR",
+                    elapsed_sec=elapsed,
+                )
 
+            elapsed = time.perf_counter() - start
             parsed = self._parse_stdout(proc.stdout)
             if proc.returncode == 0 and parsed.get("ok") is True:
                 output = parsed.get("result")
@@ -75,6 +90,7 @@ class PythonCodeExecutor:
                     stdout=proc.stdout,
                     stderr=proc.stderr,
                     signature=self._signature(output),
+                    elapsed_sec=elapsed,
                 )
 
             return ExecutionResult(
@@ -84,6 +100,7 @@ class PythonCodeExecutor:
                 stderr=proc.stderr,
                 error_type=parsed.get("type") if isinstance(parsed, dict) else None,
                 signature="EXEC_ERROR",
+                elapsed_sec=elapsed,
             )
 
     @staticmethod

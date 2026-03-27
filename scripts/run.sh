@@ -5,6 +5,7 @@ set -euo pipefail
 # Edit Here: TTRL-OR Common Parameters
 # =====================================
 CUDA_VISIBLE_DEVICES="0"
+# 2卡建议: CUDA_VISIBLE_DEVICES="0,1" 且 VLLM_MODE="colocate" + VLLM_TENSOR_PARALLEL_SIZE=2
 BACKEND="trl"
 MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
 
@@ -37,7 +38,7 @@ MAX_NEW_TOKENS=2048
 
 # vLLM for TRL
 USE_VLLM=true
-VLLM_MODE="server" # colocate
+VLLM_MODE="colocate" # server | colocate
 VLLM_GPU_MEMORY_UTILIZATION=0.75
 VLLM_TENSOR_PARALLEL_SIZE=1
 VLLM_MAX_MODEL_LEN=16384
