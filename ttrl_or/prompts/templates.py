@@ -455,7 +455,7 @@ Make sure:
 Before finalizing, verify whether the model covers: feasibility, resource balance, demand/service requirements, linking logic, exclusivity/conflict logic, and domain consistency whenever applicable.
 """.strip(),
     Stage.CODE: """
-ou are continuing a 4-stage OR modeling pipeline.
+you are continuing a 4-stage OR modeling pipeline.
 
 Task:
 {task_description}

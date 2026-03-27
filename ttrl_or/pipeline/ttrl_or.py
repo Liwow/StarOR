@@ -53,6 +53,7 @@ class TTRLORRunner:
             },
         )
 
+        iter_live_writer = None
         try:
             rewarder = TTRLRewardCalculator(task=task, backend=self.backend, config=self.config.reward)
             mcts = FourStageMCTS(
@@ -62,7 +63,34 @@ class TTRLORRunner:
                 config=self.config.mcts,
             )
 
-            search_result = mcts.search(task=task, grpo_config=self.config.grpo)
+            if self.config.save_logs:
+                run_dir = Path(self.config.log_dir) / task.task_id
+                run_dir.mkdir(parents=True, exist_ok=True)
+                iter_live_writer = (run_dir / "mcts_iterations.jsonl").open("w", encoding="utf-8")
+
+            def _on_iteration_log(payload: dict[str, Any]) -> None:
+                if iter_live_writer is None:
+                    return
+                iter_live_writer.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                iter_live_writer.flush()
+                best = payload.get("best_rollout", {}) if isinstance(payload, dict) else {}
+                reward_obj = best.get("reward", {}) if isinstance(best, dict) else {}
+                timing = payload.get("timing", {}) if isinstance(payload, dict) else {}
+                best_reward = reward_obj.get("total")
+                obj_answer = best.get("obj_answer") if isinstance(best, dict) else None
+                gold_answer = best.get("gold_answer") if isinstance(best, dict) else str(task_context.get("gold_answer", ""))
+                print(
+                    f"[MCTS][task={task.task_id}] iter={payload.get('iteration', -1)} "
+                    f"stage={payload.get('stage', '')} best_reward={best_reward} obj={obj_answer} gt={gold_answer} "
+                    f"iter_sec={timing.get('iteration_total_sec', 'n/a')} "
+                    f"rollout_sec={timing.get('rollout_group_wall_sec', 'n/a')} "
+                    f"exec_sec={timing.get('code_execution_total_sec', 'n/a')}"
+                )
+
+            search_result = mcts.search(task=task, grpo_config=self.config.grpo, iteration_callback=_on_iteration_log)
+            if iter_live_writer is not None:
+                iter_live_writer.close()
+                iter_live_writer = None
             records = search_result.records
             stop_info = dict(search_result.stop_info or {})
             iteration_logs = list(search_result.iteration_logs or [])
@@ -163,6 +191,8 @@ class TTRLORRunner:
                 trace=trace,
             )
         finally:
+            if iter_live_writer is not None:
+                iter_live_writer.close()
             self.backend.end_episode()
 
     def run_from_text(
