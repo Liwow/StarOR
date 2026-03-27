@@ -1,13 +1,14 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ttrl_or.types import OptimizationTask, Stage, Trajectory
+from ttrl_or.types import STAGE_ORDER, OptimizationTask, Stage, Trajectory
 
 
 @dataclass(slots=True)
 class PromptBuilder:
     templates: dict[Stage, str] = field(default_factory=dict)
+    rollout_templates: dict[Stage, str] = field(default_factory=dict)
 
     def build(self, task: OptimizationTask, stage: Stage, trajectory: Trajectory | None = None) -> str:
         history = self._history_text(trajectory, stage)
@@ -17,6 +18,22 @@ class PromptBuilder:
             template.replace("{task_description}", task.description)
             .replace("{history}", history)
         )
+
+    def build_rollout(self, task: OptimizationTask, stage: Stage, trajectory: Trajectory | None = None) -> str:
+        base_prompt = self.build(task, stage, trajectory)
+        rollout_suffix = (self.rollout_templates.get(stage, "") or "").strip()
+        if not rollout_suffix:
+            return base_prompt
+
+        remaining = self._remaining_stages(stage)
+        remaining_names = ", ".join(s.value for s in remaining) if remaining else "none"
+        suffix = rollout_suffix.replace("{remaining_stages}", remaining_names)
+        return f"{base_prompt}\n\n{suffix}".strip()
+
+    @staticmethod
+    def _remaining_stages(stage: Stage) -> list[Stage]:
+        idx = STAGE_ORDER.index(stage)
+        return list(STAGE_ORDER[idx + 1 :])
 
     @staticmethod
     def _history_text(trajectory: Trajectory | None, stage: Stage) -> str:

@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import time
 import uuid
 from collections import defaultdict
 from dataclasses import asdict, dataclass
@@ -10,7 +11,7 @@ from typing import Any
 from ttrl_or.config import PipelineConfig
 from ttrl_or.mcts import FourStageMCTS
 from ttrl_or.model.backend import PolicyBackend
-from ttrl_or.prompts import DEFAULT_TEMPLATES, PromptBuilder
+from ttrl_or.prompts import DEFAULT_ROLLOUT_TEMPLATES, DEFAULT_TEMPLATES, PromptBuilder
 from ttrl_or.reward import TTRLRewardCalculator
 from ttrl_or.types import OptimizationTask, RunTrace, STAGE_ORDER, Stage, StageTrace, Trajectory
 
@@ -28,9 +29,10 @@ class TTRLORRunner:
     def __init__(self, backend: PolicyBackend, config: PipelineConfig | None = None) -> None:
         self.backend = backend
         self.config = config or PipelineConfig()
-        self.prompt_builder = PromptBuilder(templates=DEFAULT_TEMPLATES)
+        self.prompt_builder = PromptBuilder(templates=DEFAULT_TEMPLATES, rollout_templates=DEFAULT_ROLLOUT_TEMPLATES)
 
     def run_task(self, task: OptimizationTask) -> TaskRunResult:
+        run_t0 = time.perf_counter()
         self.backend.begin_episode(task)
         task_context = self.backend.prepare_task_context(task, self.config.dataset)
         if task.gold_answer:
@@ -66,22 +68,25 @@ class TTRLORRunner:
             if self.config.save_logs:
                 run_dir = Path(self.config.log_dir) / task.task_id
                 run_dir.mkdir(parents=True, exist_ok=True)
-                iter_live_writer = (run_dir / "mcts_iterations.jsonl").open("w", encoding="utf-8")
+                iter_live_writer = (run_dir / "mcts_iterations.md").open("w", encoding="utf-8")
 
             def _on_iteration_log(payload: dict[str, Any]) -> None:
                 if iter_live_writer is None:
                     return
-                iter_live_writer.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                iter_live_writer.write(self._format_iteration_markdown(payload))
                 iter_live_writer.flush()
+
                 best = payload.get("best_rollout", {}) if isinstance(payload, dict) else {}
                 reward_obj = best.get("reward", {}) if isinstance(best, dict) else {}
                 timing = payload.get("timing", {}) if isinstance(payload, dict) else {}
+                iter_idx = payload.get("iter", payload.get("iteration", -1))
+                stage_name = payload.get("stage", "")
                 best_reward = reward_obj.get("total")
-                obj_answer = best.get("obj_answer") if isinstance(best, dict) else None
-                gold_answer = best.get("gold_answer") if isinstance(best, dict) else str(task_context.get("gold_answer", ""))
+                obj_answer = reward_obj.get("obj_answer")
+                gold_answer = best.get("gt") if isinstance(best, dict) else str(task_context.get("gold_answer", ""))
                 print(
-                    f"[MCTS][task={task.task_id}] iter={payload.get('iteration', -1)} "
-                    f"stage={payload.get('stage', '')} best_reward={best_reward} obj={obj_answer} gt={gold_answer} "
+                    f"[MCTS][task={task.task_id}] iter={iter_idx} stage={stage_name} "
+                    f"best_reward={best_reward} obj={obj_answer} gt={gold_answer} "
                     f"iter_sec={timing.get('iteration_total_sec', 'n/a')} "
                     f"rollout_sec={timing.get('rollout_group_wall_sec', 'n/a')} "
                     f"exec_sec={timing.get('code_execution_total_sec', 'n/a')}"
@@ -163,6 +168,11 @@ class TTRLORRunner:
             else:
                 group_trajectories = []
 
+            runtime_summary = self._build_runtime_summary(
+                iteration_logs=iteration_logs,
+                total_elapsed_sec=float(time.perf_counter() - run_t0),
+            )
+
             final_selection = {
                 "selection_basis": "global_search_reward",
                 "stop_info": stop_info,
@@ -175,14 +185,21 @@ class TTRLORRunner:
 
             mcts_stats = self._build_mcts_stats(trace)
             stage_reports["mcts_stats"] = mcts_stats
+            stage_reports["runtime"] = runtime_summary
 
-            trace.final_selection = final_selection
+            trace.final_selection = {**final_selection, "runtime": runtime_summary}
             trace.best_trajectory = self._best_trace(best)
 
             if self.config.save_logs:
-                artifacts = self._save_trace_artifacts(trace, group_trajectories, best, mcts_stats, iteration_logs)
+                artifacts = self._save_trace_artifacts(
+                    trace,
+                    group_trajectories,
+                    best,
+                    mcts_stats,
+                    iteration_logs,
+                    runtime_summary,
+                )
                 trace.artifacts = artifacts
-
             return TaskRunResult(
                 task_id=task.task_id,
                 stage_reports=stage_reports,
@@ -233,17 +250,23 @@ class TTRLORRunner:
         best: Trajectory | None,
         mcts_stats: dict,
         iteration_logs: list[dict[str, Any]],
+        runtime_summary: dict[str, Any],
     ) -> dict[str, str]:
         run_dir = Path(self.config.log_dir) / trace.task_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
         summary_path = run_dir / "run_summary.json"
-        stages_path = run_dir / "stage_events.jsonl"
+        stages_path = run_dir / "stage_events.json"
+        stages_md_path = run_dir / "stage_events.md"
         trajectories_path = run_dir / "final_trajectories.json"
         best_code_path = run_dir / "best_code.py"
         mcts_stats_path = run_dir / "mcts_stats.json"
-        iter_logs_path = run_dir / "mcts_iterations.jsonl"
+        iter_logs_path = run_dir / "mcts_iterations.json"
+        iter_logs_md_path = run_dir / "mcts_iterations.md"
         result_path = run_dir / "result.json"
+        runtime_path = run_dir / "runtime_summary.json"
+        runtime_md_path = run_dir / "runtime_summary.md"
+        selected_trace_path = run_dir / "selected_trajectory.json"
 
         summary_payload = {
             "task_id": trace.task_id,
@@ -255,16 +278,19 @@ class TTRLORRunner:
             "config": trace.config,
             "final_selection": trace.final_selection,
             "best_trajectory": trace.best_trajectory,
+            "runtime": runtime_summary,
         }
         summary_path.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        with stages_path.open("w", encoding="utf-8") as f:
-            for stage_trace in trace.stages:
-                f.write(json.dumps(asdict(stage_trace), ensure_ascii=False) + "\n")
+        stage_events_payload = [asdict(stage_trace) for stage_trace in trace.stages]
+        stages_path.write_text(json.dumps(stage_events_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        stages_md_path.write_text(self._format_stage_events_markdown(stage_events_payload), encoding="utf-8")
 
-        with iter_logs_path.open("w", encoding="utf-8") as f:
-            for item in iteration_logs:
-                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+        iter_logs_path.write_text(json.dumps(iteration_logs, ensure_ascii=False, indent=2), encoding="utf-8")
+        iter_logs_md_path.write_text(
+            "".join(self._format_iteration_markdown(item) for item in iteration_logs),
+            encoding="utf-8",
+        )
 
         traj_payload = [
             {
@@ -289,18 +315,123 @@ class TTRLORRunner:
             "gold_answer": str(trace.task_context.get("gold_answer", "")),
         }
         result_path.write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        runtime_path.write_text(json.dumps(runtime_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        runtime_md_path.write_text(self._format_runtime_summary_markdown(runtime_summary), encoding="utf-8")
+
+        selected_payload = {
+            "selected_iter": (best.metadata.get("iter") if best is not None else None),
+            "max_iter": int(((trace.config or {}).get("mcts") or {}).get("max_iterations", 0)),
+            "gt": str(trace.task_context.get("gold_answer", "")),
+            "trajectory_id": (best.trajectory_id if best is not None else ""),
+            "reward": (asdict(best.reward) if best is not None and best.reward else None),
+            "content": (
+                {stage.value: best.outputs.get(stage, "") for stage in STAGE_ORDER}
+                if best is not None
+                else {}
+            ),
+            "code_execution": (
+                ((best.reward.metadata or {}).get("execution", {}))
+                if best is not None and best.reward
+                else {}
+            ),
+        }
+        selected_trace_path.write_text(json.dumps(selected_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
         return {
             "run_dir": str(run_dir.resolve()),
             "run_summary": str(summary_path.resolve()),
             "stage_events": str(stages_path.resolve()),
+            "stage_events_md": str(stages_md_path.resolve()),
             "mcts_iterations": str(iter_logs_path.resolve()),
+            "mcts_iterations_md": str(iter_logs_md_path.resolve()),
             "mcts_stats": str(mcts_stats_path.resolve()),
             "final_trajectories": str(trajectories_path.resolve()),
             "best_code": str(best_code_path.resolve()),
             "result_json": str(result_path.resolve()),
+            "runtime_summary": str(runtime_path.resolve()),
+            "runtime_summary_md": str(runtime_md_path.resolve()),
+            "selected_trajectory": str(selected_trace_path.resolve()),
         }
+    @staticmethod
+    def _format_iteration_markdown(payload: dict[str, Any]) -> str:
+        iter_idx = payload.get("iter", -1)
+        stage = payload.get("stage", "")
+        selection = payload.get("selection", {}) if isinstance(payload, dict) else {}
+        best = payload.get("best_rollout", {}) if isinstance(payload, dict) else {}
+        timing = payload.get("timing", {}) if isinstance(payload, dict) else {}
+        reward = best.get("reward", {}) if isinstance(best, dict) else {}
+        parent = best.get("parent_node", {}) if isinstance(best, dict) else {}
+        leaf_candidates = selection.get("leaf_candidates", []) if isinstance(selection, dict) else []
 
+        lines = [
+            f"# Iter {iter_idx} | Stage {stage}",
+            "",
+            "## Selection",
+            f"- selected_node: {parent.get('node_id', '')}",
+            f"- selected_stage: {parent.get('stage', '')}",
+            f"- selected_value: {parent.get('value', '')}",
+            f"- selected_visits: {parent.get('visits', '')}",
+            "",
+            "### Leaf Candidates (PUCT)",
+        ]
+        if leaf_candidates:
+            for c in leaf_candidates:
+                lines.append(
+                    f"- node={c.get('node_id', '')} stage={c.get('stage', '')} "
+                    f"puct={c.get('puct_score', '')} value={c.get('value', '')} visits={c.get('visits', '')}"
+                )
+        else:
+            lines.append("- none")
+
+        lines.extend(
+            [
+                "",
+                "## Best Rollout",
+                f"- rollout_index: {best.get('rollout_index', '')}",
+                f"- obj: {reward.get('obj_answer', '')}",
+                f"- gt: {best.get('gt', '')}",
+                f"- reward: r1={reward.get('r1', '')}, r2={reward.get('r2', '')}, "
+                f"r3={reward.get('r3', '')}, total={reward.get('total', '')}",
+                "",
+                "### Prompt",
+                "```text",
+                str((best.get('prompt', {}) or {}).get("full", "")),
+                "```",
+                "",
+                "### Answer",
+                "```text",
+                str((best.get('answer', {}) or {}).get("full", "")),
+                "```",
+                "",
+                "### Timing (sec)",
+                f"- iteration_total_sec: {timing.get('iteration_total_sec', '')}",
+                f"- rollout_group_wall_sec: {timing.get('rollout_group_wall_sec', '')}",
+                f"- grpo_train_runtime_sec: {timing.get('grpo_train_runtime_sec', '')}",
+                f"- reward_callback_total_sec: {timing.get('reward_callback_total_sec', '')}",
+                f"- code_execution_total_sec: {timing.get('code_execution_total_sec', '')}",
+                "",
+                "---",
+                "",
+            ]
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_stage_events_markdown(stage_events_payload: list[dict[str, Any]]) -> str:
+        lines = ["# Stage Events", ""]
+        for stage in stage_events_payload:
+            stage_name = stage.get("stage", "")
+            lines.extend(
+                [
+                    f"## {stage_name}",
+                    f"- num_frontier_in: {stage.get('num_frontier_in', '')}",
+                    f"- num_frontier_out: {stage.get('num_frontier_out', '')}",
+                    f"- stage_samples: {stage.get('stage_samples', '')}",
+                    f"- mcts_early_stop: {stage.get('mcts_early_stop', '')}",
+                    "",
+                ]
+            )
+        return "\n".join(lines)
     @staticmethod
     def _best_obj_answer(best: Trajectory | None) -> Any:
         if best is None or best.reward is None:
@@ -351,6 +482,89 @@ class TTRLORRunner:
             summary["train_runtime_sum"] = sum(train_runtimes)
         return summary
 
+    @staticmethod
+    def _build_runtime_summary(iteration_logs: list[dict[str, Any]], total_elapsed_sec: float) -> dict[str, Any]:
+        per_iteration: list[dict[str, Any]] = []
+        reward_totals: list[float] = []
+        iter_secs: list[float] = []
+
+        for item in iteration_logs:
+            timing = item.get("timing", {}) if isinstance(item, dict) else {}
+            best = item.get("best_rollout", {}) if isinstance(item, dict) else {}
+            reward = best.get("reward", {}) if isinstance(best, dict) else {}
+
+            reward_total = reward.get("total")
+            iter_sec = timing.get("iteration_total_sec")
+
+            if isinstance(reward_total, (int, float)):
+                reward_totals.append(float(reward_total))
+            if isinstance(iter_sec, (int, float)):
+                iter_secs.append(float(iter_sec))
+
+            per_iteration.append(
+                {
+                    "iter": item.get("iter"),
+                    "stage": item.get("stage"),
+                    "reward_total": reward_total,
+                    "r1": reward.get("r1"),
+                    "r2": reward.get("r2"),
+                    "r3": reward.get("r3"),
+                    "iter_sec": iter_sec,
+                    "rollout_group_wall_sec": timing.get("rollout_group_wall_sec"),
+                    "grpo_train_runtime_sec": timing.get("grpo_train_runtime_sec"),
+                    "code_execution_total_sec": timing.get("code_execution_total_sec"),
+                    "reward_callback_total_sec": timing.get("reward_callback_total_sec"),
+                }
+            )
+
+        return {
+            "sample_total_sec": float(total_elapsed_sec),
+            "num_iterations": len(iteration_logs),
+            "iter_time_sum_sec": float(sum(iter_secs)) if iter_secs else 0.0,
+            "iter_time_mean_sec": (float(sum(iter_secs) / len(iter_secs)) if iter_secs else None),
+            "best_reward": (max(reward_totals) if reward_totals else None),
+            "last_reward": (reward_totals[-1] if reward_totals else None),
+            "per_iteration": per_iteration,
+        }
+
+    @staticmethod
+    def _format_runtime_summary_markdown(runtime_summary: dict[str, Any]) -> str:
+        lines = [
+            "# Runtime Summary",
+            "",
+            f"- sample_total_sec: {runtime_summary.get('sample_total_sec')}",
+            f"- num_iterations: {runtime_summary.get('num_iterations')}",
+            f"- iter_time_sum_sec: {runtime_summary.get('iter_time_sum_sec')}",
+            f"- iter_time_mean_sec: {runtime_summary.get('iter_time_mean_sec')}",
+            f"- best_reward: {runtime_summary.get('best_reward')}",
+            f"- last_reward: {runtime_summary.get('last_reward')}",
+            "",
+            "## Per Iteration",
+            "| iter | stage | reward_total | r1 | r2 | r3 | iter_sec | rollout_group_wall_sec | grpo_train_runtime_sec | code_execution_total_sec | reward_callback_total_sec |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+        for item in runtime_summary.get("per_iteration", []):
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        str(item.get("iter", "")),
+                        str(item.get("stage", "")),
+                        str(item.get("reward_total", "")),
+                        str(item.get("r1", "")),
+                        str(item.get("r2", "")),
+                        str(item.get("r3", "")),
+                        str(item.get("iter_sec", "")),
+                        str(item.get("rollout_group_wall_sec", "")),
+                        str(item.get("grpo_train_runtime_sec", "")),
+                        str(item.get("code_execution_total_sec", "")),
+                        str(item.get("reward_callback_total_sec", "")),
+                    ]
+                )
+                + " |"
+            )
+        lines.append("")
+        return "\n".join(lines)
     @staticmethod
     def _build_mcts_stats(trace: RunTrace) -> dict:
         per_stage: dict[str, dict] = {}
@@ -405,3 +619,25 @@ class TTRLORRunner:
             "total_grpo_samples": total_grpo_samples,
             "per_stage": per_stage,
         }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

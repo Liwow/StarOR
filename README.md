@@ -269,11 +269,12 @@ All defaults are defined in `ttrl_or/config.py`.
 By default each instance writes logs under `logs/<task_id>/`:
 
 - `run_summary.json`: task info, config, stage reports, final selection, best trajectory summary
-- `mcts_iterations.jsonl`: concise per-iteration logs (selected stage, all leaf PUCT scores, rollout rewards, best rollout full completion)
-- `stage_events.jsonl`: detailed per-stage/per-expansion events
-  - rollout reward details (`r1/r2/r3/total`)
-  - Q/visit before and after updates
-  - GRPO report per selected-node group (and stage summary)
+- `runtime_summary.json`: sample-level runtime summary (overall seconds, iter count, per-iter time/reward)
+- `runtime_summary.md`: readable runtime report (total time, iter count, per-iter time/reward table)
+- `mcts_iterations.json`: full per-iteration structured logs (for scripts/analysis)
+- `mcts_iterations.md`: human-readable per-iteration report (selection, PUCT candidates, best rollout, prompt/answer, timing)
+- `stage_events.json`: detailed per-stage/per-expansion events
+- `stage_events.md`: human-readable stage summary
 - `mcts_stats.json`: concise MCTS node expansion/reuse and rollout counts per stage
 - `final_trajectories.json`: selected final trajectories with reward and code
 - `best_code.py`: final selected code
@@ -305,15 +306,6 @@ pytest -q
 - `MockPolicyBackend` intentionally does not train.
 - `TRLPolicyBackend` creates temporary LoRA adapters per task instance and drops them at episode end.
 - If `trl/peft/datasets` are missing, `--backend trl` will raise a clear install error.
-
-
-
-
-
-
-
-
-
 
 
 

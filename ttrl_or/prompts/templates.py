@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from ttrl_or.types import Stage
 
@@ -564,4 +564,48 @@ Make sure:
 4. the code is a faithful translation of previous stages,
 5. there is no explanation outside the code block.
 """.strip(),
+}
+
+DEFAULT_ROLLOUT_TEMPLATES: dict[Stage, str] = {
+    Stage.SCHEMA: """
+### ROLLOUT_CONTINUATION
+After completing the current-stage output above, continue and finish downstream stages in order: {remaining_stages}.
+Do not rewrite previous-stage content.
+Use exact tags below for machine parsing:
+<ROLLOUT_STAGE_SET_PARAM_VAR>
+...stage-2 content...
+</ROLLOUT_STAGE_SET_PARAM_VAR>
+<ROLLOUT_STAGE_OBJ_CONS>
+...stage-3 content...
+</ROLLOUT_STAGE_OBJ_CONS>
+<ROLLOUT_STAGE_CODE>
+<Gurobi_code>
+...python code...
+</Gurobi_code>
+</ROLLOUT_STAGE_CODE>
+""".strip(),
+    Stage.SET_PARAM_VAR: """
+### ROLLOUT_CONTINUATION
+After completing the current-stage output above, continue and finish downstream stages in order: {remaining_stages}.
+Use exact tags below for machine parsing:
+<ROLLOUT_STAGE_OBJ_CONS>
+...stage-3 content...
+</ROLLOUT_STAGE_OBJ_CONS>
+<ROLLOUT_STAGE_CODE>
+<Gurobi_code>
+...python code...
+</Gurobi_code>
+</ROLLOUT_STAGE_CODE>
+""".strip(),
+    Stage.OBJ_CONS: """
+### ROLLOUT_CONTINUATION
+After completing the current-stage output above, continue and finish downstream stage: {remaining_stages}.
+Use exact tags below for machine parsing:
+<ROLLOUT_STAGE_CODE>
+<Gurobi_code>
+...python code...
+</Gurobi_code>
+</ROLLOUT_STAGE_CODE>
+""".strip(),
+    Stage.CODE: "",
 }

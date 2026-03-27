@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 import time
@@ -124,7 +124,8 @@ class FourStageMCTS:
 
             prompt_t0 = time.perf_counter()
             selected_traj = None if selected.stage is None else selected.to_partial_trajectory()
-            prompt = self.prompt_builder.build(task, next_stage, selected_traj)
+            base_prompt = self.prompt_builder.build(task, next_stage, selected_traj)
+            prompt = self.prompt_builder.build_rollout(task, next_stage, selected_traj)
             prompt_build_sec = float(time.perf_counter() - prompt_t0)
 
             group_id = f"iter:{iter_idx}:{selected.node_id}:{next_stage.value}"
@@ -136,7 +137,8 @@ class FourStageMCTS:
                 callback_t0 = time.perf_counter()
 
                 parse_t0 = time.perf_counter()
-                parsed_text = self._extract_stage_payload(next_stage, completion_text)
+                current_stage_text, rollout_suffix = self._split_rollout_completion(completion_text)
+                parsed_text = self._extract_stage_payload(next_stage, current_stage_text)
                 parse_sec = float(time.perf_counter() - parse_t0)
 
                 child = SearchNode(
@@ -144,11 +146,11 @@ class FourStageMCTS:
                     text=parsed_text,
                     prior=1.0,
                     parent=selected,
-                    prompt=prompt,
+                    prompt=base_prompt,
                 )
 
                 complete_t0 = time.perf_counter()
-                completed = self._complete_for_reward(task, child)
+                completed = self._complete_for_reward_from_rollout(task, child, rollout_suffix)
                 complete_sec = float(time.perf_counter() - complete_t0)
 
                 reward_t0 = time.perf_counter()
@@ -176,6 +178,11 @@ class FourStageMCTS:
                         "reward_obj": reward,
                         "reward_total": float(reward.total),
                         "timing": timing_payload,
+                        "prompt_base": base_prompt,
+                        "prompt_full": prompt,
+                        "completion_full": completion_text,
+                        "answer_current_stage": current_stage_text,
+                        "answer_rollout_suffix": rollout_suffix,
                     }
                 )
                 return float(reward.total)
@@ -229,6 +236,16 @@ class FourStageMCTS:
 
                 rollout_timing = dict(rollout.get("timing", {}))
                 rollout_timing["backprop_sec"] = backprop_sec
+                completed.metadata["iter"] = int(iter_idx)
+                completed.metadata["stage"] = next_stage.value
+                completed.metadata["group_id"] = group_id
+                completed.metadata["parent_node"] = {
+                    "node_id": selected.node_id,
+                    "stage": (selected.stage.value if selected.stage else "<ROOT>"),
+                    "value": float(selected.q_value),
+                    "visits": int(selected.visits),
+                    "content": selected.text,
+                }
 
                 rollout_detail = {
                     "rollout_index": ridx,
@@ -277,6 +294,20 @@ class FourStageMCTS:
                     )
                 )
 
+                rollout["timing"] = rollout_timing
+                rollout["update"] = {
+                    "prior": float(child.prior),
+                    "child_q_before": float(child_q_before),
+                    "child_q_after": float(child.q_value),
+                    "child_visits_before": int(child_visits_before),
+                    "child_visits_after": int(child.visits),
+                    "parent_q_before": float(parent_q_before),
+                    "parent_q_after": float(selected.q_value),
+                    "parent_visits_before": int(parent_visits_before),
+                    "parent_visits_after": int(selected.visits),
+                    "backprop_sec": float(backprop_sec),
+                }
+
                 rollout_summaries.append(
                     {
                         "rollout_index": ridx,
@@ -316,35 +347,79 @@ class FourStageMCTS:
             best_rollout = max(processed_group_rollouts, key=lambda x: float(x.get("reward_total", float("-inf"))))
             best_rollout_obj = best_rollout["reward_obj"]
             best_rollout_child = best_rollout["child"]
+            best_rollout_traj = best_rollout["trajectory"]
             best_rollout_timing = dict(best_rollout.get("timing", {}))
+            best_rollout_update = dict(best_rollout.get("update", {}))
 
             grpo_train_runtime_sec = float((grpo_report or {}).get("train_runtime", 0.0) or 0.0)
             iter_total_sec = float(time.perf_counter() - iter_t0)
 
             iter_payload = {
-                "iteration": iter_idx,
+                "iter": int(iter_idx),
                 "stage": next_stage.value,
-                "selected_leaf": {
-                    "node_id": selected.node_id,
-                    "leaf_stage": selected.stage.value if selected.stage else "<ROOT>",
-                    "score": selected_score,
-                    "q": selected.q_value,
-                    "visits": selected.visits,
+                "selection": {
+                    "selected_parent": {
+                        "node_id": selected.node_id,
+                        "stage": selected.stage.value if selected.stage else "<ROOT>",
+                        "value": float(selected.q_value),
+                        "visits": int(selected.visits),
+                        "puct_score": float(selected_score),
+                        "content": selected.text,
+                    },
+                    "leaf_candidates": [
+                        {
+                            "node_id": node.node_id,
+                            "stage": node.stage.value if node.stage else "<ROOT>",
+                            "puct_score": float(score),
+                            "value": float(node.q_value),
+                            "visits": int(node.visits),
+                            "parent_id": node.parent.node_id if node.parent else "",
+                            "content": node.text,
+                        }
+                        for node, score in ranked_leaves
+                    ],
                 },
-                "leaf_candidates": [
-                    {
-                        "node_id": node.node_id,
-                        "leaf_stage": node.stage.value if node.stage else "<ROOT>",
-                        "score": float(score),
-                        "q": node.q_value,
-                        "visits": node.visits,
-                        "parent_id": node.parent.node_id if node.parent else "",
-                    }
-                    for node, score in ranked_leaves
-                ],
-                "group_id": group_id,
-                "num_rollouts": len(rollout_summaries),
-                "rollouts": rollout_summaries,
+                "expansion": {
+                    "group_id": group_id,
+                    "k": len(rollout_summaries),
+                    "rollout_stage": next_stage.value,
+                },
+                "best_rollout": {
+                    "rollout_index": int(best_rollout.get("rollout_index", -1)),
+                    "child_node_id": best_rollout_child.node_id,
+                    "parent_node": {
+                        "node_id": selected.node_id,
+                        "stage": selected.stage.value if selected.stage else "<ROOT>",
+                        "value": float(selected.q_value),
+                        "visits": int(selected.visits),
+                        "content": selected.text,
+                    },
+                    "prompt": {
+                        "base": str(best_rollout.get("prompt_base", "")),
+                        "full": str(best_rollout.get("prompt_full", "")),
+                    },
+                    "answer": {
+                        "full": str(best_rollout.get("completion_full", "")),
+                        "current_stage": str(best_rollout.get("answer_current_stage", "")),
+                        "rollout_suffix": str(best_rollout.get("answer_rollout_suffix", "")),
+                    },
+                    "trajectory_content": {
+                        stage.value: best_rollout_traj.outputs.get(stage, "")
+                        for stage in STAGE_ORDER
+                    },
+                    "code": best_rollout_traj.code,
+                    "code_execution": (best_rollout_obj.metadata or {}).get("execution", {}),
+                    "gt": str(task.gold_answer or ""),
+                    "reward": {
+                        "r1": float(best_rollout_obj.r1),
+                        "r2": float(best_rollout_obj.r2),
+                        "r3": float(best_rollout_obj.r3),
+                        "total": float(best_rollout_obj.total),
+                        "obj_answer": (best_rollout_obj.metadata or {}).get("obj_answer"),
+                    },
+                    "timing": best_rollout_timing,
+                    "update": best_rollout_update,
+                },
                 "timing": {
                     "selection_sec": selection_sec,
                     "prompt_build_sec": prompt_build_sec,
@@ -359,22 +434,7 @@ class FourStageMCTS:
                     "backprop_total_sec": backprop_total_sec,
                     "iteration_total_sec": iter_total_sec,
                 },
-                "best_rollout": {
-                    "rollout_index": int(best_rollout.get("rollout_index", -1)),
-                    "node_id": best_rollout_child.node_id,
-                    "reward": {
-                        "r1": best_rollout_obj.r1,
-                        "r2": best_rollout_obj.r2,
-                        "r3": best_rollout_obj.r3,
-                        "total": best_rollout_obj.total,
-                    },
-                    "obj_answer": (best_rollout_obj.metadata or {}).get("obj_answer"),
-                    "gold_answer": str(task.gold_answer or ""),
-                    "timing": best_rollout_timing,
-                    "prior": best_rollout_child.prior,
-                    "completion": best_rollout_child.text,
-                },
-                "grpo_report": dict(grpo_report),
+                "grpo_update": dict(grpo_report),
             }
             iteration_logs.append(iter_payload)
             if iteration_callback is not None:
@@ -436,6 +496,61 @@ class FourStageMCTS:
             "reason": "backend_has_no_internal_grpo_rollout",
         }
         return generations, report
+
+    @staticmethod
+    def _split_rollout_completion(text: str) -> tuple[str, str]:
+        marker = "### ROLLOUT_CONTINUATION"
+        raw = text or ""
+        idx = raw.find(marker)
+        if idx < 0:
+            return raw.strip(), ""
+        current = raw[:idx].strip()
+        suffix = raw[idx + len(marker) :].strip()
+        return current, suffix
+
+    @staticmethod
+    def _extract_rollout_stage_block(rollout_suffix: str, stage: Stage) -> str:
+        if not rollout_suffix.strip():
+            return ""
+        tag = f"ROLLOUT_STAGE_{stage.value.upper()}"
+        pattern = rf"<\s*{tag}\s*>(.*?)<\s*/\s*{tag}\s*>"
+        blocks = re.findall(pattern, rollout_suffix, flags=re.IGNORECASE | re.DOTALL)
+        if blocks:
+            return max((b.strip() for b in blocks), key=len, default="")
+        if stage == Stage.CODE:
+            return rollout_suffix.strip()
+        return ""
+
+    def _complete_for_reward_from_rollout(
+        self,
+        task: OptimizationTask,
+        from_node: SearchNode,
+        rollout_suffix: str,
+    ) -> Trajectory:
+        partial = from_node.to_partial_trajectory()
+        partial.trajectory_id = str(uuid.uuid4())
+
+        if from_node.stage is None:
+            return partial
+        if from_node.stage == Stage.CODE:
+            return partial
+
+        start_idx = STAGE_ORDER.index(from_node.stage)
+        for next_stage in STAGE_ORDER[start_idx + 1 :]:
+            block = self._extract_rollout_stage_block(rollout_suffix, next_stage)
+            if not block:
+                continue
+            parsed = self._extract_stage_payload(next_stage, block)
+            if not parsed:
+                continue
+            partial.outputs[next_stage] = parsed
+            partial.priors[next_stage] = from_node.prior
+
+        if partial.outputs.get(Stage.CODE, "").strip():
+            return partial
+
+        # Fallback for non-compliant completion formats.
+        return self._complete_for_reward(task, from_node)
 
     def _complete_for_reward(self, task: OptimizationTask, from_node: SearchNode) -> Trajectory:
         if from_node.stage == Stage.CODE:
