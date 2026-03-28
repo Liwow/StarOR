@@ -55,11 +55,16 @@ class TRLPolicyBackend(PolicyBackend):
     _episode_key: str = field(init=False, default="", repr=False)
     _grpo_call_index: int = field(init=False, default=0, repr=False)
     _warned_vllm_unsupported: bool = field(init=False, default=False, repr=False)
+    _trainer_cache: Any = field(init=False, default=None, repr=False)
+    _trainer_cache_signature: tuple[Any, ...] | None = field(init=False, default=None, repr=False)
+    _force_disable_vllm_for_episode: bool = field(init=False, default=False, repr=False)
 
     def begin_episode(self, task: OptimizationTask) -> None:
         self._episode_key = task.task_id
         self._grpo_call_index = 0
         self._warned_vllm_unsupported = False
+        self._force_disable_vllm_for_episode = False
+        self._reset_grpo_trainer_cache()
 
         if self._model is None or self._tokenizer is None:
             self._load_fresh_episode_model()
@@ -73,6 +78,8 @@ class TRLPolicyBackend(PolicyBackend):
         self._episode_key = ""
         self._grpo_call_index = 0
         self._warned_vllm_unsupported = False
+        self._force_disable_vllm_for_episode = False
+        self._reset_grpo_trainer_cache()
 
         if not self.reuse_base_model_across_tasks:
             self._unload_model()
@@ -525,9 +532,10 @@ class TRLPolicyBackend(PolicyBackend):
         trl = _import_trl()
         rank = _env_int("RANK", 0)
 
+        trainer = self._get_or_create_grpo_trainer(trl, trainer_kwargs)
         try:
-            trainer = trl.GRPOTrainer(**trainer_kwargs)
-            return trainer.train(), False
+            train_result = trainer.train()
+            return train_result, False
         except Exception as exc:
             should_fallback = (
                 bool(config.use_vllm)
@@ -539,12 +547,15 @@ class TRLPolicyBackend(PolicyBackend):
 
             if rank == 0:
                 print(
-                    "[GRPO][WARN] vLLM communication failed; fallback to use_vllm=False for this update. "
+                    "[GRPO][WARN] vLLM communication failed; fallback to use_vllm=False for this episode. "
                     f"stage={stage.value} reason={type(exc).__name__}: {exc}"
                 )
 
             if callable(on_fallback_reset):
                 on_fallback_reset()
+
+            self._force_disable_vllm_for_episode = True
+            self._reset_grpo_trainer_cache()
 
             trl_args = self._build_trl_grpo_args(
                 config,
@@ -552,9 +563,85 @@ class TRLPolicyBackend(PolicyBackend):
                 num_generations=num_generations,
                 force_use_vllm=False,
             )
-            trainer_kwargs["args"] = trl_args
-            trainer = trl.GRPOTrainer(**trainer_kwargs)
-            return trainer.train(), True
+            fallback_kwargs = dict(trainer_kwargs)
+            fallback_kwargs["args"] = trl_args
+            fallback_trainer = self._get_or_create_grpo_trainer(trl, fallback_kwargs)
+            train_result = fallback_trainer.train()
+            return train_result, True
+
+    def _get_or_create_grpo_trainer(self, trl, trainer_kwargs: dict[str, Any]):
+        signature = self._trainer_signature(trainer_kwargs.get("args"))
+
+        if self._trainer_cache is not None and self._trainer_cache_signature == signature:
+            trainer = self._trainer_cache
+            trainer.reward_funcs = trainer_kwargs.get("reward_funcs")
+            trainer.train_dataset = trainer_kwargs.get("train_dataset")
+
+            if "processing_class" in trainer_kwargs and hasattr(trainer, "processing_class"):
+                trainer.processing_class = trainer_kwargs["processing_class"]
+            if "tokenizer" in trainer_kwargs and hasattr(trainer, "tokenizer"):
+                trainer.tokenizer = trainer_kwargs["tokenizer"]
+
+            if hasattr(trainer, "_train_dataloader"):
+                trainer._train_dataloader = None
+            return trainer
+
+        self._reset_grpo_trainer_cache()
+        trainer = trl.GRPOTrainer(**trainer_kwargs)
+        self._trainer_cache = trainer
+        self._trainer_cache_signature = signature
+        return trainer
+
+    @staticmethod
+    def _trainer_signature(args_obj: Any) -> tuple[Any, ...]:
+        if args_obj is None:
+            return (None,)
+
+        keys = (
+            "use_vllm",
+            "vllm_mode",
+            "vllm_tensor_parallel_size",
+            "vllm_gpu_memory_utilization",
+            "vllm_max_model_len",
+            "num_generations",
+            "generation_batch_size",
+            "max_prompt_length",
+            "max_completion_length",
+            "max_steps",
+            "learning_rate",
+            "beta",
+            "per_device_train_batch_size",
+            "gradient_accumulation_steps",
+        )
+        return tuple(getattr(args_obj, k, None) for k in keys)
+
+    def _reset_grpo_trainer_cache(self) -> None:
+        if self._trainer_cache is not None:
+            self._cleanup_trainer_vllm(self._trainer_cache)
+        self._trainer_cache = None
+        self._trainer_cache_signature = None
+
+    @staticmethod
+    def _cleanup_trainer_vllm(trainer: Any) -> None:
+        if trainer is None:
+            return
+
+        try:
+            vgen = getattr(trainer, "vllm_generation", None)
+            if vgen is not None:
+                close_fn = getattr(vgen, "close_communicator", None)
+                if callable(close_fn):
+                    close_fn()
+
+                client = getattr(vgen, "vllm_client", None)
+                if client is not None:
+                    close_client = getattr(client, "close_communicator", None)
+                    if callable(close_client):
+                        close_client()
+        except Exception:
+            pass
+        finally:
+            gc.collect()
 
     def _build_trl_grpo_args(
         self,
@@ -575,6 +662,8 @@ class TRLPolicyBackend(PolicyBackend):
         rank = _env_int("RANK", 0)
         world_size = _world_size()
         effective_use_vllm = bool(config.use_vllm) if force_use_vllm is None else bool(force_use_vllm)
+        if self._force_disable_vllm_for_episode and force_use_vllm is None:
+            effective_use_vllm = False
 
         # Multi-process + colocate tends to start duplicate vLLM engines per rank.
         # Disable this combination to avoid doubled memory/process contention.
@@ -932,6 +1021,8 @@ def _looks_like_vllm_comm_error(exc: Exception) -> bool:
         "vllm_client",
         "tensor parallel size",
         "must divide world size",
+        "collective_rpc",
+        "weight update group already initialized",
+        "close_communicator first",
     )
     return any(k in text for k in keys)
-
