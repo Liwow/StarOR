@@ -153,7 +153,16 @@ chmod +x scripts/*.sh
 scripts/start_vllm_server.sh
 ```
 
+If communicator/state is stale, stop it first:
+
+```bash
+PORT=8000 scripts/stop_vllm_server.sh
+```
+
+
 Important: for `--grpo-vllm-mode server`, do NOT start plain `vllm.entrypoints.openai.api_server` directly. Use `trl vllm-serve` (our script does this by default), otherwise TRL can fail on `init_communicator` with 404.
+
+If you hit `Weight update group already initialized`, stop server processes (`scripts/stop_vllm_server.sh`) and restart `scripts/start_vllm_server.sh`.
 
 3. Terminal B: run training
 
@@ -299,10 +308,13 @@ pytest -q
 - `ttrl_or/dataset/`: raw dataset loading, instance construction, and optional unified normalization
 - `ttrl_or/mapping/`: pluggable mapping extractors (`rule` / `llm`)
 - `scripts/start_vllm_server.sh`: vLLM OpenAI-compatible service launcher (4-GPU defaults)
+- `scripts/stop_vllm_server.sh`: stop stale TRL/vLLM server processes (by port + process name)
 - `scripts/run.sh`: one-command TTRL-OR + TRL runner (edit parameters directly in file)
 
 ## Notes
 
 - `MockPolicyBackend` intentionally does not train.
-- `TRLPolicyBackend` creates temporary LoRA adapters per task instance and drops them at episode end.
+- `TRLPolicyBackend` keeps LoRA state isolated per sample/episode (no cross-sample carry).
+- Inside one sample, each GRPO call creates a fresh `GRPOTrainer` (more stable with `accelerate` state lifecycle); base model is still reused and only LoRA state is reset per episode.
 - If `trl/peft/datasets` are missing, `--backend trl` will raise a clear install error.
+

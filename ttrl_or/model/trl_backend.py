@@ -55,8 +55,6 @@ class TRLPolicyBackend(PolicyBackend):
     _episode_key: str = field(init=False, default="", repr=False)
     _grpo_call_index: int = field(init=False, default=0, repr=False)
     _warned_vllm_unsupported: bool = field(init=False, default=False, repr=False)
-    _trainer_cache: Any = field(init=False, default=None, repr=False)
-    _trainer_cache_signature: tuple[Any, ...] | None = field(init=False, default=None, repr=False)
     _force_disable_vllm_for_episode: bool = field(init=False, default=False, repr=False)
 
     def begin_episode(self, task: OptimizationTask) -> None:
@@ -64,7 +62,6 @@ class TRLPolicyBackend(PolicyBackend):
         self._grpo_call_index = 0
         self._warned_vllm_unsupported = False
         self._force_disable_vllm_for_episode = False
-        self._reset_grpo_trainer_cache()
 
         if self._model is None or self._tokenizer is None:
             self._load_fresh_episode_model()
@@ -79,7 +76,6 @@ class TRLPolicyBackend(PolicyBackend):
         self._grpo_call_index = 0
         self._warned_vllm_unsupported = False
         self._force_disable_vllm_for_episode = False
-        self._reset_grpo_trainer_cache()
 
         if not self.reuse_base_model_across_tasks:
             self._unload_model()
@@ -532,7 +528,7 @@ class TRLPolicyBackend(PolicyBackend):
         trl = _import_trl()
         rank = _env_int("RANK", 0)
 
-        trainer = self._get_or_create_grpo_trainer(trl, trainer_kwargs)
+        trainer = trl.GRPOTrainer(**trainer_kwargs)
         try:
             train_result = trainer.train()
             return train_result, False
@@ -555,7 +551,6 @@ class TRLPolicyBackend(PolicyBackend):
                 on_fallback_reset()
 
             self._force_disable_vllm_for_episode = True
-            self._reset_grpo_trainer_cache()
 
             trl_args = self._build_trl_grpo_args(
                 config,
@@ -565,61 +560,14 @@ class TRLPolicyBackend(PolicyBackend):
             )
             fallback_kwargs = dict(trainer_kwargs)
             fallback_kwargs["args"] = trl_args
-            fallback_trainer = self._get_or_create_grpo_trainer(trl, fallback_kwargs)
-            train_result = fallback_trainer.train()
-            return train_result, True
-
-    def _get_or_create_grpo_trainer(self, trl, trainer_kwargs: dict[str, Any]):
-        signature = self._trainer_signature(trainer_kwargs.get("args"))
-
-        if self._trainer_cache is not None and self._trainer_cache_signature == signature:
-            trainer = self._trainer_cache
-            trainer.reward_funcs = trainer_kwargs.get("reward_funcs")
-            trainer.train_dataset = trainer_kwargs.get("train_dataset")
-
-            if "processing_class" in trainer_kwargs and hasattr(trainer, "processing_class"):
-                trainer.processing_class = trainer_kwargs["processing_class"]
-            if "tokenizer" in trainer_kwargs and hasattr(trainer, "tokenizer"):
-                trainer.tokenizer = trainer_kwargs["tokenizer"]
-
-            if hasattr(trainer, "_train_dataloader"):
-                trainer._train_dataloader = None
-            return trainer
-
-        self._reset_grpo_trainer_cache()
-        trainer = trl.GRPOTrainer(**trainer_kwargs)
-        self._trainer_cache = trainer
-        self._trainer_cache_signature = signature
-        return trainer
-
-    @staticmethod
-    def _trainer_signature(args_obj: Any) -> tuple[Any, ...]:
-        if args_obj is None:
-            return (None,)
-
-        keys = (
-            "use_vllm",
-            "vllm_mode",
-            "vllm_tensor_parallel_size",
-            "vllm_gpu_memory_utilization",
-            "vllm_max_model_len",
-            "num_generations",
-            "generation_batch_size",
-            "max_prompt_length",
-            "max_completion_length",
-            "max_steps",
-            "learning_rate",
-            "beta",
-            "per_device_train_batch_size",
-            "gradient_accumulation_steps",
-        )
-        return tuple(getattr(args_obj, k, None) for k in keys)
-
-    def _reset_grpo_trainer_cache(self) -> None:
-        if self._trainer_cache is not None:
-            self._cleanup_trainer_vllm(self._trainer_cache)
-        self._trainer_cache = None
-        self._trainer_cache_signature = None
+            fallback_trainer = trl.GRPOTrainer(**fallback_kwargs)
+            try:
+                train_result = fallback_trainer.train()
+                return train_result, True
+            finally:
+                self._cleanup_trainer_vllm(fallback_trainer)
+        finally:
+            self._cleanup_trainer_vllm(trainer)
 
     @staticmethod
     def _cleanup_trainer_vllm(trainer: Any) -> None:
@@ -1026,3 +974,5 @@ def _looks_like_vllm_comm_error(exc: Exception) -> bool:
         "close_communicator first",
     )
     return any(k in text for k in keys)
+
+
