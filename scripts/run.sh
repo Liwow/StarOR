@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 set -euo pipefail
 
 # =====================================
@@ -11,6 +11,7 @@ MASTER_PORT=29500
 
 BACKEND="trl"
 MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
+# MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
 
 DATASET_JSONL="data/IndustryOR_fixedV2.jsonl"
 DATASET_LIMIT=0
@@ -31,7 +32,7 @@ ENABLE_R3_REWARD=false
 GRPO_LR="5e-5"
 GRPO_NUM_GENERATIONS=4
 GRPO_GENERATION_BATCH_SIZE=0  # 0 = auto align to num_generations
-GRPO_MAX_COMPLETION_LEN=1024*3
+GRPO_MAX_COMPLETION_LEN=4096
 
 # Generation (common)
 TEMPERATURE=1.0
