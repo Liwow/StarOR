@@ -6,6 +6,7 @@ set -euo pipefail
 # ==================================
 CUDA_VISIBLE_DEVICES="1"
 MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
+# MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
 
 VLLM_HOST="0.0.0.0"
 VLLM_PORT=8000
