@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 
@@ -15,7 +15,6 @@ class RewardConfig:
     code_timeout_sec: int = 30
     robustness_cases: int = 3
     enable_r3_reward: bool = False
-    global_consensus_min_pool: int = 3
     global_consensus_rel_tol: float = 0.005
     code_executor_mode: str = "sandbox" #sandbox or subprocess
 

@@ -1,4 +1,4 @@
-﻿# TTRL-OR
+# TTRL-OR
 
 A modular prototype for **test-time reinforcement learning** on optimization modeling tasks.
 
@@ -170,7 +170,7 @@ Note: in `scripts/run.sh`, if `NPROC_PER_NODE>1` and `VLLM_MODE=colocate`, the s
 Useful knobs:
 
 - MCTS: `--max-iterations`, `--c-puct`, `--mcts-stop-on-reward-one`
-- Reward: `--global-consensus-min-pool`, `--global-consensus-rel-tol`, `--robustness-cases`, `--code-timeout-sec`, `--enable-r3-reward`, `--disable-r3-reward`
+- Reward: `--global-consensus-rel-tol`, `--robustness-cases`, `--code-timeout-sec`, `--enable-r3-reward`, `--disable-r3-reward`
   - `r3` perturbation now uses backend pre-extracted mapping (`focus_keys` + value map).
 - Dataset loader: `--dataset-start-index`, `--dataset-limit`, `--dataset-max-numeric-features`, `--dataset-key-param-top-k`
   - Mapping extractor plugin: `--mapping-extractor rule|llm`
@@ -306,11 +306,3 @@ pytest -q
 - `MockPolicyBackend` intentionally does not train.
 - `TRLPolicyBackend` creates temporary LoRA adapters per task instance and drops them at episode end.
 - If `trl/peft/datasets` are missing, `--backend trl` will raise a clear install error.
-
-
-
-
-
-
-
-

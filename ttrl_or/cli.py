@@ -161,7 +161,6 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["subprocess", "sandbox"],
         default=defaults.reward.code_executor_mode,
     )
-    parser.add_argument("--global-consensus-min-pool", type=int, default=defaults.reward.global_consensus_min_pool)
     parser.add_argument("--global-consensus-rel-tol", type=float, default=defaults.reward.global_consensus_rel_tol)
 
     r3_group = parser.add_mutually_exclusive_group()
@@ -213,7 +212,6 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.reward.robustness_cases = args.robustness_cases
     config.reward.code_timeout_sec = args.code_timeout_sec
     config.reward.code_executor_mode = args.code_executor_mode
-    config.reward.global_consensus_min_pool = args.global_consensus_min_pool
     config.reward.global_consensus_rel_tol = args.global_consensus_rel_tol
     config.reward.enable_r3_reward = args.enable_r3_reward
 
@@ -579,4 +577,3 @@ def main() -> int:
         print(json.dumps(output, ensure_ascii=False, indent=2))
 
     return 0
-

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # =====================================
@@ -23,7 +23,6 @@ C_PUCT=1.4
 MCTS_STOP_ON_REWARD_ONE=false
 
 # Reward
-GLOBAL_CONSENSUS_MIN_POOL=3
 GLOBAL_CONSENSUS_REL_TOL=0.005
 ROBUSTNESS_CASES=3
 ENABLE_R3_REWARD=false
@@ -98,7 +97,6 @@ BASE_CMD=(-m ttrl_or
   --dataset-limit "${DATASET_LIMIT}"
   --max-iterations "${MAX_ITERATIONS}"
   --c-puct "${C_PUCT}"
-  --global-consensus-min-pool "${GLOBAL_CONSENSUS_MIN_POOL}"
   --global-consensus-rel-tol "${GLOBAL_CONSENSUS_REL_TOL}"
   --robustness-cases "${ROBUSTNESS_CASES}"
   --grpo-lr "${GRPO_LR}"

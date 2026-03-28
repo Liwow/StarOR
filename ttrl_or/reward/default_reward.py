@@ -67,7 +67,7 @@ class TTRLRewardCalculator(RewardCalculator):
             has_code = len(code_text.strip()) > 20
             has_valid_obj = self._is_valid_objective(obj_answer)
             obj_in_bounds = self._objective_within_bounds(obj_answer, base_obj_bounds)
-            r1_eligible = bool(has_code and strict_success and has_valid_obj and obj_in_bounds)
+            r1_eligible = bool(has_code and effective_success and has_valid_obj and obj_in_bounds)
             evals.append(
                 {
                     "trajectory": traj,
@@ -86,7 +86,7 @@ class TTRLRewardCalculator(RewardCalculator):
             )
 
         # R1 consensus is numeric-only and only uses rollouts that have:
-        # 1) non-trivial code, 2) strict execution success, 3) valid parsed objective.
+        # 1) non-trivial code, 2) effective execution success, 3) valid parsed objective.
         group_numeric = [
             float(e["obj_answer"])
             for e in evals
