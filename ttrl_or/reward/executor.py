@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import shutil
@@ -27,6 +27,13 @@ def _to_jsonable(value):
         return {"repr": repr(value)}
 
 
+def _pick_script_result(module):
+    for key in ("result", "output", "objective", "optimal", "obj"):
+        if hasattr(module, key):
+            return getattr(module, key)
+    return None
+
+
 def main():
     target = sys.argv[1]
     payload = json.loads(sys.argv[2])
@@ -34,10 +41,16 @@ def main():
         spec = importlib.util.spec_from_file_location("candidate_solution_runtime", target)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        if not hasattr(module, "solve"):
-            raise AttributeError("Generated code must define solve(instance: dict)")
-        result = module.solve(payload)
-        print(json.dumps({"ok": True, "result": _to_jsonable(result)}, sort_keys=True))
+
+        if hasattr(module, "solve"):
+            result = module.solve(payload)
+            print(json.dumps({"ok": True, "mode": "solve", "result": _to_jsonable(result)}, sort_keys=True))
+            return
+
+        # Script-style fallback: module top-level already executed on import.
+        result = _pick_script_result(module)
+        print(json.dumps({"ok": True, "mode": "script", "result": _to_jsonable(result)}, sort_keys=True))
+
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
         print(json.dumps({"ok": False, "error": str(exc), "type": type(exc).__name__}, sort_keys=True))

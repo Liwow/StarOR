@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import gc
 import inspect
@@ -143,31 +143,45 @@ class TRLPolicyBackend(PolicyBackend):
         captured: list[Generation] = []
 
         def reward_func(prompts, completions, **kwargs):
+            prompts_norm = [_normalize_text(p) for p in prompts]
+            completions_norm = [_normalize_text(c) for c in completions]
+
+            batch_score = getattr(reward_callback, "batch_score", None)
             rewards: list[float] = []
-            for prompt_text, completion_text in zip(prompts, completions, strict=False):
-                p = _normalize_text(prompt_text)
-                c = _normalize_text(completion_text)
 
-                ridx = len(captured)
-                if ridx >= k:
-                    ridx = ridx % k
-                reward_total = float(reward_callback(p, c, ridx))
+            if callable(batch_score) and prompts_norm:
+                unique_prompts = {p for p in prompts_norm}
+                if len(unique_prompts) == 1:
+                    rewards = [float(r) for r in list(batch_score(prompts_norm[0], completions_norm))]
+                else:
+                    for p_text, c_text in zip(prompts_norm, completions_norm, strict=False):
+                        one = list(batch_score(p_text, [c_text]))
+                        rewards.append(float(one[0]) if one else 0.0)
+            else:
+                for ridx, (prompt_text, completion_text) in enumerate(zip(prompts_norm, completions_norm, strict=False)):
+                    rewards.append(float(reward_callback(prompt_text, completion_text, ridx % max(1, k))))
 
-                if len(captured) < k:
-                    prior = 1.0 / float(max(1, k))
+            if len(rewards) != len(completions_norm):
+                rewards = rewards[: len(completions_norm)] + [0.0] * max(0, len(completions_norm) - len(rewards))
+
+            if len(captured) < k:
+                prior = 1.0 / float(max(1, k))
+                for ridx, c_text in enumerate(completions_norm[:k]):
+                    if len(captured) >= k:
+                        break
                     captured.append(
                         Generation(
-                            text=c,
+                            text=c_text,
                             prior=prior,
                             metadata={
                                 "stage": stage.value,
                                 "rollout_index": ridx,
-                                "reward_total": reward_total,
+                                "reward_total": float(rewards[ridx]),
                             },
                         )
                     )
-                rewards.append(reward_total)
-            return rewards
+
+            return [float(r) for r in rewards]
 
         output_dir = self._stage_output_dir(stage)
         trl_args = self._build_trl_grpo_args(config, output_dir, num_generations=k)

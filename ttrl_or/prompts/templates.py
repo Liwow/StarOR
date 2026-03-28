@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from ttrl_or.types import Stage
 
@@ -122,6 +122,21 @@ DEFAULT_TEMPLATES: dict[Stage, str] = {
 }
 
 
+ROLLOUT_STRICT_NOTICE = """
+MANDATORY PARSING CONTRACT (VERY IMPORTANT):
+1. You MUST include exactly one line: "### ROLLOUT_CONTINUATION".
+2. After that line, output ONLY rollout tags; do NOT add free-form explanations.
+3. Every required rollout tag must appear EXACTLY ONCE.
+4. Keep tag order exactly as specified.
+5. If uncertain, still output non-empty placeholder content inside each required tag.
+6. For code stage, code must be inside:
+   <ROLLOUT_STAGE_CODE>
+   <Gurobi_code>
+   ...
+   </Gurobi_code>
+   </ROLLOUT_STAGE_CODE>
+""".strip()
+
 SCHEMA_ROLLOUT_TEMPLATE = """
 ### ROLLOUT_CONTINUATION
 After completing the current-stage output above, continue and finish downstream stages in order: {remaining_stages}.
@@ -166,8 +181,8 @@ Use exact tags below for machine parsing:
 """.strip()
 
 DEFAULT_ROLLOUT_TEMPLATES: dict[Stage, str] = {
-    Stage.SCHEMA: _append_notice(SCHEMA_ROLLOUT_TEMPLATE, CODE_NOTICE),
-    Stage.SET_PARAM_VAR: _append_notice(SET_PARAM_VAR_ROLLOUT_TEMPLATE, CODE_NOTICE),
-    Stage.OBJ_CONS: _append_notice(OBJ_CONS_ROLLOUT_TEMPLATE, CODE_NOTICE),
+    Stage.SCHEMA: _append_notice(_append_notice(SCHEMA_ROLLOUT_TEMPLATE, ROLLOUT_STRICT_NOTICE), CODE_NOTICE),
+    Stage.SET_PARAM_VAR: _append_notice(_append_notice(SET_PARAM_VAR_ROLLOUT_TEMPLATE, ROLLOUT_STRICT_NOTICE), CODE_NOTICE),
+    Stage.OBJ_CONS: _append_notice(_append_notice(OBJ_CONS_ROLLOUT_TEMPLATE, ROLLOUT_STRICT_NOTICE), CODE_NOTICE),
     Stage.CODE: "",
 }

@@ -60,19 +60,38 @@ class MockPolicyBackend(PolicyBackend):
         k = max(1, int(config.num_generations))
         gens = self.generate(stage, prompt, k)
         out: list[Generation] = []
-        for ridx, gen in enumerate(gens):
-            reward_total = float(reward_callback(prompt, gen.text, ridx))
-            out.append(
-                Generation(
-                    text=gen.text,
-                    prior=gen.prior,
-                    metadata={
-                        **dict(gen.metadata),
-                        "rollout_index": ridx,
-                        "reward_total": reward_total,
-                    },
+
+        batch_score = getattr(reward_callback, "batch_score", None)
+        if callable(batch_score):
+            rewards = list(batch_score(prompt, [gen.text for gen in gens]))
+            if len(rewards) != len(gens):
+                rewards = rewards[: len(gens)] + [0.0] * max(0, len(gens) - len(rewards))
+            for ridx, gen in enumerate(gens):
+                out.append(
+                    Generation(
+                        text=gen.text,
+                        prior=gen.prior,
+                        metadata={
+                            **dict(gen.metadata),
+                            "rollout_index": ridx,
+                            "reward_total": float(rewards[ridx]),
+                        },
+                    )
                 )
-            )
+        else:
+            for ridx, gen in enumerate(gens):
+                reward_total = float(reward_callback(prompt, gen.text, ridx))
+                out.append(
+                    Generation(
+                        text=gen.text,
+                        prior=gen.prior,
+                        metadata={
+                            **dict(gen.metadata),
+                            "rollout_index": ridx,
+                            "reward_total": reward_total,
+                        },
+                    )
+                )
         report = {
             "updated": False,
             "stage": stage.value,

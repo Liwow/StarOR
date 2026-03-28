@@ -133,7 +133,7 @@ class FourStageMCTS:
             stage_archive = stage_archives[next_stage]
             callback_timings: list[dict[str, Any]] = []
 
-            def _reward_callback(prompt_text: str, completion_text: str, ridx: int) -> float:
+            def _prepare_rollout_item(completion_text: str, ridx: int) -> dict[str, Any]:
                 callback_t0 = time.perf_counter()
 
                 parse_t0 = time.perf_counter()
@@ -150,42 +150,89 @@ class FourStageMCTS:
                 )
 
                 complete_t0 = time.perf_counter()
-                completed = self._complete_for_reward_from_rollout(task, child, rollout_suffix)
+                completed = self._complete_for_reward_from_rollout(task, child, rollout_suffix, completion_text)
                 complete_sec = float(time.perf_counter() - complete_t0)
 
-                reward_t0 = time.perf_counter()
-                reward = self.rewarder.provisional_reward(completed, stage_archive)
-                reward_sec = float(time.perf_counter() - reward_t0)
-                completed.reward = reward
-                stage_archive.append(completed)
-
-                exec_sec = float((reward.metadata or {}).get("exec_elapsed_sec", 0.0) or 0.0)
-                callback_total_sec = float(time.perf_counter() - callback_t0)
-                timing_payload = {
-                    "completion_parse_sec": parse_sec,
-                    "rollout_to_code_sec": complete_sec,
-                    "reward_compute_sec": reward_sec,
-                    "code_execution_sec": exec_sec,
-                    "callback_total_sec": callback_total_sec,
+                return {
+                    "rollout_index": ridx,
+                    "callback_started": callback_t0,
+                    "child": child,
+                    "trajectory": completed,
+                    "completion_full": completion_text,
+                    "answer_current_stage": current_stage_text,
+                    "answer_rollout_suffix": rollout_suffix,
+                    "parse_sec": parse_sec,
+                    "complete_sec": complete_sec,
                 }
-                callback_timings.append({"rollout_index": ridx, **timing_payload})
 
-                group_rollouts.append(
-                    {
-                        "rollout_index": ridx,
-                        "child": child,
-                        "trajectory": completed,
-                        "reward_obj": reward,
-                        "reward_total": float(reward.total),
-                        "timing": timing_payload,
-                        "prompt_base": base_prompt,
-                        "prompt_full": prompt,
-                        "completion_full": completion_text,
-                        "answer_current_stage": current_stage_text,
-                        "answer_rollout_suffix": rollout_suffix,
+            def _score_prepared_group(prepared_items: list[dict[str, Any]]) -> list[float]:
+                if not prepared_items:
+                    return []
+
+                reward_t0 = time.perf_counter()
+                trajectories = [item["trajectory"] for item in prepared_items]
+                score_group = getattr(self.rewarder, "score_rollout_group", None)
+                if callable(score_group):
+                    reward_list = list(score_group(stage=next_stage, trajectories=trajectories, explored=stage_archive))
+                else:
+                    reward_list = [self.rewarder.provisional_reward(t, stage_archive) for t in trajectories]
+                reward_sec_total = float(time.perf_counter() - reward_t0)
+
+                if len(reward_list) != len(prepared_items):
+                    reward_list = reward_list[: len(prepared_items)]
+                    while len(reward_list) < len(prepared_items):
+                        reward_list.append(RewardBreakdown(r1=0.0, r2=0.0, r3=0.0, total=0.0))
+
+                rewards: list[float] = []
+                per_item_reward_sec = reward_sec_total / max(1, len(prepared_items))
+
+                for item, reward in zip(prepared_items, reward_list, strict=False):
+                    completed = item["trajectory"]
+                    completed.reward = reward
+                    stage_archive.append(completed)
+
+                    exec_sec = float((reward.metadata or {}).get("exec_elapsed_sec", 0.0) or 0.0)
+                    callback_total_sec = float(time.perf_counter() - float(item["callback_started"]))
+                    timing_payload = {
+                        "completion_parse_sec": float(item["parse_sec"]),
+                        "rollout_to_code_sec": float(item["complete_sec"]),
+                        "reward_compute_sec": float(per_item_reward_sec),
+                        "code_execution_sec": exec_sec,
+                        "callback_total_sec": callback_total_sec,
                     }
-                )
-                return float(reward.total)
+                    callback_timings.append({"rollout_index": int(item["rollout_index"]), **timing_payload})
+
+                    group_rollouts.append(
+                        {
+                            "rollout_index": int(item["rollout_index"]),
+                            "child": item["child"],
+                            "trajectory": completed,
+                            "reward_obj": reward,
+                            "reward_total": float(reward.total),
+                            "timing": timing_payload,
+                            "prompt_base": base_prompt,
+                            "prompt_full": prompt,
+                            "completion_full": str(item["completion_full"]),
+                            "answer_current_stage": str(item["answer_current_stage"]),
+                            "answer_rollout_suffix": str(item["answer_rollout_suffix"]),
+                        }
+                    )
+                    rewards.append(float(reward.total))
+
+                return rewards
+
+            def _batch_reward_callback(prompt_text: str, completion_texts: list[str]) -> list[float]:
+                prepared = [
+                    _prepare_rollout_item(completion_text=text, ridx=ridx)
+                    for ridx, text in enumerate(completion_texts)
+                ]
+                return _score_prepared_group(prepared)
+
+            def _reward_callback(prompt_text: str, completion_text: str, ridx: int) -> float:
+                rewards = _batch_reward_callback(prompt_text, [completion_text])
+                return float(rewards[0]) if rewards else 0.0
+
+            setattr(_reward_callback, "batch_score", _batch_reward_callback)
 
             rollout_group_t0 = time.perf_counter()
             generations, grpo_report = self._run_internal_grpo_rollout(
@@ -416,6 +463,7 @@ class FourStageMCTS:
                         "r3": float(best_rollout_obj.r3),
                         "total": float(best_rollout_obj.total),
                         "obj_answer": (best_rollout_obj.metadata or {}).get("obj_answer"),
+                        "r1_debug": (best_rollout_obj.metadata or {}).get("r1_debug", {}),
                     },
                     "timing": best_rollout_timing,
                     "update": best_rollout_update,
@@ -502,11 +550,20 @@ class FourStageMCTS:
         marker = "### ROLLOUT_CONTINUATION"
         raw = text or ""
         idx = raw.find(marker)
-        if idx < 0:
-            return raw.strip(), ""
-        current = raw[:idx].strip()
-        suffix = raw[idx + len(marker) :].strip()
-        return current, suffix
+        if idx >= 0:
+            current = raw[:idx].strip()
+            suffix = raw[idx + len(marker) :].strip()
+            return current, suffix
+
+        # Fallback 1: marker missing but rollout tags exist.
+        tag_match = re.search(r"<\s*ROLLOUT_STAGE_[A-Z_]+\s*>", raw, flags=re.IGNORECASE)
+        if tag_match:
+            pos = int(tag_match.start())
+            return raw[:pos].strip(), raw[pos:].strip()
+
+        # Fallback 2: no marker and no tags. Keep raw for both current/suffix parsing.
+        cleaned = raw.strip()
+        return cleaned, cleaned
 
     @staticmethod
     def _extract_rollout_stage_block(rollout_suffix: str, stage: Stage) -> str:
@@ -526,6 +583,7 @@ class FourStageMCTS:
         task: OptimizationTask,
         from_node: SearchNode,
         rollout_suffix: str,
+        full_completion: str = "",
     ) -> Trajectory:
         partial = from_node.to_partial_trajectory()
         partial.trajectory_id = str(uuid.uuid4())
@@ -535,22 +593,40 @@ class FourStageMCTS:
         if from_node.stage == Stage.CODE:
             return partial
 
+        sources = [str(rollout_suffix or "")]
+        full_text = str(full_completion or "")
+        if full_text and full_text not in sources:
+            sources.append(full_text)
+
         start_idx = STAGE_ORDER.index(from_node.stage)
         for next_stage in STAGE_ORDER[start_idx + 1 :]:
-            block = self._extract_rollout_stage_block(rollout_suffix, next_stage)
+            block = ""
+            for src in sources:
+                block = self._extract_rollout_stage_block(src, next_stage)
+                if block:
+                    break
+
+            if not block and next_stage == Stage.CODE:
+                for src in sources:
+                    candidate = self._sanitize_code_payload(src)
+                    if self._looks_like_code(candidate):
+                        block = candidate
+                        break
+
             if not block:
                 continue
+
             parsed = self._extract_stage_payload(next_stage, block)
             if not parsed:
                 continue
             partial.outputs[next_stage] = parsed
             partial.priors[next_stage] = from_node.prior
 
-        if partial.outputs.get(Stage.CODE, "").strip():
-            return partial
+        if not partial.outputs.get(Stage.CODE, "").strip():
+            partial.metadata["rollout_missing_code"] = True
 
-        # Fallback for non-compliant completion formats.
-        return self._complete_for_reward(task, from_node)
+        # Important: no extra multi-step generation fallback here.
+        return partial
 
     def _complete_for_reward(self, task: OptimizationTask, from_node: SearchNode) -> Trajectory:
         if from_node.stage == Stage.CODE:
@@ -627,40 +703,138 @@ class FourStageMCTS:
 
     @staticmethod
     def _extract_stage_payload(stage: Stage, text: str) -> str:
+        cleaned = FourStageMCTS._normalize_text_block(text)
+
+        if stage == Stage.CODE:
+            return FourStageMCTS._sanitize_code_payload(cleaned)
+
+        # Keep only current-stage area; drop rollout continuation and downstream tag blocks.
+        main = FourStageMCTS._strip_rollout_region(cleaned)
+        if not main:
+            main = cleaned
+
+        if stage == Stage.SCHEMA:
+            block = FourStageMCTS._extract_named_sections(
+                text=main,
+                section_headers=["### Problem Schema", "### Modeling Skills"],
+                stop_headers=["### Sets Definition", "### Objective Definition", "### Gurobi Code"],
+            )
+            if block:
+                return block
+            return main.strip()
+
+        if stage == Stage.SET_PARAM_VAR:
+            block = FourStageMCTS._extract_named_sections(
+                text=main,
+                section_headers=["### Sets Definition", "### Parameters Definition", "### Variables Definition"],
+                stop_headers=["### Objective Definition", "### Constraints Definition", "### Gurobi Code"],
+            )
+            if block:
+                return block
+
+            keys = ["sets", "parameters", "variables"]
+            lines = [ln.rstrip() for ln in main.splitlines()]
+            keep = [
+                ln
+                for ln in lines
+                if any(k in ln.lower() for k in keys)
+                or ln.strip().startswith("-")
+                or ln.strip().startswith("##")
+            ]
+            return "\n".join(keep).strip() or main.strip()
+
+        if stage == Stage.OBJ_CONS:
+            block = FourStageMCTS._extract_named_sections(
+                text=main,
+                section_headers=["### Objective Definition", "### Constraints Definition"],
+                stop_headers=["### Gurobi Code"],
+            )
+            if block:
+                return block
+
+            keys = ["objective", "constraint"]
+            lines = [ln.rstrip() for ln in main.splitlines()]
+            keep = [
+                ln
+                for ln in lines
+                if any(k in ln.lower() for k in keys)
+                or ln.strip().startswith(tuple(str(i) + ")" for i in range(1, 10)))
+                or ln.strip().startswith("-")
+                or ln.strip().startswith("##")
+            ]
+            return "\n".join(keep).strip() or main.strip()
+
+        return main.strip()
+
+    @staticmethod
+    def _normalize_text_block(text: str) -> str:
         cleaned = (text or "").strip()
         if cleaned.startswith("```"):
             lines = cleaned.splitlines()
             if len(lines) >= 2 and lines[-1].strip().startswith("```"):
                 cleaned = "\n".join(lines[1:-1]).strip()
-
-        if stage == Stage.SCHEMA:
-            l = cleaned.find("{")
-            r = cleaned.rfind("}")
-            if l >= 0 and r > l:
-                return cleaned[l : r + 1].strip()
-            return cleaned
-
-        if stage == Stage.SET_PARAM_VAR:
-            keys = ["Sets", "Parameters", "Variables"]
-            lines = [ln.rstrip() for ln in cleaned.splitlines()]
-            keep = [ln for ln in lines if any(k.lower() in ln.lower() for k in keys) or ln.strip().startswith("-")]
-            return "\n".join(keep).strip() or cleaned
-
-        if stage == Stage.OBJ_CONS:
-            keys = ["Objective", "Constraint"]
-            lines = [ln.rstrip() for ln in cleaned.splitlines()]
-            keep = [
-                ln
-                for ln in lines
-                if any(k.lower() in ln.lower() for k in keys)
-                or ln.strip().startswith(tuple(str(i) + ")" for i in range(1, 10)))
-            ]
-            return "\n".join(keep).strip() or cleaned
-
-        if stage == Stage.CODE:
-            return FourStageMCTS._sanitize_code_payload(cleaned)
-
         return cleaned
+
+    @staticmethod
+    def _strip_rollout_region(text: str) -> str:
+        raw = text or ""
+
+        marker = "### ROLLOUT_CONTINUATION"
+        idx = raw.find(marker)
+        if idx >= 0:
+            raw = raw[:idx]
+
+        tag_match = re.search(r"<\s*ROLLOUT_STAGE_[A-Z_]+\s*>", raw, flags=re.IGNORECASE)
+        if tag_match:
+            raw = raw[: int(tag_match.start())]
+
+        return raw.strip()
+
+    @staticmethod
+    def _extract_named_sections(text: str, section_headers: list[str], stop_headers: list[str]) -> str:
+        lines = text.splitlines()
+        if not lines:
+            return ""
+
+        lower_lines = [ln.strip().lower() for ln in lines]
+        all_headers = [h.lower() for h in (section_headers + stop_headers)]
+
+        blocks: list[str] = []
+        for header in section_headers:
+            h = header.lower()
+            start = -1
+            for i, ln in enumerate(lower_lines):
+                if ln.startswith(h):
+                    start = i
+                    break
+            if start < 0:
+                continue
+
+            end = len(lines)
+            for j in range(start + 1, len(lines)):
+                ln = lower_lines[j]
+                if any(ln.startswith(x) for x in all_headers):
+                    end = j
+                    break
+
+            chunk = "\n".join(lines[start:end]).strip()
+            if chunk:
+                blocks.append(chunk)
+
+        return "\n\n".join(blocks).strip()
+
+    @staticmethod
+    def _looks_like_code(text: str) -> bool:
+        raw = (text or "").strip()
+        if not raw:
+            return False
+        patterns = (
+            r"\bdef\s+solve\s*\(",
+            r"\bimport\s+gurobipy\b",
+            r"\bfrom\s+gurobipy\s+import\b",
+            r"\bmodel\s*=",
+        )
+        return any(re.search(p, raw, flags=re.IGNORECASE) for p in patterns)
 
     @staticmethod
     def _sanitize_code_payload(text: str) -> str:

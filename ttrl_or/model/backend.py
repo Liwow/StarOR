@@ -39,9 +39,19 @@ class PolicyBackend(ABC):
         """
         n = max(1, int(config.num_generations))
         generations = self.generate(stage, prompt, n)
-        for ridx, gen in enumerate(generations):
-            gen.metadata["reward_total"] = float(reward_callback(prompt, gen.text, ridx))
-            gen.metadata["rollout_index"] = ridx
+
+        batch_score = getattr(reward_callback, "batch_score", None)
+        if callable(batch_score):
+            rewards = list(batch_score(prompt, [gen.text for gen in generations]))
+            if len(rewards) != len(generations):
+                rewards = rewards[: len(generations)] + [0.0] * max(0, len(generations) - len(rewards))
+            for ridx, gen in enumerate(generations):
+                gen.metadata["reward_total"] = float(rewards[ridx])
+                gen.metadata["rollout_index"] = ridx
+        else:
+            for ridx, gen in enumerate(generations):
+                gen.metadata["reward_total"] = float(reward_callback(prompt, gen.text, ridx))
+                gen.metadata["rollout_index"] = ridx
 
         return generations, {
             "updated": False,

@@ -28,7 +28,7 @@ class GRPOConfig:
     gradient_accumulation_steps: int = 1
     num_generations: int = 3
     generation_batch_size: int = 0
-    max_prompt_length: int = 8192
+    max_prompt_length: int = 8196
     max_completion_length: int = 2048
 
     use_vllm: bool = False

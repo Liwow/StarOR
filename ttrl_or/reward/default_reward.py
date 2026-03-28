@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
+import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from typing import Any
 
 from ttrl_or.config import RewardConfig
 from ttrl_or.model.backend import PolicyBackend
 from ttrl_or.reward.base import RewardCalculator
 from ttrl_or.reward.executor import PythonCodeExecutor
 from ttrl_or.reward.perturbation import generate_perturbed_instances_from_map
-from ttrl_or.types import ExecutionResult, OptimizationTask, RewardBreakdown, Trajectory
+from ttrl_or.types import ExecutionResult, OptimizationTask, RewardBreakdown, Stage, Trajectory
 
 
 @dataclass(slots=True)
@@ -22,8 +23,8 @@ class TTRLRewardCalculator(RewardCalculator):
     config: RewardConfig
     executor: PythonCodeExecutor = field(init=False)
     _exec_cache: dict[str, ExecutionResult] = field(default_factory=dict, init=False)
-    _global_numeric_pool: list[float] = field(default_factory=list, init=False)
-    _global_signature_pool: list[str] = field(default_factory=list, init=False)
+    _stage_numeric_pool: dict[str, list[float]] = field(default_factory=dict, init=False)
+    _stage_signature_pool: dict[str, list[str]] = field(default_factory=dict, init=False)
     _gurobi_success_markers: tuple[str, ...] = field(
         default=("optimal solution found", "model is solved to optimality"),
         init=False,
@@ -36,151 +37,169 @@ class TTRLRewardCalculator(RewardCalculator):
         )
 
     def provisional_reward(self, trajectory: Trajectory, explored: list[Trajectory]) -> RewardBreakdown:
-        execution, exec_cache_hit = self._execute(trajectory)
-        strict_success = bool(execution.success)
-        r2_success = self._effective_execution_success(execution)
-        obj_answer = self._extract_objective_from_execution(execution)
-        r1, consensus = self.compute_r1(
-            strict_success,
-            execution.signature,
-            execution.output,
-            numeric_override=obj_answer,
-        )
+        rewards = self.score_rollout_group(stage=Stage.CODE, trajectories=[trajectory], explored=explored)
+        return rewards[0]
 
-        if strict_success:
-            self._update_global_pool(execution.signature, execution.output, numeric_override=obj_answer)
+    def score_rollout_group(
+        self,
+        stage: Stage,
+        trajectories: list[Trajectory],
+        explored: list[Trajectory],
+    ) -> list[RewardBreakdown]:
+        if not trajectories:
+            return []
 
-        common_meta = {
-            "exec_elapsed_sec": float(execution.elapsed_sec),
-            "exec_cache_hit": bool(exec_cache_hit),
-            "obj_answer": obj_answer,
-            "execution": self._execution_summary(execution, obj_answer=obj_answer),
-        }
+        stage_key = stage.value
+        rel_tol = max(0.0, float(self.config.global_consensus_rel_tol))
 
-        if r1 == 1.0:
-            r3, r3_meta = self._compute_r3_with_details(trajectory)
-            total = self.combine_rewards(r1=r1, r2=0.0, r3=r3)
-            return RewardBreakdown(
-                r1=r1,
-                r2=0.0,
-                r3=r3,
-                total=total,
-                consensus_signature=consensus,
-                execution_success=strict_success,
-                robustness_success=(r3 == 1.0),
-                metadata={"r3": r3_meta, **common_meta},
-            )
+        stage_numeric_hist = list(self._stage_numeric_pool.get(stage_key, []))
+        stage_signature_hist = list(self._stage_signature_pool.get(stage_key, []))
 
-        r2 = self.compute_r2(r2_success)
-        total = self.combine_rewards(r1=r1, r2=r2, r3=0.0)
-        return RewardBreakdown(
-            r1=r1,
-            r2=r2,
-            r3=0.0,
-            total=total,
-            consensus_signature=consensus,
-            execution_success=strict_success,
-            robustness_success=False,
-            metadata=common_meta,
-        )
-
-    def finalize_group(self, trajectories: list[Trajectory]) -> list[Trajectory]:
+        evals: list[dict[str, Any]] = []
         for traj in trajectories:
-            exec_result, exec_cache_hit = self._execute(traj)
-            strict_success = bool(exec_result.success)
-            r2_success = self._effective_execution_success(exec_result)
-            obj_answer = self._extract_objective_from_execution(exec_result)
-            r1, consensus = self.compute_r1(
-                strict_success,
-                exec_result.signature,
-                exec_result.output,
-                numeric_override=obj_answer,
+            execution, exec_cache_hit = self._execute(traj)
+            strict_success = bool(execution.success)
+            effective_success = self._effective_execution_success(execution)
+            obj_answer = self._extract_objective_from_execution(execution)
+            signature = str(execution.signature or "")
+            evals.append(
+                {
+                    "trajectory": traj,
+                    "execution": execution,
+                    "exec_cache_hit": bool(exec_cache_hit),
+                    "strict_success": strict_success,
+                    "effective_success": effective_success,
+                    "obj_answer": obj_answer,
+                    "signature": signature,
+                }
             )
 
-            if strict_success:
-                self._update_global_pool(exec_result.signature, exec_result.output, numeric_override=obj_answer)
+        group_numeric = [
+            float(e["obj_answer"])
+            for e in evals
+            if e["effective_success"] and isinstance(e["obj_answer"], (int, float))
+        ]
+        group_signature = [
+            str(e["signature"])
+            for e in evals
+            if e["effective_success"] and str(e["signature"] or "") and str(e["signature"]) != "EXEC_ERROR"
+        ]
+
+        global_numeric_candidates = list(stage_numeric_hist) + list(group_numeric)
+        global_signature_candidates = list(stage_signature_hist) + list(group_signature)
+
+        current_numeric_label, current_numeric_votes = self._majority_numeric_reference(group_numeric, rel_tol)
+        global_numeric_label, global_numeric_votes = self._majority_numeric_reference(global_numeric_candidates, rel_tol)
+
+        current_signature_label, current_signature_votes = self._majority_signature_reference(group_signature)
+        global_signature_label, global_signature_votes = self._majority_signature_reference(global_signature_candidates)
+
+        final_mode = "none"
+        final_label_numeric: float | None = None
+        final_label_signature: str | None = None
+
+        if current_numeric_label is not None or global_numeric_label is not None:
+            final_mode = "numeric"
+            final_label_numeric = self._resolve_hierarchical_label_numeric(
+                current_label=current_numeric_label,
+                global_label=global_numeric_label,
+                group_values=group_numeric,
+                rel_tol=rel_tol,
+            )
+        elif current_signature_label is not None or global_signature_label is not None:
+            final_mode = "signature"
+            final_label_signature = self._resolve_hierarchical_label_signature(
+                current_label=current_signature_label,
+                global_label=global_signature_label,
+                group_values=group_signature,
+            )
+
+        rewards: list[RewardBreakdown] = []
+        for e in evals:
+            traj = e["trajectory"]
+            execution = e["execution"]
+            strict_success = bool(e["strict_success"])
+            effective_success = bool(e["effective_success"])
+            obj_answer = e["obj_answer"]
+            signature = str(e["signature"])
+
+            r1 = 0.0
+            if effective_success and final_mode == "numeric" and final_label_numeric is not None:
+                if isinstance(obj_answer, (int, float)) and self._within_rel_tol(float(obj_answer), final_label_numeric, rel_tol):
+                    r1 = 1.0
+            elif effective_success and final_mode == "signature" and final_label_signature:
+                if signature == final_label_signature:
+                    r1 = 1.0
 
             common_meta = {
-                "exec_elapsed_sec": float(exec_result.elapsed_sec),
-                "exec_cache_hit": bool(exec_cache_hit),
+                "r1_debug": {
+                    "stage": stage_key,
+                    "mode": final_mode,
+                    "strict_success": strict_success,
+                    "effective_success": effective_success,
+                    "obj_answer": obj_answer,
+                    "signature": signature,
+                    "current_numeric_label": current_numeric_label,
+                    "current_numeric_votes": int(current_numeric_votes),
+                    "global_numeric_label": global_numeric_label,
+                    "global_numeric_votes": int(global_numeric_votes),
+                    "final_numeric_label": final_label_numeric,
+                    "current_signature_label": current_signature_label,
+                    "current_signature_votes": int(current_signature_votes),
+                    "global_signature_label": global_signature_label,
+                    "global_signature_votes": int(global_signature_votes),
+                    "final_signature_label": final_label_signature,
+                    "numeric_pool_size_before": int(len(stage_numeric_hist)),
+                    "signature_pool_size_before": int(len(stage_signature_hist)),
+                    "group_numeric_size": int(len(group_numeric)),
+                    "group_signature_size": int(len(group_signature)),
+                    "rel_tol": rel_tol,
+                },
+                "exec_elapsed_sec": float(execution.elapsed_sec),
+                "exec_cache_hit": bool(e["exec_cache_hit"]),
                 "obj_answer": obj_answer,
-                "execution": self._execution_summary(exec_result, obj_answer=obj_answer),
+                "execution": self._execution_summary(execution, obj_answer=obj_answer, effective_success=effective_success),
             }
 
             if r1 == 1.0:
                 r3, r3_meta = self._compute_r3_with_details(traj)
                 total = self.combine_rewards(r1=r1, r2=0.0, r3=r3)
-                traj.reward = RewardBreakdown(
-                    r1=r1,
-                    r2=0.0,
-                    r3=r3,
-                    total=total,
-                    consensus_signature=consensus,
-                    execution_success=strict_success,
-                    robustness_success=(r3 == 1.0),
-                    metadata={"r3": r3_meta, **common_meta},
+                rewards.append(
+                    RewardBreakdown(
+                        r1=r1,
+                        r2=0.0,
+                        r3=r3,
+                        total=total,
+                        consensus_signature=self._consensus_key(final_mode, final_label_numeric, final_label_signature),
+                        execution_success=effective_success,
+                        robustness_success=(r3 == 1.0),
+                        metadata={"r3": r3_meta, **common_meta},
+                    )
                 )
             else:
-                r2 = self.compute_r2(r2_success)
+                r2 = self.compute_r2(effective_success)
                 total = self.combine_rewards(r1=r1, r2=r2, r3=0.0)
-                traj.reward = RewardBreakdown(
-                    r1=r1,
-                    r2=r2,
-                    r3=0.0,
-                    total=total,
-                    consensus_signature=consensus,
-                    execution_success=strict_success,
-                    robustness_success=False,
-                    metadata=common_meta,
+                rewards.append(
+                    RewardBreakdown(
+                        r1=r1,
+                        r2=r2,
+                        r3=0.0,
+                        total=total,
+                        consensus_signature=self._consensus_key(final_mode, final_label_numeric, final_label_signature),
+                        execution_success=effective_success,
+                        robustness_success=False,
+                        metadata=common_meta,
+                    )
                 )
+
+        self._update_stage_pools(stage_key=stage_key, group_numeric=group_numeric, group_signature=group_signature)
+        return rewards
+
+    def finalize_group(self, trajectories: list[Trajectory]) -> list[Trajectory]:
+        rewards = self.score_rollout_group(stage=Stage.CODE, trajectories=trajectories, explored=[])
+        for traj, reward in zip(trajectories, rewards, strict=False):
+            traj.reward = reward
         return trajectories
-
-    def compute_r1(
-        self,
-        execution_success: bool,
-        signature: str,
-        output: object | None = None,
-        numeric_override: float | None = None,
-    ) -> tuple[float, str]:
-        if not execution_success:
-            return 0.0, ""
-
-        numeric = numeric_override if numeric_override is not None else self._extract_objective_numeric(output)
-        if numeric is not None:
-            return self._compute_numeric_r1(numeric)
-
-        return self._compute_signature_r1(signature)
-
-    def _compute_numeric_r1(self, candidate: float) -> tuple[float, str]:
-        pool = self._global_numeric_pool
-        min_pool = max(1, int(self.config.global_consensus_min_pool))
-        rel_tol = max(0.0, float(self.config.global_consensus_rel_tol))
-
-        if len(pool) < min_pool:
-            if not pool:
-                return 1.0, f"oom:{self._order_of_magnitude(candidate)}"
-
-            cand_oom = self._order_of_magnitude(candidate)
-            consensus = any(self._order_of_magnitude(v) == cand_oom for v in pool)
-            return (1.0 if consensus else 0.0), f"oom:{cand_oom}"
-
-        ref, votes = self._majority_numeric_reference(pool, rel_tol=rel_tol)
-        if ref is None or votes <= 0:
-            return 0.0, ""
-
-        in_consensus = self._within_rel_tol(candidate, ref, rel_tol)
-        return (1.0 if in_consensus else 0.0), f"ref:{ref:.6f}|votes:{votes}|tol:{rel_tol}"
-
-    def _compute_signature_r1(self, signature: str) -> tuple[float, str]:
-        pool = [s for s in self._global_signature_pool if s and s != "EXEC_ERROR"]
-        min_pool = max(1, int(self.config.global_consensus_min_pool))
-        if len(pool) < min_pool:
-            if not pool:
-                return 1.0, signature
-            return (1.0 if signature in pool else 0.0), signature
-
-        majority = Counter(pool).most_common(1)[0][0]
-        return (1.0 if signature == majority else 0.0), majority
 
     @staticmethod
     def compute_r2(execution_success: bool) -> float:
@@ -267,19 +286,61 @@ class TTRLRewardCalculator(RewardCalculator):
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=repr)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
-    def _update_global_pool(
-        self,
-        signature: str,
-        output: object | None,
-        numeric_override: float | None = None,
-    ) -> None:
-        numeric = numeric_override if numeric_override is not None else self._extract_objective_numeric(output)
-        if numeric is not None:
-            self._global_numeric_pool.append(float(numeric))
-            return
+    def _update_stage_pools(self, stage_key: str, group_numeric: list[float], group_signature: list[str]) -> None:
+        if group_numeric:
+            self._stage_numeric_pool.setdefault(stage_key, []).extend(float(x) for x in group_numeric)
+        elif group_signature:
+            sig_pool = self._stage_signature_pool.setdefault(stage_key, [])
+            for s in group_signature:
+                if s and s != "EXEC_ERROR":
+                    sig_pool.append(s)
 
-        if signature and signature != "EXEC_ERROR":
-            self._global_signature_pool.append(signature)
+    def _resolve_hierarchical_label_numeric(
+        self,
+        current_label: float | None,
+        global_label: float | None,
+        group_values: list[float],
+        rel_tol: float,
+    ) -> float | None:
+        if current_label is None and global_label is None:
+            return None
+        if current_label is None:
+            return global_label
+        if global_label is None:
+            return current_label
+        if self._within_rel_tol(current_label, global_label, rel_tol):
+            return global_label
+
+        if any(self._within_rel_tol(v, global_label, rel_tol) for v in group_values):
+            return global_label
+        return current_label
+
+    @staticmethod
+    def _resolve_hierarchical_label_signature(
+        current_label: str | None,
+        global_label: str | None,
+        group_values: list[str],
+    ) -> str | None:
+        if not current_label and not global_label:
+            return None
+        if not current_label:
+            return global_label
+        if not global_label:
+            return current_label
+        if current_label == global_label:
+            return global_label
+
+        if any(v == global_label for v in group_values):
+            return global_label
+        return current_label
+
+    @staticmethod
+    def _consensus_key(mode: str, numeric_label: float | None, signature_label: str | None) -> str:
+        if mode == "numeric" and numeric_label is not None:
+            return f"numeric:{numeric_label:.6f}"
+        if mode == "signature" and signature_label:
+            return f"signature:{signature_label}"
+        return ""
 
     @staticmethod
     def _extract_objective_numeric(output: object | None) -> float | None:
@@ -355,12 +416,6 @@ class TTRLRewardCalculator(RewardCalculator):
         return self._extract_objective_from_text(execution.stderr)
 
     @staticmethod
-    def _order_of_magnitude(value: float) -> int:
-        if value == 0:
-            return 0
-        return int(math.floor(math.log10(abs(value))))
-
-    @staticmethod
     def _within_rel_tol(value: float, ref: float, rel_tol: float) -> bool:
         base = max(abs(ref), 1e-12)
         return abs(value - ref) <= rel_tol * base
@@ -381,28 +436,66 @@ class TTRLRewardCalculator(RewardCalculator):
         ref = sum(best_members) / len(best_members)
         return ref, len(best_members)
 
+    @staticmethod
+    def _majority_signature_reference(values: list[str]) -> tuple[str | None, int]:
+        if not values:
+            return None, 0
+        c = Counter(values)
+        label, votes = c.most_common(1)[0]
+        return label, int(votes)
+
     def _effective_execution_success(self, execution: ExecutionResult) -> bool:
         if bool(execution.success):
             return True
+
+        # If we can parse a valid objective value from output/stdout/stderr,
+        # treat this as effective execution success even when wrapper shape checks fail.
+        obj_answer = self._extract_objective_from_execution(execution)
+        if self._is_valid_objective(obj_answer):
+            return True
+
         stdout_text = str(execution.stdout or "")
         lowered = stdout_text.lower()
-        return any(marker in lowered for marker in self._gurobi_success_markers)
+        if any(marker in lowered for marker in self._gurobi_success_markers):
+            return True
+
+        # Additional textual fallback for common report formats.
+        if "optimal value" in lowered or "objective value" in lowered:
+            return True
+
+        return False
 
     @staticmethod
-    def _execution_summary(execution: ExecutionResult, obj_answer: float | None = None) -> dict:
+    def _execution_summary(
+        execution: ExecutionResult,
+        obj_answer: float | None = None,
+        effective_success: bool | None = None,
+    ) -> dict:
         stdout_text = str(execution.stdout or "")
-        marker_hit = "optimal solution found" in stdout_text.lower()
+        lowered = stdout_text.lower()
+        marker_hit = "optimal solution found" in lowered or "model is solved to optimality" in lowered
+        obj_hit = TTRLRewardCalculator._is_valid_objective(obj_answer)
+        eff = bool(effective_success) if effective_success is not None else bool(execution.success or marker_hit or obj_hit)
         return {
             "success": bool(execution.success),
-            "effective_success": bool(execution.success or marker_hit),
+            "effective_success": eff,
             "solver_success_marker_hit": marker_hit,
+            "objective_text_marker_hit": bool("optimal value" in lowered or "objective value" in lowered),
             "parsed_obj_answer": obj_answer,
+            "objective_parsed_success": obj_hit,
             "signature": str(execution.signature or ""),
             "error_type": str(execution.error_type or ""),
             "output": TTRLRewardCalculator._jsonable(execution.output),
             "stdout_tail": TTRLRewardCalculator._truncate_text(execution.stdout, 2000),
             "stderr_tail": TTRLRewardCalculator._truncate_text(execution.stderr, 2000),
         }
+
+    @staticmethod
+    def _is_valid_objective(value: float | None) -> bool:
+        if not isinstance(value, (int, float)):
+            return False
+        v = float(value)
+        return math.isfinite(v)
 
     @staticmethod
     def _truncate_text(text: str, max_len: int) -> str:
@@ -418,4 +511,3 @@ class TTRLRewardCalculator(RewardCalculator):
             return value
         except Exception:
             return repr(value)
-
