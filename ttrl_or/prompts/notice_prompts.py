@@ -6,7 +6,10 @@ Stage 1: Schema and Modeling Skill Analysis (Analyze the problem type, complexit
 Stage 2: Set, Parameters, and Variables Construction (Define set indices, input data Parameters, and decision variables).
 Stage 3: Objective and Constraints Modeling (Formulate the mathematical expressions).
 Stage 4: Problem Solving Code with Gurobi (Write the Python implementation using the gurobipy library).
-Output Format: You must wrap the content of each stage in the following specific tags: <stage_1>, <stage_2>, <stage_3>, and <Gurobi_code>.
+In every current stage, you should output the current stage content following the Output Format below: 
+You MUST wrap the content of each stage in the following specific tags: <stage_1>, <stage_2>, <stage_3>, and <Gurobi_code>.
+Before you output the content of each stage, you should think step bt step first in <thought> and then follow the instruction to check. Only output within the tags when you already think and check.
+Note: Output only clean, stage-specific content within each tag, without other explanations, descriptions or thoughts.
 """
 
 

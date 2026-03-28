@@ -13,15 +13,6 @@ def _append_notice(base: str, notice: str) -> str:
     return f"{base_text}\n\n{notice_text}".strip()
 
 
-TAG_RULES_COMMON = """
-Output tag protocol (strict):
-- Stage 1 output must be only inside <stage_1>...</stage_1>
-- Stage 2 output must be only inside <stage_2>...</stage_2>
-- Stage 3 output must be only inside <stage_3>...</stage_3>
-- Stage 4 code must be only inside <Gurobi_code>...</Gurobi_code>
-Do not output content outside the required tag for the current stage.
-""".strip()
-
 
 SCHEMA_TEMPLATE = """
 You are the first stage of a 4-stage OR modeling pipeline.
@@ -30,6 +21,7 @@ In First Stage (Schema and Modeling Skill Analysis), your goal is to provide a c
 Task:
 {task_description}
 
+Current Stage Insructions (YOU ARE IN):
 Stage 1 = schema + skill
 
 Your job is to extract a stable OR modeling blueprint from the natural language task.
@@ -54,6 +46,7 @@ Task:
 Previous stages:
 {history}
 
+Current Stage Insructions (YOU ARE IN):
 Stage 2 = set + parameter + var
 
 Your job in this stage is to convert the schema from previous stages into:
@@ -79,6 +72,7 @@ Task:
 Previous stages:
 {history}
 
+Current Stage Insructions (YOU ARE IN):
 Stage 3 = objective + constraints
 
 Your job in this stage is to construct:
@@ -103,6 +97,7 @@ Task:
 Previous stages:
 {history}
 
+Current Stage Insructions (YOU ARE IN):
 Stage 4 = model2code
 
 Your job is to translate the finalized optimization model into executable Gurobi Python code.
@@ -116,23 +111,24 @@ Output requirement:
 """.strip()
 
 
+# DEFAULT_TEMPLATES: dict[Stage, str] = {
+#     Stage.SCHEMA: _append_notice(_append_notice(SCHEMA_TEMPLATE, ''), SCHEMA_SKILL_NOTICE),
+#     Stage.SET_PARAM_VAR: _append_notice(_append_notice(SET_PARAM_VAR_TEMPLATE, ''), SET_PARA_VAR_NOTICE),
+#     Stage.OBJ_CONS: _append_notice(_append_notice(OBJ_CONS_TEMPLATE, ''), OBJ_CON_NOTICE),
+#     Stage.CODE: _append_notice(_append_notice(CODE_TEMPLATE, ''), CODE_NOTICE),
+# }
+
 DEFAULT_TEMPLATES: dict[Stage, str] = {
-    Stage.SCHEMA: _append_notice(_append_notice(SCHEMA_TEMPLATE, TAG_RULES_COMMON), SCHEMA_SKILL_NOTICE),
-    Stage.SET_PARAM_VAR: _append_notice(_append_notice(SET_PARAM_VAR_TEMPLATE, TAG_RULES_COMMON), SET_PARA_VAR_NOTICE),
-    Stage.OBJ_CONS: _append_notice(_append_notice(OBJ_CONS_TEMPLATE, TAG_RULES_COMMON), OBJ_CON_NOTICE),
-    Stage.CODE: _append_notice(_append_notice(CODE_TEMPLATE, TAG_RULES_COMMON), CODE_NOTICE),
+    Stage.SCHEMA: _append_notice(SCHEMA_TEMPLATE, ''),
+    Stage.SET_PARAM_VAR: _append_notice(SET_PARAM_VAR_TEMPLATE, ''),
+    Stage.OBJ_CONS: _append_notice(OBJ_CONS_TEMPLATE, ''),
+    Stage.CODE: _append_notice(CODE_TEMPLATE, ''),
 }
 
 
 ROLLOUT_APPEND_TEMPLATE = """
-Following the above instruction to complete the satge, and then continue until output the final solving python code.
-After finishing the current stage, continue to complete the remaining stages in order: {remaining_stages}.
-You must still follow strict tags:
-<stage_1>...</stage_1>
-<stage_2>...</stage_2>
-<stage_3>...</stage_3>
-<Gurobi_code>...</Gurobi_code>
-Final code must be in <Gurobi_code> only.
+For current stage, you should think step bt step first in <thought> and then output within tags following the instruction. Following the above instruction to complete the current satge, and put the current satge output within tags.
+And then based the content this stage and previous stages, think to output the final python code with gurobi in <Gurobi_code>.
 """.strip()
 
 
