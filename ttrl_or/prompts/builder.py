@@ -33,7 +33,7 @@ class PromptBuilder:
             return base_prompt
 
         remaining = self._remaining_stages(stage)
-        remaining_names = ", ".join(s.value for s in remaining) if remaining else "none"
+        remaining_names = " --> ".join(s.value for s in remaining) if remaining else "none"
         suffix = rollout_suffix.replace("{remaining_stages}", remaining_names)
         return f"{base_prompt}\n\n{suffix}".strip()
 
@@ -59,9 +59,9 @@ class PromptBuilder:
         if stage == Stage.SCHEMA:
             return ""
         if stage == Stage.SET_PARAM_VAR:
-            return output_stage1
+            return "# SCHEMA AND SKILLS\n" + output_stage1
         if stage == Stage.OBJ_CONS:
-            return output_stage1 + "\n\n" + output_stage2
+            return "# SCHEMA AND SKILLS\n" + output_stage1 + "\n\n" + "# SETS AND PARAMETERS AND VARIABLES\n" + output_stage2
         if stage == Stage.CODE:
-            return output_stage1 + "\n\n" + output_stage2 + "\n\n" + output_stage3
+            return "# SCHEMA AND SKILLS\n" + output_stage1 + "\n\n" + "# SETS AND PARAMETERS AND VARIABLES\n" + output_stage2 + "\n\n" + "# OBJECTIVE AND CONSTRAINTS\n" + output_stage3
         return ""

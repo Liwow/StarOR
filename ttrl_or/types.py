@@ -6,10 +6,10 @@ from typing import Any
 
 
 class Stage(str, Enum):
-    SCHEMA = "schema"
-    SET_PARAM_VAR = "set_param_var"
-    OBJ_CONS = "obj_cons"
-    CODE = "code"
+    SCHEMA = "Stage 1: Schema and Modeling Skill Analysis"
+    SET_PARAM_VAR = "Stage 2: Set, Parameters, and Variables Construction"
+    OBJ_CONS = "Stage 3: Objective and Constraints Modeling"
+    CODE = "Stage 4: Problem Python Code with Gurobi"
 
 
 STAGE_ORDER: tuple[Stage, ...] = (

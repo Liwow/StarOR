@@ -125,6 +125,7 @@ DEFAULT_TEMPLATES: dict[Stage, str] = {
 
 
 ROLLOUT_APPEND_TEMPLATE = """
+Following the above instruction to complete the satge, and then continue until output the final solving python code.
 After finishing the current stage, continue to complete the remaining stages in order: {remaining_stages}.
 You must still follow strict tags:
 <stage_1>...</stage_1>

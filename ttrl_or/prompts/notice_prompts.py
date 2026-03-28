@@ -261,25 +261,15 @@ Put your output within <stage_3></stage_3>
 
 """
 
-CODE_NOTICE = """
-In Final Stage, your goal is to Write the Python Code with gurobi based on the Content from previous stages.
-
-# MANDATORY OUTPUT RULES
-
-1. Output must contain exactly one top-level section header:
-- "### Gurobi Code"
-
-2. Under that header, output code STRICTLY inside:
-<Gurobi_code>
-...
-</Gurobi_code>
-
-3. Do NOT output any explanation before or after the code.
-4. Do NOT output chain-of-thought.
-5. The generated code must be minimal, executable, and non-redundant.
-
-
-# MANDATORY CODE REQUIREMENTS
+CODE_NOTICE ="""
+Here is some code notice.
+- Import gurobipy as gp and from gurobipy import GRB
+- Translate indexed definitions into dictionaries or addVars when appropriate
+- Use symbolic data placeholders if the task/model does not provide explicit full datasets
+- Keep the code faithful to the model structure
+- Do not add extra modeling assumptions
+- Do not add demo data unless absolutely necessary for syntax completeness
+- If some data structures are unspecified, create minimal placeholder containers consistent with the model notation
 
 The generated code must:
 1. use Python + gurobipy,
@@ -320,58 +310,6 @@ if status == GRB.OPTIMAL:
 else:
     print(f"Model status: {{status}}")
 </Gurobi_code>
-
-
-# CODE STYLE REQUIREMENTS
-
-- Import gurobipy as gp and from gurobipy import GRB
-- Create variables and constraints using names consistent with the mathematical model
-- Translate indexed definitions into dictionaries or addVars when appropriate
-- Use symbolic data placeholders if the task/model does not provide explicit full datasets
-- Keep the code faithful to the model structure
-- Do not add extra modeling assumptions
-- Do not add demo data unless absolutely necessary for syntax completeness
-- If some data structures are unspecified, create minimal placeholder containers consistent with the model notation
-
-
-# TRANSLATION PRINCIPLES
-
-- Translate, do not repair.
-- Preserve objective direction exactly.
-- Preserve every constraint category exactly.
-- Preserve variable domains exactly.
-- Preserve indexing logic exactly.
-- Do not silently remove constraints.
-- Do not silently add new constraints.
-- Do not change parameter meanings.
-
-
-# ROBUSTNESS REQUIREMENTS
-
-The code should:
-- handle optimization status safely,
-- avoid crashing on missing optimal solution reporting logic,
-- print a clear result when solved,
-- remain syntactically correct Python code.
-
-A typical safe pattern is:
-- build model
-- set objective
-- add constraints
-- optimize
-- check status
-- if solvable, set optimal and print
-- otherwise print model status information
-
-
-# FINAL CHECK BEFORE OUTPUT
-
-Make sure:
-1. only one "### Gurobi Code" section exists,
-2. code is only inside <Gurobi_code> and </Gurobi_code>,
-3. model / status / optimal / obj use the exact required names,
-4. the code is a faithful translation of previous stages,
-5. there is no explanation outside the code block.
 """
 
 
