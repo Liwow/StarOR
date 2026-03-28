@@ -565,15 +565,37 @@ class FourStageMCTS:
         if not raw:
             return ""
 
-        pattern = rf"<\s*{re.escape(tag)}\s*>(.*?)<\s*/\s*{re.escape(tag)}\s*>"
-        blocks = re.findall(pattern, raw, flags=re.IGNORECASE | re.DOTALL)
-        if not blocks:
-            return ""
+        open_re = re.compile(rf"<\s*{re.escape(tag)}\s*>", flags=re.IGNORECASE)
+        close_re = re.compile(rf"<\s*/\s*{re.escape(tag)}\s*>", flags=re.IGNORECASE)
 
-        best = max((b.strip() for b in blocks), key=len, default="")
-        if len(best) < int(min_len):
-            return ""
-        return best
+        # Strict rule:
+        # 1) Find a close tag first, in order.
+        # 2) For that close tag, search backward for the nearest matching open tag.
+        # 3) Tag content is valid only when len(content.strip()) > 20.
+        required_len = max(21, int(min_len))
+
+        token_re = re.compile(
+            rf"(<\s*{re.escape(tag)}\s*>)|(<\s*/\s*{re.escape(tag)}\s*>)",
+            flags=re.IGNORECASE,
+        )
+        open_stack: list[re.Match[str]] = []
+        for token in token_re.finditer(raw):
+            token_text = token.group(0)
+            if close_re.fullmatch(token_text):
+                if not open_stack:
+                    continue
+                open_token = open_stack.pop()
+                content = raw[int(open_token.end()) : int(token.start())]
+                cleaned = str(content or "").strip()
+                if len(cleaned) >= required_len:
+                    return cleaned
+                # Invalid tag content (too short) => skip and continue searching.
+                continue
+
+            if open_re.fullmatch(token_text):
+                open_stack.append(token)
+
+        return ""
 
     @staticmethod
     def _extract_rollout_stage_block(rollout_text: str, stage: Stage) -> str:
@@ -785,18 +807,11 @@ class FourStageMCTS:
             return cleaned
 
         # Unified extraction policy:
-        # 1) Prefer explicit <Gurobi_code> ... </Gurobi_code> blocks.
+        # 1) Prefer explicit <Gurobi_code> ... </Gurobi_code> with first-close truncation.
         # 2) Fallback to fenced code block extraction.
-        tag_blocks = re.findall(
-            r"<\s*gurobi_code\s*>(.*?)<\s*/\s*gurobi_code\s*>",
-            cleaned,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        if tag_blocks:
-            cleaned = max((block.strip() for block in tag_blocks), key=len, default="")
-            if not cleaned:
-                cleaned = (text or "").strip()
-
+        by_tag = FourStageMCTS._extract_tag_block(cleaned, tag="Gurobi_code", min_len=21)
+        if by_tag:
+            cleaned = by_tag
 
         lines = cleaned.splitlines()
 
@@ -836,4 +851,3 @@ class FourStageMCTS:
 
         cleaned = "\n".join(code_lines).strip()
         return cleaned
-

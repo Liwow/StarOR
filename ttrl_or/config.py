@@ -51,6 +51,10 @@ class DatasetConfig:
     mapping_llm_temperature: float = 0.0
     mapping_llm_top_p: float = 1.0
 
+    r3_plan_max_new_tokens: int = 1200
+    r3_plan_temperature: float = 0.0
+    r3_plan_top_p: float = 1.0
+
 
 @dataclass(slots=True)
 class BackendConfig:

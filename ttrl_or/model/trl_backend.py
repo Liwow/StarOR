@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import gc
+import json
 import inspect
 import math
 import os
 import tempfile
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -384,6 +387,112 @@ class TRLPolicyBackend(PolicyBackend):
         completion_ids = output[0][prompt_len:]
         completion = self._tokenizer.decode(completion_ids, skip_special_tokens=True)
         return completion.strip()
+
+    def generate_auxiliary_text(
+        self,
+        prompt: str,
+        *,
+        max_new_tokens: int = 1024,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        prefer_vllm: bool = False,
+        vllm_mode: str = "",
+    ) -> str | None:
+        if bool(prefer_vllm):
+            out = self._generate_auxiliary_vllm_server(
+                prompt=prompt,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                vllm_mode=vllm_mode,
+            )
+            if out:
+                return out
+
+        if self._model is None or self._tokenizer is None:
+            # Lazy-load base model once for pre-MCTS auxiliary planning.
+            self._load_fresh_episode_model()
+        if self._model is None or self._tokenizer is None:
+            return None
+
+        self._model.eval()
+        inputs = self._tokenizer(prompt, return_tensors="pt")
+        device = self._infer_device()
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        temp = max(0.0, float(temperature))
+        do_sample = temp > 0.0
+        gen_kwargs: dict[str, Any] = {
+            "max_new_tokens": int(max_new_tokens),
+            "pad_token_id": self._tokenizer.pad_token_id,
+            "eos_token_id": self._tokenizer.eos_token_id,
+        }
+        if do_sample:
+            gen_kwargs["do_sample"] = True
+            gen_kwargs["temperature"] = temp
+            gen_kwargs["top_p"] = float(top_p)
+        else:
+            gen_kwargs["do_sample"] = False
+
+        with torch.no_grad():
+            output = self._model.generate(**inputs, **gen_kwargs)
+
+        prompt_len = inputs["input_ids"].shape[1]
+        completion_ids = output[0][prompt_len:]
+        completion = self._tokenizer.decode(completion_ids, skip_special_tokens=True)
+        return completion.strip()
+
+    def _generate_auxiliary_vllm_server(
+        self,
+        *,
+        prompt: str,
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+        vllm_mode: str,
+    ) -> str | None:
+        # Prefer external vLLM only for server mode.
+        if str(vllm_mode or "").lower() != "server":
+            return None
+        base_url = (os.environ.get("VLLM_BASE_URL") or "http://127.0.0.1:8000").rstrip("/")
+        model_name = (os.environ.get("VLLM_MODEL_NAME") or self.model_name_or_path).strip()
+        url = f"{base_url}/v1/completions"
+
+        payload = {
+            "model": model_name,
+            "prompt": prompt,
+            "max_tokens": int(max_new_tokens),
+            "temperature": float(max(0.0, temperature)),
+            "top_p": float(top_p),
+        }
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:  # nosec B310
+                body = resp.read().decode("utf-8", errors="ignore")
+        except Exception:
+            return None
+
+        try:
+            parsed = json.loads(body)
+        except Exception:
+            return None
+
+        choices = parsed.get("choices") if isinstance(parsed, dict) else None
+        if not isinstance(choices, list) or not choices:
+            return None
+
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        text = first.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+        return None
 
     def generate_test_instances(self, task: OptimizationTask, k: int) -> list[dict[str, Any]]:
         from ttrl_or.reward.perturbation import generate_perturbed_instances_from_map

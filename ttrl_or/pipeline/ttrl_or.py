@@ -1,6 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from collections import defaultdict
@@ -23,6 +24,16 @@ class TaskRunResult:
     trajectories: list[Trajectory]
     best_trajectory: Trajectory | None
     trace: RunTrace | None = None
+
+
+
+def _safe_path_component(name: str) -> str:
+    raw = str(name or "").strip()
+    if not raw:
+        return "task"
+    safe = re.sub(r'[\\/:*?"<>|]+', "_", raw)
+    safe = safe.strip(" .")
+    return safe or "task"
 
 
 class TTRLORRunner:
@@ -66,7 +77,7 @@ class TTRLORRunner:
             )
 
             if self.config.save_logs:
-                run_dir = Path(self.config.log_dir) / task.task_id
+                run_dir = Path(self.config.log_dir) / _safe_path_component(task.task_id)
                 run_dir.mkdir(parents=True, exist_ok=True)
                 iter_live_writer = (run_dir / "mcts_iterations.md").open("w", encoding="utf-8")
 
@@ -252,7 +263,7 @@ class TTRLORRunner:
         iteration_logs: list[dict[str, Any]],
         runtime_summary: dict[str, Any],
     ) -> dict[str, str]:
-        run_dir = Path(self.config.log_dir) / trace.task_id
+        run_dir = Path(self.config.log_dir) / _safe_path_component(trace.task_id)
         run_dir.mkdir(parents=True, exist_ok=True)
 
         summary_path = run_dir / "run_summary.json"
@@ -619,25 +630,4 @@ class TTRLORRunner:
             "total_grpo_samples": total_grpo_samples,
             "per_stage": per_stage,
         }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 

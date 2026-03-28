@@ -51,6 +51,7 @@ class TTRLRewardCalculator(RewardCalculator):
 
         stage_key = stage.value
         rel_tol = max(0.0, float(self.config.global_consensus_rel_tol))
+        base_obj_bounds = self._base_obj_bounds()
 
         stage_numeric_hist = list(self._stage_numeric_pool.get(stage_key, []))
         stage_signature_hist = list(self._stage_signature_pool.get(stage_key, []))
@@ -65,7 +66,8 @@ class TTRLRewardCalculator(RewardCalculator):
             code_text = str(traj.code or "")
             has_code = len(code_text.strip()) > 20
             has_valid_obj = self._is_valid_objective(obj_answer)
-            r1_eligible = bool(has_code and strict_success and has_valid_obj)
+            obj_in_bounds = self._objective_within_bounds(obj_answer, base_obj_bounds)
+            r1_eligible = bool(has_code and strict_success and has_valid_obj and obj_in_bounds)
             evals.append(
                 {
                     "trajectory": traj,
@@ -78,6 +80,7 @@ class TTRLRewardCalculator(RewardCalculator):
                     "has_code": has_code,
                     "code_len": int(len(code_text.strip())),
                     "has_valid_obj": has_valid_obj,
+                    "obj_in_bounds": obj_in_bounds,
                     "r1_eligible": r1_eligible,
                 }
             )
@@ -123,6 +126,7 @@ class TTRLRewardCalculator(RewardCalculator):
             signature = str(e["signature"])
             has_code = bool(e.get("has_code", False))
             has_valid_obj = bool(e.get("has_valid_obj", False))
+            obj_in_bounds = bool(e.get("obj_in_bounds", True))
             r1_eligible = bool(e.get("r1_eligible", False))
             code_len = int(e.get("code_len", 0))
 
@@ -146,7 +150,9 @@ class TTRLRewardCalculator(RewardCalculator):
                     "has_code": has_code,
                     "code_len": int(code_len),
                     "has_valid_obj": has_valid_obj,
+                    "obj_in_bounds": obj_in_bounds,
                     "r1_eligible": r1_eligible,
+                    "base_obj_bounds": base_obj_bounds,
                     "current_numeric_label": current_numeric_label,
                     "current_numeric_votes": int(current_numeric_votes),
                     "global_numeric_label": global_numeric_label,
@@ -233,16 +239,14 @@ class TTRLRewardCalculator(RewardCalculator):
                 "num_cases": 0,
             }
 
-        tests = self.backend.generate_test_instances(self.task, self.config.robustness_cases)
-        source = "backend"
-        if not tests:
-            tests = generate_perturbed_instances_from_map(
-                self.task.instance,
-                self.task.perturbation_map,
-                self.config.robustness_cases,
-            )
-            source = "heuristic"
+        if bool(self.task.instance.get("__r3_disable__", False)):
+            return 1.0, {
+                "enabled": False,
+                "reason": "disabled_by_precompute_failure",
+                "num_cases": 0,
+            }
 
+        tests, source = self._load_r3_tests()
         if not tests:
             return 0.0, {
                 "enabled": True,
@@ -252,18 +256,28 @@ class TTRLRewardCalculator(RewardCalculator):
             }
 
         details: list[dict] = []
-        for idx, case in enumerate(tests):
-            res = self.executor.run(trajectory.code, case)
-            case_meta = case.get("__perturbation__") if isinstance(case, dict) else None
+        for idx, raw_case in enumerate(tests):
+            case_instance, case_bounds, case_meta = self._normalize_r3_case(raw_case)
+            res = self.executor.run(trajectory.code, case_instance)
+            effective_success = self._effective_execution_success(res)
+            case_obj = self._extract_objective_from_execution(res)
+            obj_in_bounds = self._objective_within_bounds(case_obj, case_bounds)
+
             detail = {
                 "case_index": idx,
-                "success": res.success,
+                "success": bool(res.success),
+                "effective_success": bool(effective_success),
                 "signature": res.signature,
                 "elapsed_sec": float(res.elapsed_sec),
-                "changes": case_meta.get("changes", []) if isinstance(case_meta, dict) else [],
+                "obj_answer": case_obj,
+                "obj_in_bounds": obj_in_bounds,
+                "obj_bounds": case_bounds,
+                "changes": list(case_meta.get("changes", [])) if isinstance(case_meta, dict) else [],
+                "case_id": str(case_meta.get("case_id", f"case_{idx}")) if isinstance(case_meta, dict) else f"case_{idx}",
             }
             details.append(detail)
-            if not res.success:
+
+            if (not effective_success) or (not obj_in_bounds):
                 return 0.0, {
                     "enabled": True,
                     "source": source,
@@ -278,6 +292,117 @@ class TTRLRewardCalculator(RewardCalculator):
             "num_cases": len(tests),
             "cases": details,
         }
+
+    def _load_r3_tests(self) -> tuple[list[dict[str, Any]], str]:
+        precomputed = self._precomputed_r3_cases(self.config.robustness_cases)
+        if precomputed:
+            return precomputed, "precomputed"
+
+        if bool(self.task.instance.get("__r3_precompute_required__", False)):
+            # Strict mode: if precompute was required but failed, do not fallback.
+            return [], "precompute_required_no_cases"
+
+        tests = self.backend.generate_test_instances(self.task, self.config.robustness_cases)
+        if tests:
+            return list(tests), "backend"
+
+        tests = generate_perturbed_instances_from_map(
+            self.task.instance,
+            self.task.perturbation_map,
+            self.config.robustness_cases,
+        )
+        return list(tests), "heuristic"
+
+    def _precomputed_r3_cases(self, k: int) -> list[dict[str, Any]]:
+        raw = self.task.instance.get("__r3_test_cases__") if isinstance(self.task.instance, dict) else None
+        if not isinstance(raw, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for item in raw[: max(1, int(k))]:
+            if isinstance(item, dict):
+                out.append(item)
+        return out
+
+    def _normalize_r3_case(self, raw_case: dict[str, Any] | Any) -> tuple[dict[str, Any], dict[str, float | None], dict[str, Any]]:
+        if isinstance(raw_case, dict) and isinstance(raw_case.get("instance"), dict):
+            instance = dict(raw_case.get("instance", {}))
+            bounds = self._normalize_bounds_dict(raw_case.get("obj_bounds"))
+            meta = {
+                "changes": list(raw_case.get("changes", [])) if isinstance(raw_case.get("changes"), list) else [],
+                "case_id": raw_case.get("case_id", ""),
+            }
+            return instance, bounds, meta
+
+        if isinstance(raw_case, dict):
+            instance = dict(raw_case)
+            bounds = self._normalize_bounds_dict(None)
+            case_meta = raw_case.get("__perturbation__") if isinstance(raw_case.get("__perturbation__"), dict) else {}
+            meta = {
+                "changes": list(case_meta.get("changes", [])) if isinstance(case_meta.get("changes"), list) else [],
+                "case_id": case_meta.get("case_id", ""),
+            }
+            return instance, bounds, meta
+
+        return {}, self._normalize_bounds_dict(None), {}
+
+    def _base_obj_bounds(self) -> dict[str, float | None]:
+        from_instance = None
+        if isinstance(self.task.instance, dict):
+            from_instance = self.task.instance.get("__r3_base_obj_bounds__")
+        if from_instance is not None:
+            return self._normalize_bounds_dict(from_instance)
+
+        if isinstance(self.task.perturbation_map, dict):
+            maybe = self.task.perturbation_map.get("base_obj_bounds")
+            if maybe is not None:
+                return self._normalize_bounds_dict(maybe)
+
+        return {"lower": None, "upper": None}
+
+    @staticmethod
+    def _normalize_bounds_dict(value: Any) -> dict[str, float | None]:
+        if not isinstance(value, dict):
+            return {"lower": None, "upper": None}
+
+        def _num(x: Any) -> float | None:
+            if isinstance(x, bool):
+                return None
+            if isinstance(x, (int, float)):
+                x = float(x)
+                return x if math.isfinite(x) else None
+            if isinstance(x, str):
+                s = x.strip().replace(",", "")
+                if not s:
+                    return None
+                try:
+                    v = float(s)
+                    return v if math.isfinite(v) else None
+                except Exception:
+                    return None
+            return None
+
+        lo = _num(value.get("lower"))
+        hi = _num(value.get("upper"))
+        if lo is not None and hi is not None and lo > hi:
+            lo, hi = hi, lo
+        return {"lower": lo, "upper": hi}
+
+    def _objective_within_bounds(self, obj_answer: float | None, bounds: dict[str, float | None] | None) -> bool:
+        if not self._is_valid_objective(obj_answer):
+            return False
+
+        if not isinstance(bounds, dict):
+            return True
+        lo = bounds.get("lower")
+        hi = bounds.get("upper")
+        val = float(obj_answer)
+
+        eps = 1e-9
+        if isinstance(lo, (int, float)) and val < float(lo) - eps:
+            return False
+        if isinstance(hi, (int, float)) and val > float(hi) + eps:
+            return False
+        return True
 
     def _execute(self, trajectory: Trajectory) -> tuple[ExecutionResult, bool]:
         cache_key = self._execution_cache_key(trajectory.code, self.task.instance)

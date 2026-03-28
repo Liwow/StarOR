@@ -1,16 +1,27 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import time
 from pathlib import Path
+from typing import Any
 
 from ttrl_or.config import PipelineConfig
-from ttrl_or.dataset import load_jsonl_dataset
+from ttrl_or.dataset import build_instance_from_question, load_jsonl_dataset
 from ttrl_or.model import MockPolicyBackend, TRLPolicyBackend, TRL_IMPORT_ERROR
 from ttrl_or.pipeline import TTRLORRunner
+from ttrl_or.reward.r3_batch_planner import attach_r3_plan_to_instance, build_r3_planner_prompt, build_sample_r3_plan
 
+
+def _safe_path_component(name: str) -> str:
+    raw = str(name or "").strip()
+    if not raw:
+        return "sample"
+    safe = re.sub(r'[\\/:*?"<>|]+', "_", raw)
+    safe = safe.strip(" .")
+    return safe or "sample"
 
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name, "")
@@ -104,6 +115,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mapping-llm-max-new-tokens", type=int, default=defaults.dataset.mapping_llm_max_new_tokens)
     parser.add_argument("--mapping-llm-temperature", type=float, default=defaults.dataset.mapping_llm_temperature)
     parser.add_argument("--mapping-llm-top-p", type=float, default=defaults.dataset.mapping_llm_top_p)
+
+    parser.add_argument("--r3-plan-max-new-tokens", type=int, default=defaults.dataset.r3_plan_max_new_tokens)
+    parser.add_argument("--r3-plan-temperature", type=float, default=defaults.dataset.r3_plan_temperature)
+    parser.add_argument("--r3-plan-top-p", type=float, default=defaults.dataset.r3_plan_top_p)
 
     parser.add_argument("--backend", type=str, choices=["mock", "trl"], default=defaults.backend.backend)
     parser.add_argument("--model-name", type=str, default=defaults.backend.model_name_or_path)
@@ -226,6 +241,9 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.dataset.mapping_llm_max_new_tokens = args.mapping_llm_max_new_tokens
     config.dataset.mapping_llm_temperature = args.mapping_llm_temperature
     config.dataset.mapping_llm_top_p = args.mapping_llm_top_p
+    config.dataset.r3_plan_max_new_tokens = args.r3_plan_max_new_tokens
+    config.dataset.r3_plan_temperature = args.r3_plan_temperature
+    config.dataset.r3_plan_top_p = args.r3_plan_top_p
 
     model_value = args.model_path if args.model_path else args.model_name
     config.backend.backend = args.backend
@@ -279,6 +297,156 @@ def _run_single(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
     return output
 
 
+def _build_base_instance_for_sample(sample, config: PipelineConfig) -> dict:
+    instance = build_instance_from_question(
+        sample.question,
+        tables=sample.tables,
+        inline_numbers=sample.inline_numbers,
+        max_numeric_features=config.dataset.max_numeric_features,
+        key_param_top_k=config.dataset.key_param_top_k,
+    )
+    instance["__sample_id__"] = sample.sample_id
+    instance["__dataset__"] = sample.dataset
+    if sample.answer:
+        instance["__reference_answer__"] = sample.answer
+    return instance
+
+
+def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, world_size: int) -> dict[str, dict[str, Any]]:
+    priors: dict[str, dict[str, Any]] = {}
+    cfg = runner.config
+
+    print(f"[r3-batch] rank={rank}/{world_size} start precompute for {len(samples)} samples")
+
+    aux_gen = getattr(runner.backend, "generate_auxiliary_text", None)
+    can_llm = callable(aux_gen)
+    use_vllm = bool(cfg.grpo.use_vllm)
+    vllm_mode = str(cfg.grpo.vllm_mode or "")
+
+    success_count = 0
+    dataset_name = (samples[0].dataset if samples else "dataset")
+    dataset_dir = Path(cfg.log_dir)
+
+    for idx, sample in enumerate(samples, start=1):
+        base_instance = _build_base_instance_for_sample(sample, cfg)
+
+        llm_text = None
+        precompute_status = "disabled"
+
+        if can_llm:
+            prompt = build_r3_planner_prompt(
+                sample_id=sample.sample_id,
+                description=sample.question,
+                instance=base_instance,
+                num_tests=max(1, int(cfg.reward.robustness_cases)),
+            )
+            try:
+                llm_text = aux_gen(
+                    prompt,
+                    max_new_tokens=int(cfg.dataset.r3_plan_max_new_tokens),
+                    temperature=float(cfg.dataset.r3_plan_temperature),
+                    top_p=float(cfg.dataset.r3_plan_top_p),
+                    prefer_vllm=use_vllm,
+                    vllm_mode=vllm_mode,
+                )
+            except Exception as exc:  # noqa: BLE001
+                llm_text = None
+                print(f"[r3-batch][WARN] sample={sample.sample_id} planner generation failed: {type(exc).__name__}: {exc}")
+
+        plan = build_sample_r3_plan(
+            sample_id=sample.sample_id,
+            description=sample.question,
+            instance=base_instance,
+            reference_answer=sample.answer,
+            robustness_cases=max(1, int(cfg.reward.robustness_cases)),
+            llm_text=llm_text,
+            allow_heuristic_fallback=False,
+        )
+
+        if plan.source != "disabled" and len(plan.test_cases) > 0:
+            success_count += 1
+            precompute_status = "ok"
+        else:
+            precompute_status = "failed_disable"
+
+        enriched_instance = attach_r3_plan_to_instance(base_instance, plan)
+
+        priors[sample.sample_id] = {
+            "instance": enriched_instance,
+            "source": plan.source,
+            "status": precompute_status,
+            "base_obj_bounds": plan.base_obj_bounds,
+            "num_tests": len(plan.test_cases),
+            "mapping": plan.mapping,
+            "analysis": plan.analysis,
+            "llm_raw_preview": plan.llm_raw_preview,
+            "used_vllm_priority": use_vllm,
+            "vllm_mode": vllm_mode,
+        }
+
+        print(
+            f"[r3-batch] [{idx}/{len(samples)}] sample_id={sample.sample_id} "
+            f"status={precompute_status} source={plan.source} tests={len(plan.test_cases)} "
+            f"base_bounds={plan.base_obj_bounds}"
+        )
+
+        if cfg.save_logs:
+            sample_dir = dataset_dir / _safe_path_component(sample.sample_id)
+            sample_dir.mkdir(parents=True, exist_ok=True)
+            sample_payload = {
+                "dataset": dataset_name,
+                "sample_id": sample.sample_id,
+                "sample_dir_name": sample_dir.name,
+                "status": precompute_status,
+                "source": plan.source,
+                "analysis": plan.analysis,
+                "base_obj_bounds": plan.base_obj_bounds,
+                "num_tests": len(plan.test_cases),
+                "mapping": plan.mapping,
+                "tests": plan.test_cases,
+                "llm_raw_preview": plan.llm_raw_preview,
+                "used_vllm_priority": use_vllm,
+                "vllm_mode": vllm_mode,
+            }
+            (sample_dir / "r3_precompute.json").write_text(
+                json.dumps(sample_payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+    total = max(1, len(samples))
+    success_rate = float(success_count) / float(total)
+
+    if cfg.save_logs:
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        out_path = dataset_dir / f"r3_precompute_index.rank{rank}.json"
+        serializable = {
+            "dataset": dataset_name,
+            "rank": rank,
+            "world_size": world_size,
+            "num_samples": len(samples),
+            "success_count": int(success_count),
+            "success_rate": success_rate,
+            "items": {
+                sid: {
+                    "status": item.get("status"),
+                    "source": item.get("source"),
+                    "base_obj_bounds": item.get("base_obj_bounds"),
+                    "num_tests": item.get("num_tests"),
+                    "mapping": item.get("mapping"),
+                    "analysis": item.get("analysis"),
+                    "llm_raw_preview": item.get("llm_raw_preview", ""),
+                    "used_vllm_priority": item.get("used_vllm_priority", False),
+                    "vllm_mode": item.get("vllm_mode", ""),
+                }
+                for sid, item in priors.items()
+            },
+        }
+        out_path.write_text(json.dumps(serializable, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[r3-batch] saved dataset index -> {out_path.resolve()} success_rate={success_rate:.2%}")
+
+    return priors
+
+
 def _run_dataset(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
     dataset_cfg = runner.config.dataset
     dataset_path = dataset_cfg.jsonl_path
@@ -297,19 +465,31 @@ def _run_dataset(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
     if world_size > 1:
         samples = [sample for i, sample in enumerate(samples) if i % world_size == rank]
 
+    dataset_name = Path(dataset_path).stem
+    base_log_dir = Path(runner.config.log_dir)
+    dataset_log_dir = base_log_dir / dataset_name
+    runner.config.log_dir = str(dataset_log_dir)
+
     print(
         f"[dataset] rank={rank}/{world_size} num_samples={len(samples)} "
-        f"dataset={Path(dataset_path).resolve()}"
+        f"dataset={Path(dataset_path).resolve()} log_root={dataset_log_dir.resolve()}"
     )
+
+    r3_priors: dict[str, dict[str, Any]] = {}
+    if runner.config.reward.enable_r3_reward and samples:
+        r3_priors = _batch_prepare_r3_priors(samples=samples, runner=runner, rank=rank, world_size=world_size)
 
     runs: list[dict] = []
     for idx, sample in enumerate(samples, start=1):
         t0 = time.time()
         print(f"[rank {rank}] [{idx}/{len(samples)}] START sample_id={sample.sample_id}")
 
+        prepared = r3_priors.get(sample.sample_id, {})
+        run_instance = prepared.get("instance") if isinstance(prepared, dict) else None
+
         result = runner.run_from_text(
             description=sample.question,
-            instance=None,
+            instance=run_instance,
             task_id=sample.sample_id,
             gold_answer=sample.answer,
         )
@@ -350,6 +530,12 @@ def _run_dataset(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
                 ),
                 "artifacts": (result.trace.artifacts if result.trace else {}),
                 "task_context": (result.trace.task_context if result.trace else {}),
+                "r3_precompute": {
+                    "status": prepared.get("status") if isinstance(prepared, dict) else "",
+                    "source": prepared.get("source") if isinstance(prepared, dict) else "",
+                    "base_obj_bounds": prepared.get("base_obj_bounds") if isinstance(prepared, dict) else {},
+                    "num_tests": prepared.get("num_tests") if isinstance(prepared, dict) else 0,
+                },
             }
         )
         print(
@@ -393,3 +579,4 @@ def main() -> int:
         print(json.dumps(output, ensure_ascii=False, indent=2))
 
     return 0
+

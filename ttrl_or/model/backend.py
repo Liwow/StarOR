@@ -83,6 +83,22 @@ class PolicyBackend(ABC):
         """
         return None
 
+    def generate_auxiliary_text(
+        self,
+        prompt: str,
+        *,
+        max_new_tokens: int = 1024,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        prefer_vllm: bool = False,
+        vllm_mode: str = "",
+    ) -> str | None:
+        """
+        Optional hook for non-policy auxiliary generation (e.g., dataset-level R3 prior planning).
+        If prefer_vllm=True, backend should try vLLM path first when available.
+        """
+        return None
+
     def generate_test_instances(self, task: OptimizationTask, k: int) -> list[dict[str, Any]]:
         """Optional: model-authored robustness tests (r3)."""
         return []

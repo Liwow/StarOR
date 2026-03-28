@@ -110,6 +110,18 @@ class MockPolicyBackend(PolicyBackend):
             "reason": "MockPolicyBackend does not train. Use TRLPolicyBackend for GRPO updates.",
         }
 
+    def generate_auxiliary_text(
+        self,
+        prompt: str,
+        *,
+        max_new_tokens: int = 1024,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        prefer_vllm: bool = False,
+        vllm_mode: str = "",
+    ) -> str | None:
+        return None
+
     def generate_test_instances(self, task: OptimizationTask, k: int) -> list[dict[str, Any]]:
         from ttrl_or.reward.perturbation import generate_perturbed_instances_from_map
 
