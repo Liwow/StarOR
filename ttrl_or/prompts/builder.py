@@ -4,20 +4,27 @@ from dataclasses import dataclass, field
 
 from ttrl_or.types import STAGE_ORDER, OptimizationTask, Stage, Trajectory
 
+from .notice_prompts import SYSTEM_INSTRUCTION
+
 
 @dataclass(slots=True)
 class PromptBuilder:
     templates: dict[Stage, str] = field(default_factory=dict)
     rollout_templates: dict[Stage, str] = field(default_factory=dict)
+    system_instruction: str = SYSTEM_INSTRUCTION
 
     def build(self, task: OptimizationTask, stage: Stage, trajectory: Trajectory | None = None) -> str:
         history = self._history_text(trajectory, stage)
         template = self.templates[stage]
         # Keep literal braces in prompt templates untouched.
-        return (
+        body = (
             template.replace("{task_description}", task.description)
             .replace("{history}", history)
         )
+        system_text = (self.system_instruction or "").strip()
+        if not system_text:
+            return body
+        return f"[SYSTEM]\n{system_text}\n\n[USER]\n{body}".strip()
 
     def build_rollout(self, task: OptimizationTask, stage: Stage, trajectory: Trajectory | None = None) -> str:
         base_prompt = self.build(task, stage, trajectory)

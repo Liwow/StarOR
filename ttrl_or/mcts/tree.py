@@ -137,8 +137,7 @@ class FourStageMCTS:
                 callback_t0 = time.perf_counter()
 
                 parse_t0 = time.perf_counter()
-                current_stage_text, rollout_suffix = self._split_rollout_completion(completion_text)
-                parsed_text = self._extract_stage_payload(next_stage, current_stage_text)
+                parsed_text = self._extract_stage_payload(next_stage, completion_text)
                 parse_sec = float(time.perf_counter() - parse_t0)
 
                 child = SearchNode(
@@ -150,7 +149,7 @@ class FourStageMCTS:
                 )
 
                 complete_t0 = time.perf_counter()
-                completed = self._complete_for_reward_from_rollout(task, child, rollout_suffix, completion_text)
+                completed = self._complete_for_reward_from_rollout(task, child, completion_text)
                 complete_sec = float(time.perf_counter() - complete_t0)
 
                 return {
@@ -159,8 +158,8 @@ class FourStageMCTS:
                     "child": child,
                     "trajectory": completed,
                     "completion_full": completion_text,
-                    "answer_current_stage": current_stage_text,
-                    "answer_rollout_suffix": rollout_suffix,
+                    "answer_current_stage": parsed_text,
+                    "answer_rollout_suffix": "",
                     "parse_sec": parse_sec,
                     "complete_sec": complete_sec,
                 }
@@ -547,42 +546,44 @@ class FourStageMCTS:
 
     @staticmethod
     def _split_rollout_completion(text: str) -> tuple[str, str]:
-        marker = "### ROLLOUT_CONTINUATION"
-        raw = text or ""
-        idx = raw.find(marker)
-        if idx >= 0:
-            current = raw[:idx].strip()
-            suffix = raw[idx + len(marker) :].strip()
-            return current, suffix
-
-        # Fallback 1: marker missing but rollout tags exist.
-        tag_match = re.search(r"<\s*ROLLOUT_STAGE_[A-Z_]+\s*>", raw, flags=re.IGNORECASE)
-        if tag_match:
-            pos = int(tag_match.start())
-            return raw[:pos].strip(), raw[pos:].strip()
-
-        # Fallback 2: no marker and no tags. Keep raw for both current/suffix parsing.
-        cleaned = raw.strip()
+        cleaned = (text or "").strip()
         return cleaned, cleaned
 
     @staticmethod
-    def _extract_rollout_stage_block(rollout_suffix: str, stage: Stage) -> str:
-        if not rollout_suffix.strip():
+    def _tag_for_stage(stage: Stage) -> str:
+        if stage == Stage.SCHEMA:
+            return "stage_1"
+        if stage == Stage.SET_PARAM_VAR:
+            return "stage_2"
+        if stage == Stage.OBJ_CONS:
+            return "stage_3"
+        return "Gurobi_code"
+
+    @staticmethod
+    def _extract_tag_block(text: str, tag: str, min_len: int = 0) -> str:
+        raw = (text or "").strip()
+        if not raw:
             return ""
-        tag = f"ROLLOUT_STAGE_{stage.value.upper()}"
-        pattern = rf"<\s*{tag}\s*>(.*?)<\s*/\s*{tag}\s*>"
-        blocks = re.findall(pattern, rollout_suffix, flags=re.IGNORECASE | re.DOTALL)
-        if blocks:
-            return max((b.strip() for b in blocks), key=len, default="")
-        if stage == Stage.CODE:
-            return rollout_suffix.strip()
-        return ""
+
+        pattern = rf"<\s*{re.escape(tag)}\s*>(.*?)<\s*/\s*{re.escape(tag)}\s*>"
+        blocks = re.findall(pattern, raw, flags=re.IGNORECASE | re.DOTALL)
+        if not blocks:
+            return ""
+
+        best = max((b.strip() for b in blocks), key=len, default="")
+        if len(best) < int(min_len):
+            return ""
+        return best
+
+    @staticmethod
+    def _extract_rollout_stage_block(rollout_text: str, stage: Stage) -> str:
+        tag = FourStageMCTS._tag_for_stage(stage)
+        return FourStageMCTS._extract_tag_block(rollout_text, tag=tag, min_len=21)
 
     def _complete_for_reward_from_rollout(
         self,
         task: OptimizationTask,
         from_node: SearchNode,
-        rollout_suffix: str,
         full_completion: str = "",
     ) -> Trajectory:
         partial = from_node.to_partial_trajectory()
@@ -593,30 +594,19 @@ class FourStageMCTS:
         if from_node.stage == Stage.CODE:
             return partial
 
-        sources = [str(rollout_suffix or "")]
         full_text = str(full_completion or "")
-        if full_text and full_text not in sources:
-            sources.append(full_text)
-
         start_idx = STAGE_ORDER.index(from_node.stage)
         for next_stage in STAGE_ORDER[start_idx + 1 :]:
-            block = ""
-            for src in sources:
-                block = self._extract_rollout_stage_block(src, next_stage)
-                if block:
-                    break
-
-            if not block and next_stage == Stage.CODE:
-                for src in sources:
-                    candidate = self._sanitize_code_payload(src)
-                    if self._looks_like_code(candidate):
-                        block = candidate
-                        break
-
+            block = self._extract_rollout_stage_block(full_text, next_stage)
             if not block:
                 continue
 
-            parsed = self._extract_stage_payload(next_stage, block)
+            if next_stage == Stage.CODE:
+                parsed = self._extract_stage_payload(next_stage, block)
+            else:
+                parsed = self._normalize_text_block(block)
+                if len((parsed or "").strip()) <= 20:
+                    parsed = ""
             if not parsed:
                 continue
             partial.outputs[next_stage] = parsed
@@ -706,65 +696,17 @@ class FourStageMCTS:
         cleaned = FourStageMCTS._normalize_text_block(text)
 
         if stage == Stage.CODE:
-            return FourStageMCTS._sanitize_code_payload(cleaned)
+            code = FourStageMCTS._sanitize_code_payload(cleaned)
+            if len((code or "").strip()) > 20:
+                return code
+            return ""
 
-        # Keep only current-stage area; drop rollout continuation and downstream tag blocks.
-        main = FourStageMCTS._strip_rollout_region(cleaned)
-        if not main:
-            main = cleaned
+        tag = FourStageMCTS._tag_for_stage(stage)
+        block = FourStageMCTS._extract_tag_block(cleaned, tag=tag, min_len=21)
+        if block:
+            return block.strip()
 
-        if stage == Stage.SCHEMA:
-            block = FourStageMCTS._extract_named_sections(
-                text=main,
-                section_headers=["### Problem Schema", "### Modeling Skills"],
-                stop_headers=["### Sets Definition", "### Objective Definition", "### Gurobi Code"],
-            )
-            if block:
-                return block
-            return main.strip()
-
-        if stage == Stage.SET_PARAM_VAR:
-            block = FourStageMCTS._extract_named_sections(
-                text=main,
-                section_headers=["### Sets Definition", "### Parameters Definition", "### Variables Definition"],
-                stop_headers=["### Objective Definition", "### Constraints Definition", "### Gurobi Code"],
-            )
-            if block:
-                return block
-
-            keys = ["sets", "parameters", "variables"]
-            lines = [ln.rstrip() for ln in main.splitlines()]
-            keep = [
-                ln
-                for ln in lines
-                if any(k in ln.lower() for k in keys)
-                or ln.strip().startswith("-")
-                or ln.strip().startswith("##")
-            ]
-            return "\n".join(keep).strip() or main.strip()
-
-        if stage == Stage.OBJ_CONS:
-            block = FourStageMCTS._extract_named_sections(
-                text=main,
-                section_headers=["### Objective Definition", "### Constraints Definition"],
-                stop_headers=["### Gurobi Code"],
-            )
-            if block:
-                return block
-
-            keys = ["objective", "constraint"]
-            lines = [ln.rstrip() for ln in main.splitlines()]
-            keep = [
-                ln
-                for ln in lines
-                if any(k in ln.lower() for k in keys)
-                or ln.strip().startswith(tuple(str(i) + ")" for i in range(1, 10)))
-                or ln.strip().startswith("-")
-                or ln.strip().startswith("##")
-            ]
-            return "\n".join(keep).strip() or main.strip()
-
-        return main.strip()
+        return ""
 
     @staticmethod
     def _normalize_text_block(text: str) -> str:
@@ -894,3 +836,4 @@ class FourStageMCTS:
 
         cleaned = "\n".join(code_lines).strip()
         return cleaned
+
