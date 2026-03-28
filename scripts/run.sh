@@ -12,7 +12,7 @@ MASTER_PORT=29500
 BACKEND="trl"
 MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
 
-DATASET_JSONL="data/NL4OPT.jsonl"
+DATASET_JSONL="data/IndustryOR_fixedV2.jsonl"
 DATASET_LIMIT=20
 LOG_DIR="logs/run"
 OUT_JSON="outputs/run.json"
@@ -20,7 +20,7 @@ OUT_JSON="outputs/run.json"
 # MCTS (global-leaf selection)
 MAX_ITERATIONS=16
 C_PUCT=1.4
-MCTS_STOP_ON_REWARD_ONE=true
+MCTS_STOP_ON_REWARD_ONE=false
 
 # Reward
 GLOBAL_CONSENSUS_MIN_POOL=3

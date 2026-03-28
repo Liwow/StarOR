@@ -1,128 +1,17 @@
+SYSTEM_INSTRUCTION = """
+Role: You are an optimization problem modeling master.
+Workflow: You must follow 4 stages to complete optimization modeling tasks:
+
+Stage 1: Schema and Modeling Skill Analysis (Analyze the problem type, complexity, and modeling strategy).
+Stage 2: Set, Parameters, and Variables Construction (Define set indices, input data Parameters, and decision variables).
+Stage 3: Objective and Constraints Modeling (Formulate the mathematical expressions).
+Stage 4: Problem Solving Code with Gurobi (Write the Python implementation using the gurobipy library).
+Output Format: You must wrap the content of each stage in the following specific tags: <stage_1>, <stage_2>, <stage_3>, and <Gurobi_code>.
+"""
+
+
 
 SCHEMA_SKILL_NOTICE = """
-# OUTPUT FORMAT REQUIREMENTS
-
-Output must contain exactly these section headers:
-- "### Problem Schema"
-- "### Modeling Skills"
-
-Under "### Problem Schema", output exactly these subheaders:
-- "## Problem Type"
-- "## Decision Structure"
-- "## Core Entities"
-- "## Resources / Limits"
-- "## Time / Space Structure"
-- "## Optimization Goal"
-- "## Anticipated Constraint Families"
-- "## Assumption Boundary"
-
-Under "### Modeling Skills", output exactly these subheaders:
-- "## Core Skills"
-- "## Potential Pitfalls"
-
-
-# STAGE GOAL
-
-You need to convert the task description into a modeling schema that is:
-1. structurally correct,
-2. minimal but sufficient,
-3. easy for downstream stages to formalize.
-
-Focus on:
-- what must be decided,
-- what entities are decision-relevant,
-- what resources or limits matter,
-- what structural relations are likely needed,
-- what modeling skills will be required later.
-
-
-# DETAILED INSTRUCTIONS
-
-1. Problem Schema
-
-"## Problem Type"
-- Classify the problem into one or more OR families, such as:
-  assignment, scheduling, routing, packing, covering, partitioning,
-  resource allocation, network flow, facility location, production planning,
-  matching, sequencing, inventory, or hybrid combinations.
-- If hybrid, explicitly state the combination.
-
-"## Decision Structure"
-- Describe the essential decisions in compact OR language.
-- Focus on what is being chosen, assigned, scheduled, activated, routed, or allocated.
-- Do not define variables yet.
-
-"## Core Entities"
-- List only the major decision-relevant object types.
-- Examples: customers, facilities, products, jobs, machines, workers, periods, locations, vehicles.
-- Do not include background details unless they are model-relevant.
-
-"## Resources / Limits"
-- Identify the main capacities, budgets, demands, quotas, availabilities, or logical limits.
-- Include only limits that are likely to appear in the formal model.
-
-"## Time / Space Structure"
-- State whether the problem is:
-  single-period, multi-period, sequential, stage-based, network-based, spatial, or has no explicit time/space structure.
-- If none, explicitly say "None".
-
-"## Optimization Goal"
-- State the optimization goal precisely:
-  minimize cost, maximize profit, minimize completion time, maximize coverage, etc.
-
-"## Anticipated Constraint Families"
-- List the main constraint families likely needed in the formal model.
-- Use concise OR-style phrases, such as:
-  demand satisfaction,
-  capacity limits,
-  assignment exclusivity,
-  flow conservation,
-  linking / activation,
-  precedence,
-  coverage,
-  budget restriction,
-  balance constraints,
-  lower/upper bound requirements.
-- This is not the place to write equations.
-
-"## Assumption Boundary"
-- Distinguish clearly between:
-  1. what is explicit in the task,
-  2. what is strongly implied,
-  3. what is ambiguous or missing.
-- Do not invent extra assumptions.
-- If some modeling detail is unclear, state it briefly and conservatively.
-
-2. Modeling Skills
-
-"## Core Skills"
-- Provide a concise bullet list of reusable OR modeling patterns required by this task.
-- Skills must be specific and operational, not generic.
-- Good examples:
-  - exact-one assignment
-  - capacity aggregation
-  - binary activation and linking
-  - time-indexed scheduling
-  - flow balance
-  - precedence enforcement
-  - coverage modeling
-  - fixed-charge formulation
-  - either-or logic
-  - cardinality control
-- Avoid vague items like "optimization modeling" or "mathematical reasoning".
-
-"## Potential Pitfalls"
-- Provide a concise bullet list of likely formulation errors.
-- Focus on structural mistakes, such as:
-  - confusing decisions with input data
-  - missing an indexing dimension
-  - omitting linking logic
-  - reversing inequality direction
-  - failing to model exclusivity or conservation
-  - introducing unsupported assumptions
-  - over-modeling irrelevant details
-
-
 # GLOBAL RULES
 
 - Output results directly. Do NOT output chain-of-thought.
@@ -142,6 +31,9 @@ Make sure:
 4. the anticipated constraint families are meaningful,
 5. the skills are reusable OR patterns,
 6. no sets, parameters, variables, equations, or code appear in this stage.
+
+Put your output within <stage_1></stage_1>
+
 """
 
 SET_PARA_VAR_NOTICE = """
@@ -262,6 +154,8 @@ Make sure:
 3. All decisions are represented as variables with valid domains.
 4. Names are short, stable, and reusable by the next stage.
 5. No objective, no constraints, and no code appear in this stage.
+
+Put your output within <stage_2></stage_2>
 """
 
 OBJ_CON_NOTICE = """
@@ -362,9 +256,14 @@ Make sure:
 4. Constraint directions are correct.
 5. No code appears in this stage.
 Before finalizing, verify whether the model covers: feasibility, resource balance, demand/service requirements, linking logic, exclusivity/conflict logic, and domain consistency whenever applicable.
+
+Put your output within <stage_3></stage_3>
+
 """
 
 CODE_NOTICE = """
+In Final Stage, your goal is to Write the Python Code with gurobi based on the Content from previous stages.
+
 # MANDATORY OUTPUT RULES
 
 1. Output must contain exactly one top-level section header:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from ttrl_or.types import Stage
 
-from .notice_prompts import CODE_NOTICE, OBJ_CON_NOTICE, SCHEMA_SKILL_NOTICE, SET_PARA_VAR_NOTICE
+from .notice_prompts import CODE_NOTICE, OBJ_CON_NOTICE, SCHEMA_SKILL_NOTICE, SET_PARA_VAR_NOTICE, SYSTEM_INSTRUCTION
 
 
 def _append_notice(base: str, notice: str) -> str:
@@ -15,6 +15,7 @@ def _append_notice(base: str, notice: str) -> str:
 
 SCHEMA_TEMPLATE = """
 You are the first stage of a 4-stage OR modeling pipeline.
+In First Stage (Schema and Modeling Skill Analysis), you goal is to provide a conceptual abstraction and logical blueprint of the optimization task. You must map the fundamental interaction schema between entities, and specify the advanced modeling paradigms—such as linearization of non-linear terms, Big-M logic for conditional constraints, or multi-stage flow patterns—required to transform the descriptive requirements into a rigorous mathematical structure.
 
 Task:
 {task_description}
@@ -31,7 +32,8 @@ Do NOT generate code.
 """.strip()
 
 SET_PARAM_VAR_TEMPLATE = """
-You are continuing a 4-stage OR modeling pipeline.
+You are continuing a 4-stage OR modeling pipeline, and you are in second stage.
+In Second Stage (Set, Parameters, and Variables Construction), your goal is to construct Set, Parameters, and Variables based on the Content from previous stages.
 
 Task:
 {task_description}
@@ -66,7 +68,8 @@ Do NOT generate code.
 """.strip()
 
 OBJ_CONS_TEMPLATE = """
-You are continuing a 4-stage OR modeling pipeline.
+You are continuing a 4-stage OR modeling pipeline, and you are in third stage.
+In Third Stage (Objective and Constraints Modeling), your goal is to construct Objective and Constraints based on the Content from previous stages.
 
 Task:
 {task_description}
@@ -97,7 +100,8 @@ Do NOT generate code.
 """.strip()
 
 CODE_TEMPLATE = """
-You are continuing a 4-stage OR modeling pipeline.
+You are continuing a 4-stage OR modeling pipeline, and you are in final stage. 
+In Final Stage, your goal is to Write the Python Code with gurobi based on the Content from previous stages.
 
 Task:
 {task_description}
@@ -123,66 +127,21 @@ DEFAULT_TEMPLATES: dict[Stage, str] = {
 
 
 ROLLOUT_STRICT_NOTICE = """
-MANDATORY PARSING CONTRACT (VERY IMPORTANT):
-1. You MUST include exactly one line: "### ROLLOUT_CONTINUATION".
-2. After that line, output ONLY rollout tags; do NOT add free-form explanations.
-3. Every required rollout tag must appear EXACTLY ONCE.
-4. Keep tag order exactly as specified.
-5. If uncertain, still output non-empty placeholder content inside each required tag.
-6. For code stage, code must be inside:
-   <ROLLOUT_STAGE_CODE>
+You also follow output format: You must wrap the content of each stage in the following specific tags: <stage_1>, <stage_2>, <stage_3>, and <Gurobi_code>.
+For code stage, code must be inside:
    <Gurobi_code>
    ...
    </Gurobi_code>
-   </ROLLOUT_STAGE_CODE>
 """.strip()
 
 SCHEMA_ROLLOUT_TEMPLATE = """
-### ROLLOUT_CONTINUATION
 After completing the current-stage output above, continue and finish downstream stages in order: {remaining_stages}.
 Do not rewrite previous-stage content.
-Use exact tags below for machine parsing:
-<ROLLOUT_STAGE_SET_PARAM_VAR>
-...stage-2 content...
-</ROLLOUT_STAGE_SET_PARAM_VAR>
-<ROLLOUT_STAGE_OBJ_CONS>
-...stage-3 content...
-</ROLLOUT_STAGE_OBJ_CONS>
-<ROLLOUT_STAGE_CODE>
-<Gurobi_code>
-...python code...
-</Gurobi_code>
-</ROLLOUT_STAGE_CODE>
-""".strip()
-
-SET_PARAM_VAR_ROLLOUT_TEMPLATE = """
-### ROLLOUT_CONTINUATION
-After completing the current-stage output above, continue and finish downstream stages in order: {remaining_stages}.
-Use exact tags below for machine parsing:
-<ROLLOUT_STAGE_OBJ_CONS>
-...stage-3 content...
-</ROLLOUT_STAGE_OBJ_CONS>
-<ROLLOUT_STAGE_CODE>
-<Gurobi_code>
-...python code...
-</Gurobi_code>
-</ROLLOUT_STAGE_CODE>
-""".strip()
-
-OBJ_CONS_ROLLOUT_TEMPLATE = """
-### ROLLOUT_CONTINUATION
-After completing the current-stage output above, continue and finish downstream stage: {remaining_stages}.
-Use exact tags below for machine parsing:
-<ROLLOUT_STAGE_CODE>
-<Gurobi_code>
-...python code...
-</Gurobi_code>
-</ROLLOUT_STAGE_CODE>
 """.strip()
 
 DEFAULT_ROLLOUT_TEMPLATES: dict[Stage, str] = {
     Stage.SCHEMA: _append_notice(_append_notice(SCHEMA_ROLLOUT_TEMPLATE, ROLLOUT_STRICT_NOTICE), CODE_NOTICE),
-    Stage.SET_PARAM_VAR: _append_notice(_append_notice(SET_PARAM_VAR_ROLLOUT_TEMPLATE, ROLLOUT_STRICT_NOTICE), CODE_NOTICE),
-    Stage.OBJ_CONS: _append_notice(_append_notice(OBJ_CONS_ROLLOUT_TEMPLATE, ROLLOUT_STRICT_NOTICE), CODE_NOTICE),
+    Stage.SET_PARAM_VAR: _append_notice(_append_notice(SCHEMA_ROLLOUT_TEMPLATE, ROLLOUT_STRICT_NOTICE), CODE_NOTICE),
+    Stage.OBJ_CONS: _append_notice(_append_notice(SCHEMA_ROLLOUT_TEMPLATE, ROLLOUT_STRICT_NOTICE), CODE_NOTICE),
     Stage.CODE: "",
 }
