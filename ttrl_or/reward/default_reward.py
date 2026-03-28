@@ -62,6 +62,10 @@ class TTRLRewardCalculator(RewardCalculator):
             effective_success = self._effective_execution_success(execution)
             obj_answer = self._extract_objective_from_execution(execution)
             signature = str(execution.signature or "")
+            code_text = str(traj.code or "")
+            has_code = len(code_text.strip()) > 20
+            has_valid_obj = self._is_valid_objective(obj_answer)
+            r1_eligible = bool(has_code and strict_success and has_valid_obj)
             evals.append(
                 {
                     "trajectory": traj,
@@ -71,19 +75,21 @@ class TTRLRewardCalculator(RewardCalculator):
                     "effective_success": effective_success,
                     "obj_answer": obj_answer,
                     "signature": signature,
+                    "has_code": has_code,
+                    "code_len": int(len(code_text.strip())),
+                    "has_valid_obj": has_valid_obj,
+                    "r1_eligible": r1_eligible,
                 }
             )
 
+        # R1 consensus is numeric-only and only uses rollouts that have:
+        # 1) non-trivial code, 2) strict execution success, 3) valid parsed objective.
         group_numeric = [
             float(e["obj_answer"])
             for e in evals
-            if e["effective_success"] and isinstance(e["obj_answer"], (int, float))
+            if e["r1_eligible"] and isinstance(e["obj_answer"], (int, float))
         ]
-        group_signature = [
-            str(e["signature"])
-            for e in evals
-            if e["effective_success"] and str(e["signature"] or "") and str(e["signature"]) != "EXEC_ERROR"
-        ]
+        group_signature: list[str] = []
 
         global_numeric_candidates = list(stage_numeric_hist) + list(group_numeric)
         global_signature_candidates = list(stage_signature_hist) + list(group_signature)
@@ -106,13 +112,6 @@ class TTRLRewardCalculator(RewardCalculator):
                 group_values=group_numeric,
                 rel_tol=rel_tol,
             )
-        elif current_signature_label is not None or global_signature_label is not None:
-            final_mode = "signature"
-            final_label_signature = self._resolve_hierarchical_label_signature(
-                current_label=current_signature_label,
-                global_label=global_signature_label,
-                group_values=group_signature,
-            )
 
         rewards: list[RewardBreakdown] = []
         for e in evals:
@@ -122,13 +121,18 @@ class TTRLRewardCalculator(RewardCalculator):
             effective_success = bool(e["effective_success"])
             obj_answer = e["obj_answer"]
             signature = str(e["signature"])
+            has_code = bool(e.get("has_code", False))
+            has_valid_obj = bool(e.get("has_valid_obj", False))
+            r1_eligible = bool(e.get("r1_eligible", False))
+            code_len = int(e.get("code_len", 0))
 
             r1 = 0.0
-            if effective_success and final_mode == "numeric" and final_label_numeric is not None:
+            # Hard gate for r1:
+            # - no code => r1=0
+            # - execution failed => r1=0
+            # - objective missing/invalid => r1=0
+            if r1_eligible and final_mode == "numeric" and final_label_numeric is not None:
                 if isinstance(obj_answer, (int, float)) and self._within_rel_tol(float(obj_answer), final_label_numeric, rel_tol):
-                    r1 = 1.0
-            elif effective_success and final_mode == "signature" and final_label_signature:
-                if signature == final_label_signature:
                     r1 = 1.0
 
             common_meta = {
@@ -139,6 +143,10 @@ class TTRLRewardCalculator(RewardCalculator):
                     "effective_success": effective_success,
                     "obj_answer": obj_answer,
                     "signature": signature,
+                    "has_code": has_code,
+                    "code_len": int(code_len),
+                    "has_valid_obj": has_valid_obj,
+                    "r1_eligible": r1_eligible,
                     "current_numeric_label": current_numeric_label,
                     "current_numeric_votes": int(current_numeric_votes),
                     "global_numeric_label": global_numeric_label,
