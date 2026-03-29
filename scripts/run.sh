@@ -26,7 +26,7 @@ OUT_JSON="outputs/run.json"
 
 # MCTS (global-leaf selection)
 MAX_ITERATIONS=16
-C_PUCT=1.4
+C_PUCT=1.414
 MCTS_STOP_ON_REWARD_ONE=false
 
 # Reward
