@@ -10,7 +10,7 @@ export NCCL_SOCKET_IFNAME=eth0
 # =====================================
 # Edit Here: TTRL-OR Common Parameters
 # =====================================
-CUDA_VISIBLE_DEVICES="0,1"
+CUDA_VISIBLE_DEVICES="0"
 # Set 1 for single-card, 2/4 for multi-card (must be <= visible GPU count)
 NPROC_PER_NODE=1
 MASTER_PORT=29500
