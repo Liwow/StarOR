@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 @dataclass(slots=True)
 class MCTSConfig:
-    max_iterations: int = 16
+    max_iterations: int = 18
     c_puct: float = 1.4
     stop_on_reward_one: bool = False
 
@@ -21,7 +21,7 @@ class RewardConfig:
 
 @dataclass(slots=True)
 class GRPOConfig:
-    learning_rate: float = 3e-5
+    learning_rate: float = 5e-5
     kl_coef: float = 0.0
     train_epochs: float = 1.0
     clip_epsilon: float = 0.2
@@ -77,9 +77,9 @@ class BackendConfig:
         "k_proj",
         "v_proj",
         "o_proj",
-        "gate_proj",
-        "up_proj",
-        "down_proj",
+        # "gate_proj",
+        # "up_proj",
+        # "down_proj",
     )
     reuse_base_model_across_tasks: bool = True
     reset_lora_on_begin_episode: bool = True

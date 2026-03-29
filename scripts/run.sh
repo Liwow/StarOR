@@ -1,8 +1,8 @@
 ﻿#!/usr/bin/env bash
 set -euo pipefail
 export VLLM_USE_V1=0
-export NCCL_DEBUG=INFO
-export NCCL_DEBUG_SUBSYS=ALL
+# export NCCL_DEBUG=INFO
+# export NCCL_DEBUG_SUBSYS=ALL
 export NCCL_SOCKET_IFNAME=eth0
 # export NCCL_P2P_DISABLE=1
 # export NCCL_IB_DISABLE=1
@@ -10,7 +10,7 @@ export NCCL_SOCKET_IFNAME=eth0
 # =====================================
 # Edit Here: TTRL-OR Common Parameters
 # =====================================
-CUDA_VISIBLE_DEVICES="0"
+CUDA_VISIBLE_DEVICES="0,1"
 # Set 1 for single-card, 2/4 for multi-card (must be <= visible GPU count)
 NPROC_PER_NODE=1
 MASTER_PORT=29500
@@ -25,7 +25,7 @@ LOG_DIR="logs/run"
 OUT_JSON="outputs/run.json"
 
 # MCTS (global-leaf selection)
-MAX_ITERATIONS=16
+MAX_ITERATIONS=18
 C_PUCT=1.414
 MCTS_STOP_ON_REWARD_ONE=false
 
@@ -35,11 +35,11 @@ ROBUSTNESS_CASES=3
 ENABLE_R3_REWARD=false
 
 # GRPO (common)
-GRPO_LR="5e-5"
+GRPO_LR="1e-4"
 GRPO_TRAIN_EPOCHS=1
-GRPO_CLIP_EPSILON=0.2
+GRPO_CLIP_EPSILON=0.3
 GRPO_CLIP_EPSILON_HIGH=-1   # -1 means disabled
-GRPO_NUM_GENERATIONS=4
+GRPO_NUM_GENERATIONS=8
 GRPO_GENERATION_BATCH_SIZE=0  # 0 = auto align to num_generations
 GRPO_MAX_COMPLETION_LEN=4096
 
@@ -50,10 +50,10 @@ MAX_NEW_TOKENS=2048
 
 # vLLM for TRL
 USE_VLLM=true
-VLLM_MODE="server" # server | colocate
-VLLM_GPU_MEMORY_UTILIZATION=0.7
+VLLM_MODE="colocate" # server | colocate
+VLLM_GPU_MEMORY_UTILIZATION=0.5
 VLLM_TENSOR_PARALLEL_SIZE=1
-VLLM_MAX_MODEL_LEN=16384
+VLLM_MAX_MODEL_LEN=32768
 
 # LoRA
 LORA_R=8
