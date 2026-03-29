@@ -38,6 +38,9 @@ class GRPOConfig:
     vllm_gpu_memory_utilization: float = 0.85
     vllm_tensor_parallel_size: int = 1
     vllm_max_model_len: int = 16384
+    vllm_enable_sleep_mode: bool = False
+    vllm_reset_prefix_cache_after_update: bool = True
+    vllm_close_communicator_after_update: bool = True
     vllm_fallback_disable_on_error: bool = True
 
 
