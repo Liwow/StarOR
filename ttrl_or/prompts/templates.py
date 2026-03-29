@@ -127,8 +127,12 @@ DEFAULT_TEMPLATES: dict[Stage, str] = {
 
 
 ROLLOUT_APPEND_TEMPLATE = """
-For current stage, you should think step bt step first in <thought> and then output within tags following the instruction. Following the above instruction to complete the current satge, and put the current satge output within tags.
-And then based the content this stage and previous stages, think to output the final python code with gurobi in <Gurobi_code>.
+For current stage, you should think step by step first in <thought> and then output within tags following the instruction. Following the above instruction to complete the current satge, and put the current satge output within tags.
+And then based the content this stage and previous stages, think through to complete the entire optimization problem modeling task. And at last only output the final completely python code with gurobi in <Gurobi_code>.
+Note You have three steps: 
+You should think first in <thought>, 
+and then following the instruction to output the current stage content within tag,
+at last complete the entire modeling task and only output the final code in <Gurobi_code>.
 """.strip()
 
 

@@ -6,7 +6,6 @@ import inspect
 import math
 import os
 import tempfile
-import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,6 +60,7 @@ class TRLPolicyBackend(PolicyBackend):
     _warned_vllm_disabled_for_run: bool = field(init=False, default=False, repr=False)
     _warned_lora_persist_across_tasks: bool = field(init=False, default=False, repr=False)
     _warned_vllm_len_clamp: bool = field(init=False, default=False, repr=False)
+    _warned_strict_group_override: bool = field(init=False, default=False, repr=False)
 
     def begin_episode(self, task: OptimizationTask) -> None:
         self._episode_key = task.task_id
@@ -69,6 +69,7 @@ class TRLPolicyBackend(PolicyBackend):
         self._force_disable_vllm_for_episode = False
         self._warned_lora_persist_across_tasks = False
         self._warned_vllm_len_clamp = False
+        self._warned_strict_group_override = False
 
         if self._model is None or self._tokenizer is None:
             self._load_fresh_episode_model()
@@ -210,7 +211,7 @@ class TRLPolicyBackend(PolicyBackend):
             return [float(r) for r in rewards]
 
         output_dir = self._stage_output_dir(stage)
-        trl_args = self._build_trl_grpo_args(config, output_dir, num_generations=k)
+        trl_args = self._build_trl_grpo_args(config, output_dir, num_generations=k, strict_single_group=True)
 
         self._grpo_call_index += 1
         call_index = int(self._grpo_call_index)
@@ -230,17 +231,12 @@ class TRLPolicyBackend(PolicyBackend):
                 f"lora_adapters={lora_adapter_count}"
             )
 
-        trainer_kwargs = {
-            "model": self._model,
-            "args": trl_args,
-            "reward_funcs": reward_func,
-            "train_dataset": train_dataset,
-        }
-        trainer_sig = inspect.signature(trl.GRPOTrainer.__init__)
-        if "processing_class" in trainer_sig.parameters:
-            trainer_kwargs["processing_class"] = self._tokenizer
-        elif "tokenizer" in trainer_sig.parameters:
-            trainer_kwargs["tokenizer"] = self._tokenizer
+        trainer_kwargs = self._build_grpo_trainer_kwargs(
+            trl=trl,
+            trl_args=trl_args,
+            reward_func=reward_func,
+            train_dataset=train_dataset,
+        )
 
         train_result, used_fallback = self._train_with_optional_vllm_fallback(
             trainer_kwargs=trainer_kwargs,
@@ -249,6 +245,7 @@ class TRLPolicyBackend(PolicyBackend):
             output_dir=output_dir,
             num_generations=k,
             on_fallback_reset=captured.clear,
+            strict_single_group=True,
         )
 
         metrics = dict(getattr(train_result, "metrics", {}) or {})
@@ -264,6 +261,15 @@ class TRLPolicyBackend(PolicyBackend):
                 f"cuda_reserved_mb={mem_before.get('reserved_mb', 'n/a')}->"
                 f"{mem_after.get('reserved_mb', 'n/a')}"
             )
+
+        schedule_info = self._estimate_training_schedule(
+            num_samples=int(len(train_dataset)),
+            per_device_train_batch_size=int(getattr(trl_args, "per_device_train_batch_size", 1)),
+            gradient_accumulation_steps=int(getattr(trl_args, "gradient_accumulation_steps", 1)),
+            num_train_epochs=float(getattr(trl_args, "num_train_epochs", 1.0)),
+            num_generations=int(k),
+            generation_batch_size=int(getattr(trl_args, "generation_batch_size", k)),
+        )
 
         report: dict[str, Any] = {
             "updated": True,
@@ -283,6 +289,8 @@ class TRLPolicyBackend(PolicyBackend):
             "lora_adapter_count": int(lora_adapter_count),
             "cuda_mem_before": mem_before,
             "cuda_mem_after": mem_after,
+            "strict_single_group": True,
+            "training_schedule": schedule_info,
         }
         if "train_loss" in metrics:
             report["train_loss"] = float(metrics["train_loss"])
@@ -341,9 +349,64 @@ class TRLPolicyBackend(PolicyBackend):
 
         output_dir = self._stage_output_dir(stage)
         num_generations_used = int(len(rewards))
-        trl_args = self._build_trl_grpo_args(config, output_dir, num_generations=num_generations_used)
+        trl_args = self._build_trl_grpo_args(config, output_dir, num_generations=num_generations_used, strict_single_group=True)
 
-        trainer_kwargs = {
+        trainer_kwargs = self._build_grpo_trainer_kwargs(
+            trl=trl,
+            trl_args=trl_args,
+            reward_func=reward_func,
+            train_dataset=train_dataset,
+        )
+
+        train_result, used_fallback = self._train_with_optional_vllm_fallback(
+            trainer_kwargs=trainer_kwargs,
+            config=config,
+            stage=stage,
+            output_dir=output_dir,
+            num_generations=num_generations_used,
+            on_fallback_reset=None,
+            strict_single_group=True,
+        )
+
+        metrics = dict(getattr(train_result, "metrics", {}) or {})
+        schedule_info = self._estimate_training_schedule(
+            num_samples=int(len(train_dataset)),
+            per_device_train_batch_size=int(getattr(trl_args, "per_device_train_batch_size", 1)),
+            gradient_accumulation_steps=int(getattr(trl_args, "gradient_accumulation_steps", 1)),
+            num_train_epochs=float(getattr(trl_args, "num_train_epochs", 1.0)),
+            num_generations=int(num_generations_used),
+            generation_batch_size=int(getattr(trl_args, "generation_batch_size", num_generations_used)),
+        )
+
+        report: dict[str, Any] = {
+            "updated": True,
+            "stage": stage.value,
+            "num_updates": 1,
+            "num_samples": len(samples),
+            "backend": "trl",
+            "num_generations": num_generations_used,
+            "fallback_disable_vllm": used_fallback,
+            "group_mode": "manual_reward_binding",
+            "strict_single_group": True,
+            "training_schedule": schedule_info,
+        }
+        if "train_loss" in metrics:
+            report["train_loss"] = float(metrics["train_loss"])
+        if "train_runtime" in metrics:
+            report["train_runtime"] = float(metrics["train_runtime"])
+        if "train_steps_per_second" in metrics:
+            report["train_steps_per_second"] = float(metrics["train_steps_per_second"])
+        return report
+
+    def _build_grpo_trainer_kwargs(
+        self,
+        *,
+        trl,
+        trl_args,
+        reward_func,
+        train_dataset,
+    ) -> dict[str, Any]:
+        trainer_kwargs: dict[str, Any] = {
             "model": self._model,
             "args": trl_args,
             "reward_funcs": reward_func,
@@ -354,35 +417,44 @@ class TRLPolicyBackend(PolicyBackend):
             trainer_kwargs["processing_class"] = self._tokenizer
         elif "tokenizer" in trainer_sig.parameters:
             trainer_kwargs["tokenizer"] = self._tokenizer
+        return trainer_kwargs
 
-        train_result, used_fallback = self._train_with_optional_vllm_fallback(
-            trainer_kwargs=trainer_kwargs,
-            config=config,
-            stage=stage,
-            output_dir=output_dir,
-            num_generations=num_generations_used,
-            on_fallback_reset=None,
-        )
+    @staticmethod
+    def _estimate_training_schedule(
+        *,
+        num_samples: int,
+        per_device_train_batch_size: int,
+        gradient_accumulation_steps: int,
+        num_train_epochs: float,
+        num_generations: int,
+        generation_batch_size: int,
+    ) -> dict[str, Any]:
+        samples = max(1, int(num_samples))
+        bs = max(1, int(per_device_train_batch_size))
+        accum = max(1, int(gradient_accumulation_steps))
+        epochs = max(0.0, float(num_train_epochs))
+        k = max(1, int(num_generations))
+        gen_bs = max(k, int(generation_batch_size))
 
-        metrics = dict(getattr(train_result, "metrics", {}) or {})
-        report: dict[str, Any] = {
-            "updated": True,
-            "stage": stage.value,
-            "num_updates": 1,
-            "num_samples": len(samples),
-            "backend": "trl",
-            "num_generations": num_generations_used,
-            "fallback_disable_vllm": used_fallback,
-            "group_mode": "manual_reward_binding",
+        dataloader_steps_per_epoch = max(1, math.ceil(samples / bs))
+        optimizer_steps_per_epoch = max(1, math.ceil(dataloader_steps_per_epoch / accum))
+        total_optimizer_steps_est = max(1, math.ceil(optimizer_steps_per_epoch * max(epochs, 1e-9)))
+
+        prompts_per_step = max(1, gen_bs // k)
+
+        return {
+            "num_samples": samples,
+            "per_device_train_batch_size": bs,
+            "gradient_accumulation_steps": accum,
+            "num_train_epochs": epochs,
+            "num_generations": k,
+            "generation_batch_size": gen_bs,
+            "prompts_per_step": int(prompts_per_step),
+            "rollouts_per_step": int(gen_bs),
+            "dataloader_steps_per_epoch": int(dataloader_steps_per_epoch),
+            "optimizer_steps_per_epoch_est": int(optimizer_steps_per_epoch),
+            "optimizer_steps_total_est": int(total_optimizer_steps_est),
         }
-        if "train_loss" in metrics:
-            report["train_loss"] = float(metrics["train_loss"])
-        if "train_runtime" in metrics:
-            report["train_runtime"] = float(metrics["train_runtime"])
-        if "train_steps_per_second" in metrics:
-            report["train_steps_per_second"] = float(metrics["train_steps_per_second"])
-        return report
-
     def generate_mapping_from_description(
         self,
         description: str,
@@ -558,6 +630,7 @@ class TRLPolicyBackend(PolicyBackend):
         output_dir: str,
         num_generations: int,
         on_fallback_reset,
+        strict_single_group: bool = False,
     ) -> tuple[Any, bool]:
         trl = _import_trl()
         rank = _env_int("RANK", 0)
@@ -595,6 +668,7 @@ class TRLPolicyBackend(PolicyBackend):
                 output_dir,
                 num_generations=num_generations,
                 force_use_vllm=False,
+                strict_single_group=strict_single_group,
             )
             fallback_kwargs = dict(trainer_kwargs)
             fallback_kwargs["args"] = trl_args
@@ -702,15 +776,33 @@ class TRLPolicyBackend(PolicyBackend):
         output_dir: str,
         num_generations: int | None = None,
         force_use_vllm: bool | None = None,
+        strict_single_group: bool = False,
     ):
         trl = _import_trl()
 
         used_num_generations = int(num_generations if num_generations is not None else config.num_generations)
-        used_generation_batch_size = self._resolve_generation_batch_size(
-            configured_generation_batch_size=int(config.generation_batch_size),
-            per_device_train_batch_size=int(config.per_device_train_batch_size),
-            num_generations=used_num_generations,
-        )
+        used_per_device_train_batch_size = int(config.per_device_train_batch_size)
+
+        if strict_single_group:
+            # Keep one selected node => one prompt group => one GRPO group semantics.
+            # This avoids hidden prompt replication inside TRL when generation_batch_size > num_generations.
+            used_per_device_train_batch_size = 1
+            used_generation_batch_size = max(1, used_num_generations)
+            if not self._warned_strict_group_override and (
+                int(config.per_device_train_batch_size) != used_per_device_train_batch_size
+                or int(config.generation_batch_size) > 0
+            ):
+                print(
+                    "[GRPO][INFO] strict_single_group=True: forcing per_device_train_batch_size=1 "
+                    f"and generation_batch_size=num_generations={used_generation_batch_size}."
+                )
+                self._warned_strict_group_override = True
+        else:
+            used_generation_batch_size = self._resolve_generation_batch_size(
+                configured_generation_batch_size=int(config.generation_batch_size),
+                per_device_train_batch_size=used_per_device_train_batch_size,
+                num_generations=used_num_generations,
+            )
 
         rank = _env_int("RANK", 0)
         world_size = _world_size()
@@ -742,30 +834,49 @@ class TRLPolicyBackend(PolicyBackend):
         max_prompt_len = int(config.max_prompt_length)
         max_completion_len = int(config.max_completion_length)
 
+        effective_vllm_model_max_len = max(256, int(config.vllm_max_model_len))
+        configured_batched_tokens = int(config.vllm_max_num_batched_tokens)
+        effective_vllm_max_num_batched_tokens = configured_batched_tokens
+
         if effective_use_vllm:
-            model_max_len = max(256, int(config.vllm_max_model_len))
-            if max_completion_len >= model_max_len:
+            # Keep colocate/server defaults safe: if user does not set this explicitly,
+            # align it to max_model_len so vLLM does not reject long sequences.
+            if effective_vllm_max_num_batched_tokens <= 0:
+                effective_vllm_max_num_batched_tokens = effective_vllm_model_max_len
+
+            # If user explicitly set a smaller batched-token cap, shrink model len to match.
+            # This avoids: max_num_batched_tokens < max_model_len.
+            if effective_vllm_max_num_batched_tokens < effective_vllm_model_max_len:
+                effective_vllm_model_max_len = effective_vllm_max_num_batched_tokens
+
+            if max_completion_len >= effective_vllm_model_max_len:
                 # Keep at least 128 prompt tokens budget.
-                max_completion_len = max(128, model_max_len - 128)
-            if max_prompt_len + max_completion_len > model_max_len:
-                max_prompt_len = max(128, model_max_len - max_completion_len)
+                max_completion_len = max(128, effective_vllm_model_max_len - 128)
+            if max_prompt_len + max_completion_len > effective_vllm_model_max_len:
+                max_prompt_len = max(128, effective_vllm_model_max_len - max_completion_len)
 
             if rank == 0 and not self._warned_vllm_len_clamp:
                 orig_prompt = int(config.max_prompt_length)
                 orig_comp = int(config.max_completion_length)
-                if orig_prompt != max_prompt_len or orig_comp != max_completion_len:
+                orig_model_max = int(config.vllm_max_model_len)
+                if (
+                    orig_prompt != max_prompt_len
+                    or orig_comp != max_completion_len
+                    or orig_model_max != effective_vllm_model_max_len
+                    or configured_batched_tokens <= 0
+                ):
                     print(
-                        "[GRPO][WARN] Clamped prompt/completion lengths for vLLM to avoid OOM: "
+                        "[GRPO][WARN] Adjusted vLLM length settings: "
                         f"prompt {orig_prompt}->{max_prompt_len}, completion {orig_comp}->{max_completion_len}, "
-                        f"vllm_max_model_len={model_max_len}."
+                        f"vllm_max_model_len {orig_model_max}->{effective_vllm_model_max_len}, "
+                        f"vllm_max_num_batched_tokens={effective_vllm_max_num_batched_tokens}."
                     )
                     self._warned_vllm_len_clamp = True
-
         kwargs = {
             "output_dir": output_dir,
             "learning_rate": config.learning_rate,
             "beta": config.kl_coef,
-            "per_device_train_batch_size": config.per_device_train_batch_size,
+            "per_device_train_batch_size": used_per_device_train_batch_size,
             "gradient_accumulation_steps": config.gradient_accumulation_steps,
             "num_generations": used_num_generations,
             "generation_batch_size": used_generation_batch_size,
@@ -779,7 +890,7 @@ class TRLPolicyBackend(PolicyBackend):
             "vllm_enable_sleep_mode": bool(config.vllm_enable_sleep_mode),
             "vllm_gpu_memory_utilization": config.vllm_gpu_memory_utilization,
             "vllm_tensor_parallel_size": effective_vllm_tp,
-            "vllm_max_model_len": config.vllm_max_model_len,
+            "vllm_max_model_len": effective_vllm_model_max_len,
             "report_to": [],
             "save_strategy": "no",
             "logging_steps": 1,
@@ -789,6 +900,12 @@ class TRLPolicyBackend(PolicyBackend):
             kwargs["epsilon_high"] = float(config.clip_epsilon_high)
 
         init_sig = inspect.signature(trl.GRPOConfig.__init__)
+
+        if effective_use_vllm and "vllm_max_num_batched_tokens" in init_sig.parameters:
+            kwargs["vllm_max_num_batched_tokens"] = int(effective_vllm_max_num_batched_tokens)
+        elif effective_use_vllm and "max_num_batched_tokens" in init_sig.parameters:
+            kwargs["max_num_batched_tokens"] = int(effective_vllm_max_num_batched_tokens)
+
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in init_sig.parameters}
         if bool(config.use_vllm):
             missing = [k for k in ("use_vllm", "vllm_mode") if k not in filtered_kwargs]
@@ -1146,7 +1263,3 @@ def _looks_like_vllm_comm_error(exc: Exception) -> bool:
         "close_communicator first",
     )
     return any(k in text for k in keys)
-
-
-
-

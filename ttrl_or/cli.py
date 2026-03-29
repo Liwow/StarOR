@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
@@ -198,6 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--grpo-vllm-tensor-parallel-size", type=int, default=defaults.grpo.vllm_tensor_parallel_size)
     parser.add_argument("--grpo-vllm-max-model-len", type=int, default=defaults.grpo.vllm_max_model_len)
+    parser.add_argument("--grpo-vllm-max-num-batched-tokens", type=int, default=defaults.grpo.vllm_max_num_batched_tokens)
     parser.add_argument("--grpo-vllm-enable-sleep-mode", action="store_true", default=defaults.grpo.vllm_enable_sleep_mode)
     parser.add_argument(
         "--grpo-vllm-no-reset-prefix-cache-after-update",
@@ -256,6 +257,7 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.grpo.vllm_gpu_memory_utilization = args.grpo_vllm_gpu_memory_utilization
     config.grpo.vllm_tensor_parallel_size = args.grpo_vllm_tensor_parallel_size
     config.grpo.vllm_max_model_len = args.grpo_vllm_max_model_len
+    config.grpo.vllm_max_num_batched_tokens = args.grpo_vllm_max_num_batched_tokens
     config.grpo.vllm_enable_sleep_mode = args.grpo_vllm_enable_sleep_mode
     config.grpo.vllm_reset_prefix_cache_after_update = args.grpo_vllm_reset_prefix_cache_after_update
     config.grpo.vllm_close_communicator_after_update = args.grpo_vllm_close_communicator_after_update
@@ -612,3 +614,4 @@ def main() -> int:
         print(json.dumps(output, ensure_ascii=False, indent=2))
 
     return 0
+
