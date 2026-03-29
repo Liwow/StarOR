@@ -14,7 +14,7 @@ MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
 VLLM_HOST="0.0.0.0"
 VLLM_PORT=8000
 VLLM_TENSOR_PARALLEL_SIZE=1
-VLLM_GPU_MEMORY_UTILIZATION=0.55
+VLLM_GPU_MEMORY_UTILIZATION=0.5
 
 VLLM_MAX_MODEL_LEN=10240
 VLLM_ENFORCE_EAGER=false
@@ -108,13 +108,8 @@ if [[ "${VLLM_ENFORCE_EAGER}" == "true" ]]; then
   fi
 fi
 
-if [[ "${VLLM_ENABLE_PREFIX_CACHING}" == "true" ]]; then
-  if grep -q -- '--enable-prefix-caching' <<<"${HELP_TEXT}"; then
-    CMD+=(--enable-prefix-caching)
-  elif grep -q -- '--enable_prefix_caching' <<<"${HELP_TEXT}"; then
-    CMD+=(--enable_prefix_caching)
-  fi
-else
+
+if [[ "${VLLM_ENABLE_PREFIX_CACHING}" == "false" ]]; then
   if grep -q -- '--no-enable-prefix-caching' <<<"${HELP_TEXT}"; then
     CMD+=(--no-enable-prefix-caching)
   elif grep -q -- '--disable-prefix-caching' <<<"${HELP_TEXT}"; then
