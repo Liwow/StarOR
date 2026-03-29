@@ -4,9 +4,10 @@ set -euo pipefail
 # External periodic-restart runner (minimal invasive):
 # - split dataset run into chunks (by sample count)
 # - restart TRL vLLM server between chunks
+# - keep logs in the same LOG_DIR as normal run.sh (no chunk split)
 
 # ==========================
-# Edit Here (no CLI/env needed)
+# Edit Here (internal config only)
 # ==========================
 RUN_SCRIPT="scripts/run.sh"
 START_SERVER_SCRIPT="scripts/start_vllm_server.sh"
@@ -16,8 +17,9 @@ DATASET_JSONL="data/IndustryOR_fixedV2.jsonl"
 CHUNK_SAMPLES=10          # restart server every N samples
 TOTAL_LIMIT=0            # 0 = run all samples in dataset
 
-BASE_LOG_ROOT="logs/periodic"
-BASE_OUT_ROOT="outputs/periodic"
+# Keep same output paths across chunks (no split)
+LOG_DIR="logs/run"
+OUT_JSON="outputs/run.json"
 
 USE_VLLM=true
 VLLM_MODE="server"
@@ -54,7 +56,7 @@ restart_server_if_needed() {
   sleep 20
 }
 
-mkdir -p "${BASE_LOG_ROOT}" "${BASE_OUT_ROOT}"
+mkdir -p "${LOG_DIR}" "$(dirname "${OUT_JSON}")"
 
 TOTAL_DATASET_LINES="$(count_jsonl_lines "${DATASET_JSONL}")"
 if (( TOTAL_LIMIT > 0 )); then
@@ -72,6 +74,7 @@ if (( CHUNK_SAMPLES < 1 )); then
 fi
 
 echo "[periodic] dataset=${DATASET_JSONL} total_lines=${TOTAL_DATASET_LINES} target_total=${TARGET_TOTAL} chunk=${CHUNK_SAMPLES}"
+echo "[periodic] LOG_DIR=${LOG_DIR} OUT_JSON=${OUT_JSON} (shared across chunks)"
 
 restart_server_if_needed
 
@@ -84,16 +87,13 @@ while (( offset < TARGET_TOTAL )); do
     chunk_size="${remain}"
   fi
 
-  run_log_dir="${BASE_LOG_ROOT}/chunk_${chunk_id}"
-  run_out_json="${BASE_OUT_ROOT}/chunk_${chunk_id}.json"
-
   echo "[periodic] chunk=${chunk_id} start=${offset} limit=${chunk_size}"
 
   DATASET_JSONL="${DATASET_JSONL}" \
   DATASET_START_INDEX="${offset}" \
   DATASET_LIMIT="${chunk_size}" \
-  LOG_DIR="${run_log_dir}" \
-  OUT_JSON="${run_out_json}" \
+  LOG_DIR="${LOG_DIR}" \
+  OUT_JSON="${OUT_JSON}" \
   USE_VLLM="${USE_VLLM}" \
   VLLM_MODE="${VLLM_MODE}" \
   CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" \

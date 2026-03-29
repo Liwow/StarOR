@@ -178,7 +178,7 @@ Edit script-internal config at `scripts/run_with_periodic_vllm_restart.sh` (for 
 bash scripts/run_with_periodic_vllm_restart.sh
 ```
 
-This wrapper runs `scripts/run.sh` in chunks (`--dataset-start-index/--dataset-limit`) and restarts vLLM server between chunks.
+This wrapper runs `scripts/run.sh` in chunks (`--dataset-start-index/--dataset-limit`) and restarts vLLM server between chunks. Logs still go to the same `LOG_DIR` (no per-chunk split).
 
 4. If you do not want vLLM
 
@@ -380,5 +380,6 @@ scripts/start_vllm_server.sh
 ```
 
 The backend now also clamps prompt/completion lengths under `vllm_max_model_len` and logs a warning when clamping is applied.
+
 
 
