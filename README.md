@@ -347,3 +347,22 @@ pytest -q
 - Inside one sample, each GRPO call creates a fresh `GRPOTrainer` (more stable with `accelerate` state lifecycle); base model is still reused and only LoRA state is reset per episode.
 - If `trl/peft/datasets` are missing, `--backend trl` will raise a clear install error.
 
+
+
+### vLLM Server OOM Notes
+
+If you use `--grpo-vllm-mode server` (one GPU for training + one GPU for serving), memory can still grow over time because:
+- vLLM keeps KV/cache blocks as a high-watermark allocator,
+- repeated communicator init/update cycles can leave server-side resources sticky,
+- very large `max_prompt_length + max_completion_length` increases KV demand.
+
+Recommended safeguards (already reflected in scripts/defaults):
+- Start with conservative limits: `--grpo-max-completion-len 2048`, `--grpo-vllm-max-model-len 8192`, `--grpo-vllm-gpu-memory-utilization 0.55`.
+- Always clean-start the server before run:
+
+```bash
+PORT=8000 scripts/stop_vllm_server.sh
+scripts/start_vllm_server.sh
+```
+
+The backend now also clamps prompt/completion lengths under `vllm_max_model_len` and logs a warning when clamping is applied.

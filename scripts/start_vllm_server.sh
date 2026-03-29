@@ -16,10 +16,11 @@ MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
 VLLM_HOST="0.0.0.0"
 VLLM_PORT=8000
 VLLM_TENSOR_PARALLEL_SIZE=1
-VLLM_GPU_MEMORY_UTILIZATION=0.65
-VLLM_MAX_MODEL_LEN=16384
+VLLM_GPU_MEMORY_UTILIZATION=0.55
+VLLM_MAX_MODEL_LEN=8192
 
 SERVER_KIND="trl"
+CLEAN_START=true
 
 export CUDA_VISIBLE_DEVICES
 
@@ -46,6 +47,13 @@ if [[ "${SERVER_KIND}" == "openai" ]]; then
     --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION}" \
     --max-model-len "${VLLM_MAX_MODEL_LEN}"
   exit 0
+fi
+
+if [[ "${CLEAN_START}" == "true" ]]; then
+  if [[ -x "scripts/stop_vllm_server.sh" ]]; then
+    echo "[vLLM] clean start: stopping existing server on port ${VLLM_PORT}"
+    PORT="${VLLM_PORT}" scripts/stop_vllm_server.sh || true
+  fi
 fi
 
 if ! command -v trl >/dev/null 2>&1; then

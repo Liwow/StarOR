@@ -59,12 +59,16 @@ class TRLPolicyBackend(PolicyBackend):
     _force_disable_vllm_for_episode: bool = field(init=False, default=False, repr=False)
     _force_disable_vllm_for_run: bool = field(init=False, default=False, repr=False)
     _warned_vllm_disabled_for_run: bool = field(init=False, default=False, repr=False)
+    _warned_lora_persist_across_tasks: bool = field(init=False, default=False, repr=False)
+    _warned_vllm_len_clamp: bool = field(init=False, default=False, repr=False)
 
     def begin_episode(self, task: OptimizationTask) -> None:
         self._episode_key = task.task_id
         self._grpo_call_index = 0
         self._warned_vllm_unsupported = False
         self._force_disable_vllm_for_episode = False
+        self._warned_lora_persist_across_tasks = False
+        self._warned_vllm_len_clamp = False
 
         if self._model is None or self._tokenizer is None:
             self._load_fresh_episode_model()
@@ -72,9 +76,11 @@ class TRLPolicyBackend(PolicyBackend):
             self._reset_lora_state()
 
         if self._model is not None:
+            self._assert_single_lora_adapter()
             self._model.train()
 
     def end_episode(self) -> None:
+        rank = _env_int("RANK", 0)
         self._episode_key = ""
         self._grpo_call_index = 0
         self._warned_vllm_unsupported = False
@@ -82,6 +88,17 @@ class TRLPolicyBackend(PolicyBackend):
 
         if not self.reuse_base_model_across_tasks:
             self._unload_model()
+            return
+
+        if self._model is not None:
+            if self.reset_lora_on_begin_episode:
+                # Explicitly drop sample-specific LoRA state right after sample ends.
+                self._reset_lora_state()
+                if rank == 0:
+                    print("[LoRA] end_episode reset complete (sample-specific LoRA dropped).")
+            elif rank == 0 and not self._warned_lora_persist_across_tasks:
+                print("[LoRA][WARN] reset_lora_on_begin_episode=False, LoRA state may persist across samples.")
+                self._warned_lora_persist_across_tasks = True
 
     def generate(self, stage: Stage, prompt: str, n: int) -> list[Generation]:
         if self._model is None or self._tokenizer is None:
@@ -201,13 +218,16 @@ class TRLPolicyBackend(PolicyBackend):
         world_size = max(1, _env_int("WORLD_SIZE", 1))
         prompt_tokens = int(self._tokenizer(prompt, return_tensors="pt")["input_ids"].shape[1])
         mem_before = self._cuda_mem_snapshot()
+        lora_adapter_count = self._lora_adapter_count()
+        self._assert_single_lora_adapter()
 
         if rank == 0:
             print(
                 f"[GRPO] start task={self._episode_key} call={call_index} "
                 f"rank={rank}/{world_size} stage={stage.value} "
                 f"num_generations={k} prompt_tokens={prompt_tokens} "
-                f"use_vllm={bool(config.use_vllm)} vllm_mode={config.vllm_mode}"
+                f"use_vllm={bool(config.use_vllm)} vllm_mode={config.vllm_mode} "
+                f"lora_adapters={lora_adapter_count}"
             )
 
         trainer_kwargs = {
@@ -260,6 +280,7 @@ class TRLPolicyBackend(PolicyBackend):
             "rank": rank,
             "world_size": world_size,
             "fallback_disable_vllm": used_fallback,
+            "lora_adapter_count": int(lora_adapter_count),
             "cuda_mem_before": mem_before,
             "cuda_mem_after": mem_after,
         }
@@ -667,6 +688,28 @@ class TRLPolicyBackend(PolicyBackend):
             world_size=world_size,
         )
 
+        max_prompt_len = int(config.max_prompt_length)
+        max_completion_len = int(config.max_completion_length)
+
+        if effective_use_vllm:
+            model_max_len = max(256, int(config.vllm_max_model_len))
+            if max_completion_len >= model_max_len:
+                # Keep at least 128 prompt tokens budget.
+                max_completion_len = max(128, model_max_len - 128)
+            if max_prompt_len + max_completion_len > model_max_len:
+                max_prompt_len = max(128, model_max_len - max_completion_len)
+
+            if rank == 0 and not self._warned_vllm_len_clamp:
+                orig_prompt = int(config.max_prompt_length)
+                orig_comp = int(config.max_completion_length)
+                if orig_prompt != max_prompt_len or orig_comp != max_completion_len:
+                    print(
+                        "[GRPO][WARN] Clamped prompt/completion lengths for vLLM to avoid OOM: "
+                        f"prompt {orig_prompt}->{max_prompt_len}, completion {orig_comp}->{max_completion_len}, "
+                        f"vllm_max_model_len={model_max_len}."
+                    )
+                    self._warned_vllm_len_clamp = True
+
         kwargs = {
             "output_dir": output_dir,
             "learning_rate": config.learning_rate,
@@ -675,8 +718,8 @@ class TRLPolicyBackend(PolicyBackend):
             "gradient_accumulation_steps": config.gradient_accumulation_steps,
             "num_generations": used_num_generations,
             "generation_batch_size": used_generation_batch_size,
-            "max_prompt_length": config.max_prompt_length,
-            "max_completion_length": config.max_completion_length,
+            "max_prompt_length": max_prompt_len,
+            "max_completion_length": max_completion_len,
             "num_train_epochs": float(config.train_epochs),
             "max_steps": -1,
             "epsilon": float(config.clip_epsilon),
@@ -842,6 +885,23 @@ class TRLPolicyBackend(PolicyBackend):
             }
         except Exception:
             return {}
+
+    def _lora_adapter_count(self) -> int:
+        if self._model is None:
+            return 0
+        cfg = getattr(self._model, "peft_config", None)
+        if cfg is None:
+            return 0
+        if isinstance(cfg, dict):
+            return len(cfg)
+        return 1
+
+    def _assert_single_lora_adapter(self) -> None:
+        count = self._lora_adapter_count()
+        if count > 1:
+            raise RuntimeError(
+                f"Detected {count} LoRA adapters on model; expected exactly 1 to avoid adapter stacking."
+            )
 
     def _resolve_torch_dtype(self):
         if self.torch_dtype == "auto":
