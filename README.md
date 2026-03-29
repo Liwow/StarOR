@@ -170,6 +170,16 @@ If you hit `Weight update group already initialized`, stop server processes (`sc
 scripts/run.sh
 ```
 
+3.1 Optional: periodic vLLM restart wrapper (external script)
+
+Edit script-internal config at `scripts/run_with_periodic_vllm_restart.sh` (for example `CHUNK_SAMPLES=5`), then run:
+
+```bash
+bash scripts/run_with_periodic_vllm_restart.sh
+```
+
+This wrapper runs `scripts/run.sh` in chunks (`--dataset-start-index/--dataset-limit`) and restarts vLLM server between chunks.
+
 4. If you do not want vLLM
 
 Set `USE_VLLM=false` in `scripts/run.sh`, then run the same script.

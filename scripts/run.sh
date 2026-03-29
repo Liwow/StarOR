@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 export VLLM_USE_V1=0
 # export NCCL_DEBUG=INFO
@@ -10,19 +10,20 @@ export NCCL_SOCKET_IFNAME=eth0
 # =====================================
 # Edit Here: TTRL-OR Common Parameters
 # =====================================
-CUDA_VISIBLE_DEVICES="0"
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 # Set 1 for single-card, 2/4 for multi-card (must be <= visible GPU count)
-NPROC_PER_NODE=1
-MASTER_PORT=29500
+NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
+MASTER_PORT="${MASTER_PORT:-29500}"
 
-BACKEND="trl"
+BACKEND="${BACKEND:-trl}"
 # MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
-MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
+MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-$HOME/model/Qwen/Qwen2.5-7B-Instruct}"
 
-DATASET_JSONL="data/IndustryOR_fixedV2.jsonl"
-DATASET_LIMIT=0
-LOG_DIR="logs/run"
-OUT_JSON="outputs/run.json"
+DATASET_JSONL="${DATASET_JSONL:-data/IndustryOR_fixedV2.jsonl}"
+DATASET_START_INDEX="${DATASET_START_INDEX:-0}"
+DATASET_LIMIT="${DATASET_LIMIT:-0}"
+LOG_DIR="${LOG_DIR:-logs/run}"
+OUT_JSON="${OUT_JSON:-outputs/run.json}"
 
 # MCTS (global-leaf selection)
 MAX_ITERATIONS=18
@@ -49,8 +50,8 @@ TOP_P=0.95
 MAX_NEW_TOKENS=2048
 
 # vLLM for TRL
-USE_VLLM=true
-VLLM_MODE="server" # server | colocate
+USE_VLLM="${USE_VLLM:-true}"
+VLLM_MODE="${VLLM_MODE:-server}" # server | colocate
 VLLM_GPU_MEMORY_UTILIZATION=0.55
 VLLM_TENSOR_PARALLEL_SIZE=1
 VLLM_MAX_MODEL_LEN=8192
@@ -114,6 +115,7 @@ BASE_CMD=(-m ttrl_or
   "${MODEL_ARG[@]}"
   --seed "${SEED}"
   --dataset-jsonl "${DATASET_JSONL}"
+  --dataset-start-index "${DATASET_START_INDEX}"
   --dataset-limit "${DATASET_LIMIT}"
   --max-iterations "${MAX_ITERATIONS}"
   --c-puct "${C_PUCT}"
@@ -173,11 +175,10 @@ fi
 echo "[TTRL-OR] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "[TTRL-OR] NPROC_PER_NODE=${NPROC_PER_NODE} BACKEND=${BACKEND}"
 echo "[TTRL-OR] MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH}"
-echo "[TTRL-OR] DATASET_JSONL=${DATASET_JSONL} LIMIT=${DATASET_LIMIT}"
+echo "[TTRL-OR] DATASET_JSONL=${DATASET_JSONL} START=${DATASET_START_INDEX} LIMIT=${DATASET_LIMIT}"
 
 echo "[TTRL-OR] Running command:"
 printf ' %q' "${CMD[@]}"
 echo
 
 "${CMD[@]}"
-
