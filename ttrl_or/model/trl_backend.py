@@ -564,6 +564,7 @@ class TRLPolicyBackend(PolicyBackend):
 
         trainer = None
         try:
+            self._vllm_server_maintenance(config=config, before_train=True, after_train=False)
             trainer = trl.GRPOTrainer(**trainer_kwargs)
             train_result = trainer.train()
             return train_result, False
@@ -607,6 +608,7 @@ class TRLPolicyBackend(PolicyBackend):
                 self._cleanup_trainer_vllm(fallback_trainer)
         finally:
             self._cleanup_trainer_vllm(trainer)
+            self._vllm_server_maintenance(config=config, before_train=False, after_train=True)
 
     @staticmethod
     def _cleanup_trainer_vllm(trainer: Any) -> None:
@@ -644,6 +646,55 @@ class TRLPolicyBackend(PolicyBackend):
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+    @staticmethod
+    def _vllm_server_post(endpoint: str, payload: dict[str, Any] | None = None, timeout_sec: float = 8.0) -> bool:
+        base_url = (os.environ.get("VLLM_BASE_URL") or "http://127.0.0.1:8000").rstrip("/")
+        url = f"{base_url}{endpoint}"
+        data = json.dumps(payload or {}).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=float(timeout_sec)) as resp:  # nosec B310
+                return 200 <= int(getattr(resp, "status", 200)) < 300
+        except Exception:
+            return False
+
+    def _vllm_server_maintenance(
+        self,
+        config: GRPOConfig,
+        *,
+        before_train: bool,
+        after_train: bool,
+    ) -> None:
+        if not bool(config.use_vllm):
+            return
+        if str(config.vllm_mode or "").lower() != "server":
+            return
+
+        rank = _env_int("RANK", 0)
+
+        # Best-effort communicator cleanup before next trainer init.
+        if before_train and bool(config.vllm_close_communicator_after_update):
+            ok = self._vllm_server_post("/close_communicator/")
+            if rank == 0 and ok:
+                print("[vLLM] close_communicator before trainer init.")
+
+        if after_train:
+            if bool(config.vllm_reset_prefix_cache_after_update):
+                ok_cache = self._vllm_server_post("/reset_prefix_cache/")
+                if rank == 0 and ok_cache:
+                    print("[vLLM] reset_prefix_cache after update.")
+
+            if bool(config.vllm_close_communicator_after_update):
+                ok_close = self._vllm_server_post("/close_communicator/")
+                if rank == 0 and ok_close:
+                    print("[vLLM] close_communicator after update.")
+
 
     def _build_trl_grpo_args(
         self,
@@ -725,6 +776,7 @@ class TRLPolicyBackend(PolicyBackend):
             "epsilon": float(config.clip_epsilon),
             "use_vllm": effective_use_vllm,
             "vllm_mode": config.vllm_mode,
+            "vllm_enable_sleep_mode": bool(config.vllm_enable_sleep_mode),
             "vllm_gpu_memory_utilization": config.vllm_gpu_memory_utilization,
             "vllm_tensor_parallel_size": effective_vllm_tp,
             "vllm_max_model_len": config.vllm_max_model_len,

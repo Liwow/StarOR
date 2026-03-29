@@ -184,7 +184,7 @@ Useful knobs:
 - Dataset loader: `--dataset-start-index`, `--dataset-limit`, `--dataset-max-numeric-features`, `--dataset-key-param-top-k`
   - Mapping extractor plugin: `--mapping-extractor rule|llm`
   - LLM extractor knobs: `--mapping-llm-max-new-tokens`, `--mapping-llm-temperature`, `--mapping-llm-top-p`
-- GRPO: `--grpo-lr`, `--grpo-kl`, `--grpo-train-epochs`, `--grpo-clip-epsilon`, `--grpo-clip-epsilon-high`, `--grpo-batch-size`, `--grpo-grad-accum`, `--grpo-num-generations`, `--grpo-generation-batch-size`, `--grpo-max-completion-len`, `--grpo-use-vllm`, `--grpo-vllm-mode`, `--grpo-vllm-gpu-memory-utilization`, `--grpo-vllm-tensor-parallel-size`, `--grpo-vllm-max-model-len`
+- GRPO: `--grpo-lr`, `--grpo-kl`, `--grpo-train-epochs`, `--grpo-clip-epsilon`, `--grpo-clip-epsilon-high`, `--grpo-batch-size`, `--grpo-grad-accum`, `--grpo-num-generations`, `--grpo-generation-batch-size`, `--grpo-max-completion-len`, `--grpo-use-vllm`, `--grpo-vllm-mode`, `--grpo-vllm-gpu-memory-utilization`, `--grpo-vllm-tensor-parallel-size`, `--grpo-vllm-max-model-len`, `--grpo-vllm-enable-sleep-mode`, `--grpo-vllm-no-reset-prefix-cache-after-update`, `--grpo-vllm-no-close-communicator-after-update`
 - Logging: `--log-dir` and `--no-save-logs`
 - Backend/model: `--backend`, `--model-name`, `--model-path`, `--seed`, `--torch-dtype`, `--trust-remote-code`, `--lora-r`, `--lora-alpha`, `--lora-dropout`, `--lora-bias`, `--lora-target-modules`
 - Generation: `--temperature`, `--top-p`, `--max-new-tokens`
@@ -241,6 +241,9 @@ All defaults are defined in `ttrl_or/config.py`.
 - `vllm_gpu_memory_utilization` (Key): target fraction of GPU memory reserved by vLLM KV/cache scheduler.
 - `vllm_tensor_parallel_size` (Key): TP shard count for vLLM inference workers.
 - `vllm_max_model_len` (Key): max sequence length used by vLLM engine.
+- `vllm_enable_sleep_mode`: optional vLLM sleep mode (if your TRL version supports it).
+- `vllm_reset_prefix_cache_after_update`: after each GRPO update, best-effort reset prefix cache on server mode.
+- `vllm_close_communicator_after_update`: after each GRPO update, best-effort close communicator on server mode.
 
 ### BackendConfig
 

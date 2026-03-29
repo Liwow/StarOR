@@ -50,10 +50,12 @@ MAX_NEW_TOKENS=2048
 
 # vLLM for TRL
 USE_VLLM=true
-VLLM_MODE="colocate" # server | colocate
-VLLM_GPU_MEMORY_UTILIZATION=0.5
+VLLM_MODE="server" # server | colocate
+VLLM_GPU_MEMORY_UTILIZATION=0.55
 VLLM_TENSOR_PARALLEL_SIZE=1
-VLLM_MAX_MODEL_LEN=32768
+VLLM_MAX_MODEL_LEN=8192
+GRPO_VLLM_ENABLE_SLEEP_MODE=false
+
 
 # LoRA
 LORA_R=8
@@ -150,6 +152,10 @@ fi
 
 if [[ "${USE_VLLM}" == "true" ]]; then
   BASE_CMD+=(--grpo-use-vllm)
+fi
+
+if [[ "${GRPO_VLLM_ENABLE_SLEEP_MODE}" == "true" ]]; then
+  BASE_CMD+=(--grpo-vllm-enable-sleep-mode)
 fi
 
 if [[ "${TRUST_REMOTE_CODE}" == "true" ]]; then

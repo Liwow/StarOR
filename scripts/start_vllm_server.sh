@@ -1,11 +1,9 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-export VLLM_USE_V1=0
-export NCCL_SOCKET_IFNAME=eth0
-export NCCL_DEBUG=INFO
-export CUDA_LAUNCH_BLOCKING=1
-
+export VLLM_USE_V1="${VLLM_USE_V1:-0}"
+export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-eth0}"
+export NCCL_DEBUG="${NCCL_DEBUG:-INFO}"
 
 # ==================================
 # Edit Here: TRL vLLM Server Params
@@ -17,28 +15,35 @@ VLLM_HOST="0.0.0.0"
 VLLM_PORT=8000
 VLLM_TENSOR_PARALLEL_SIZE=1
 VLLM_GPU_MEMORY_UTILIZATION=0.55
+<<<<<<< HEAD
 VLLM_MAX_MODEL_LEN=10240
+=======
+VLLM_MAX_MODEL_LEN=8192
+VLLM_ENFORCE_EAGER=true
+VLLM_ENABLE_PREFIX_CACHING=false
+>>>>>>> 288ad0935e449d85604d429f167e36026fd417f3
 
-SERVER_KIND="trl"
+SERVER_KIND="trl"   # trl | openai
 CLEAN_START=true
 
 export CUDA_VISIBLE_DEVICES
 
-# 🔧 [新增] 打印关键环境变量，方便调试确认
 echo "========================================"
 echo "[vLLM] Environment Check:"
 echo "  - CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES}"
 echo "  - MODEL_NAME_OR_PATH: ${MODEL_NAME_OR_PATH}"
 echo "  - HOST: ${VLLM_HOST} PORT: ${VLLM_PORT}"
 echo "  - SERVER_KIND: ${SERVER_KIND}"
-echo "  - VLLM_USE_V1: ${VLLM_USE_V1} (v0 engine)"
+echo "  - VLLM_USE_V1: ${VLLM_USE_V1}"
 echo "  - NCCL_SOCKET_IFNAME: ${NCCL_SOCKET_IFNAME}"
 echo "  - NCCL_DEBUG: ${NCCL_DEBUG}"
+echo "  - ENFORCE_EAGER: ${VLLM_ENFORCE_EAGER}"
+echo "  - ENABLE_PREFIX_CACHING: ${VLLM_ENABLE_PREFIX_CACHING}"
 echo "========================================"
 
 if [[ "${SERVER_KIND}" == "openai" ]]; then
-  echo "[WARN] You are launching plain OpenAI API server."
-  echo "[WARN] TRL --grpo-vllm-mode=server expects TRL vllm-serve endpoints (e.g. init_communicator)."
+  echo "[WARN] Launching plain OpenAI API server."
+  echo "[WARN] TRL --grpo-vllm-mode=server expects TRL vllm-serve endpoints."
   python -m vllm.entrypoints.openai.api_server \
     --model "${MODEL_NAME_OR_PATH}" \
     --host "${VLLM_HOST}" \
@@ -58,7 +63,6 @@ fi
 
 if ! command -v trl >/dev/null 2>&1; then
   echo "[ERROR] 'trl' command not found. Install TRL with CLI support first."
-  echo "[ERROR] Example: pip install trl"
   exit 1
 fi
 
@@ -99,15 +103,33 @@ elif grep -q -- '--max_model_len' <<<"${HELP_TEXT}"; then
   CMD+=(--max_model_len "${VLLM_MAX_MODEL_LEN}")
 fi
 
+if [[ "${VLLM_ENFORCE_EAGER}" == "true" ]]; then
+  if grep -q -- '--enforce-eager' <<<"${HELP_TEXT}"; then
+    CMD+=(--enforce-eager)
+  elif grep -q -- '--enforce_eager' <<<"${HELP_TEXT}"; then
+    CMD+=(--enforce_eager)
+  fi
+fi
+
+if [[ "${VLLM_ENABLE_PREFIX_CACHING}" == "true" ]]; then
+  if grep -q -- '--enable-prefix-caching' <<<"${HELP_TEXT}"; then
+    CMD+=(--enable-prefix-caching)
+  elif grep -q -- '--enable_prefix_caching' <<<"${HELP_TEXT}"; then
+    CMD+=(--enable_prefix_caching)
+  fi
+else
+  if grep -q -- '--no-enable-prefix-caching' <<<"${HELP_TEXT}"; then
+    CMD+=(--no-enable-prefix-caching)
+  elif grep -q -- '--disable-prefix-caching' <<<"${HELP_TEXT}"; then
+    CMD+=(--disable-prefix-caching)
+  fi
+fi
+
 echo "[TRL-vLLM] Running command:"
 printf ' %q' "${CMD[@]}"
 echo
-echo "----------------------------------------"
 
-# 🔧 [关键修改] 执行命令时显式前置环境变量，确保 100% 传递给子进程
-# 即使 export 失效，这里也能兜底
-VLLM_USE_V1=0 \
+VLLM_USE_V1="${VLLM_USE_V1}" \
 NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME}" \
 NCCL_DEBUG="${NCCL_DEBUG}" \
-CUDA_LAUNCH_BLOCKING=1 \
 "${CMD[@]}"
