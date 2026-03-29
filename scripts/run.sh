@@ -36,6 +36,9 @@ ENABLE_R3_REWARD=false
 
 # GRPO (common)
 GRPO_LR="5e-5"
+GRPO_TRAIN_EPOCHS=1
+GRPO_CLIP_EPSILON=0.2
+GRPO_CLIP_EPSILON_HIGH=-1   # -1 means disabled
 GRPO_NUM_GENERATIONS=4
 GRPO_GENERATION_BATCH_SIZE=0  # 0 = auto align to num_generations
 GRPO_MAX_COMPLETION_LEN=4096
@@ -51,6 +54,13 @@ VLLM_MODE="server" # server | colocate
 VLLM_GPU_MEMORY_UTILIZATION=0.7
 VLLM_TENSOR_PARALLEL_SIZE=1
 VLLM_MAX_MODEL_LEN=16384
+
+# LoRA
+LORA_R=8
+LORA_ALPHA=16
+LORA_DROPOUT=0.05
+LORA_BIAS="none"
+LORA_TARGET_MODULES="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
 
 # Misc
 SEED=7
@@ -107,12 +117,20 @@ BASE_CMD=(-m ttrl_or
   --global-consensus-rel-tol "${GLOBAL_CONSENSUS_REL_TOL}"
   --robustness-cases "${ROBUSTNESS_CASES}"
   --grpo-lr "${GRPO_LR}"
+  --grpo-train-epochs "${GRPO_TRAIN_EPOCHS}"
+  --grpo-clip-epsilon "${GRPO_CLIP_EPSILON}"
+  --grpo-clip-epsilon-high "${GRPO_CLIP_EPSILON_HIGH}"
   --grpo-num-generations "${GRPO_NUM_GENERATIONS}"
   --grpo-generation-batch-size "${GRPO_GENERATION_BATCH_SIZE}"
   --grpo-max-completion-len "${GRPO_MAX_COMPLETION_LEN}"
   --temperature "${TEMPERATURE}"
   --top-p "${TOP_P}"
   --max-new-tokens "${MAX_NEW_TOKENS}"
+  --lora-r "${LORA_R}"
+  --lora-alpha "${LORA_ALPHA}"
+  --lora-dropout "${LORA_DROPOUT}"
+  --lora-bias "${LORA_BIAS}"
+  --lora-target-modules "${LORA_TARGET_MODULES}"
   --torch-dtype "${TORCH_DTYPE}"
   --grpo-vllm-mode "${VLLM_MODE}"
   --grpo-vllm-gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION}"

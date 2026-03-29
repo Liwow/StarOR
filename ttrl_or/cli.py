@@ -85,6 +85,8 @@ def _build_backend(config: PipelineConfig):
         lora_r=backend_cfg.lora_r,
         lora_alpha=backend_cfg.lora_alpha,
         lora_dropout=backend_cfg.lora_dropout,
+        lora_bias=backend_cfg.lora_bias,
+        lora_target_modules=backend_cfg.lora_target_modules,
         reuse_base_model_across_tasks=backend_cfg.reuse_base_model_across_tasks,
         reset_lora_on_begin_episode=backend_cfg.reset_lora_on_begin_episode,
     )
@@ -134,6 +136,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lora-r", type=int, default=defaults.backend.lora_r)
     parser.add_argument("--lora-alpha", type=int, default=defaults.backend.lora_alpha)
     parser.add_argument("--lora-dropout", type=float, default=defaults.backend.lora_dropout)
+    parser.add_argument("--lora-bias", type=str, choices=["none", "all", "lora_only"], default=defaults.backend.lora_bias)
+    parser.add_argument(
+        "--lora-target-modules",
+        type=str,
+        default=",".join(defaults.backend.lora_target_modules),
+        help="Comma-separated LoRA target modules, e.g. q_proj,k_proj,v_proj,o_proj",
+    )
     parser.add_argument(
         "--no-reuse-base-model-across-tasks",
         action="store_false",
@@ -170,6 +179,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--grpo-lr", type=float, default=defaults.grpo.learning_rate)
     parser.add_argument("--grpo-kl", type=float, default=defaults.grpo.kl_coef)
+    parser.add_argument("--grpo-train-epochs", type=float, default=defaults.grpo.train_epochs)
+    parser.add_argument("--grpo-clip-epsilon", type=float, default=defaults.grpo.clip_epsilon)
+    parser.add_argument("--grpo-clip-epsilon-high", type=float, default=(defaults.grpo.clip_epsilon_high if defaults.grpo.clip_epsilon_high is not None else -1.0))
     parser.add_argument("--grpo-batch-size", type=int, default=defaults.grpo.per_device_train_batch_size)
     parser.add_argument("--grpo-grad-accum", type=int, default=defaults.grpo.gradient_accumulation_steps)
     parser.add_argument("--grpo-num-generations", type=int, default=defaults.grpo.num_generations)
@@ -217,6 +229,9 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
 
     config.grpo.learning_rate = args.grpo_lr
     config.grpo.kl_coef = args.grpo_kl
+    config.grpo.train_epochs = args.grpo_train_epochs
+    config.grpo.clip_epsilon = args.grpo_clip_epsilon
+    config.grpo.clip_epsilon_high = None if args.grpo_clip_epsilon_high < 0 else args.grpo_clip_epsilon_high
     config.grpo.per_device_train_batch_size = args.grpo_batch_size
     config.grpo.gradient_accumulation_steps = args.grpo_grad_accum
     config.grpo.num_generations = args.grpo_num_generations
@@ -255,6 +270,10 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.backend.lora_r = args.lora_r
     config.backend.lora_alpha = args.lora_alpha
     config.backend.lora_dropout = args.lora_dropout
+    config.backend.lora_bias = args.lora_bias
+    parsed_targets = tuple(t.strip() for t in str(args.lora_target_modules).split(",") if t.strip())
+    if parsed_targets:
+        config.backend.lora_target_modules = parsed_targets
     config.backend.reuse_base_model_across_tasks = args.reuse_base_model_across_tasks
     config.backend.reset_lora_on_begin_episode = args.reset_lora_on_begin_episode
 

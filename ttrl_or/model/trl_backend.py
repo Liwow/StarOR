@@ -38,6 +38,7 @@ class TRLPolicyBackend(PolicyBackend):
     lora_r: int = 8
     lora_alpha: int = 16
     lora_dropout: float = 0.05
+    lora_bias: str = "none"
     reuse_base_model_across_tasks: bool = True
     reset_lora_on_begin_episode: bool = True
     lora_target_modules: tuple[str, ...] = (
@@ -56,6 +57,8 @@ class TRLPolicyBackend(PolicyBackend):
     _grpo_call_index: int = field(init=False, default=0, repr=False)
     _warned_vllm_unsupported: bool = field(init=False, default=False, repr=False)
     _force_disable_vllm_for_episode: bool = field(init=False, default=False, repr=False)
+    _force_disable_vllm_for_run: bool = field(init=False, default=False, repr=False)
+    _warned_vllm_disabled_for_run: bool = field(init=False, default=False, repr=False)
 
     def begin_episode(self, task: OptimizationTask) -> None:
         self._episode_key = task.task_id
@@ -197,6 +200,7 @@ class TRLPolicyBackend(PolicyBackend):
         rank = _env_int("RANK", 0)
         world_size = max(1, _env_int("WORLD_SIZE", 1))
         prompt_tokens = int(self._tokenizer(prompt, return_tensors="pt")["input_ids"].shape[1])
+        mem_before = self._cuda_mem_snapshot()
 
         if rank == 0:
             print(
@@ -228,18 +232,24 @@ class TRLPolicyBackend(PolicyBackend):
         )
 
         metrics = dict(getattr(train_result, "metrics", {}) or {})
+        mem_after = self._cuda_mem_snapshot()
         if rank == 0:
             print(
                 f"[GRPO] done task={self._episode_key} call={call_index} "
                 f"rank={rank}/{world_size} stage={stage.value} "
                 f"num_samples={len(captured)} train_loss={metrics.get('train_loss', 'n/a')} "
-                f"train_runtime={metrics.get('train_runtime', 'n/a')}"
+                f"train_runtime={metrics.get('train_runtime', 'n/a')} "
+                f"cuda_alloc_mb={mem_before.get('allocated_mb', 'n/a')}->"
+                f"{mem_after.get('allocated_mb', 'n/a')} "
+                f"cuda_reserved_mb={mem_before.get('reserved_mb', 'n/a')}->"
+                f"{mem_after.get('reserved_mb', 'n/a')}"
             )
 
         report: dict[str, Any] = {
             "updated": True,
             "stage": stage.value,
             "backend": "trl",
+            "num_updates": 1,
             "num_groups": 1,
             "num_samples": len(captured),
             "num_generations": k,
@@ -250,6 +260,8 @@ class TRLPolicyBackend(PolicyBackend):
             "rank": rank,
             "world_size": world_size,
             "fallback_disable_vllm": used_fallback,
+            "cuda_mem_before": mem_before,
+            "cuda_mem_after": mem_after,
         }
         if "train_loss" in metrics:
             report["train_loss"] = float(metrics["train_loss"])
@@ -335,6 +347,7 @@ class TRLPolicyBackend(PolicyBackend):
         report: dict[str, Any] = {
             "updated": True,
             "stage": stage.value,
+            "num_updates": 1,
             "num_samples": len(samples),
             "backend": "trl",
             "num_generations": num_generations_used,
@@ -528,8 +541,9 @@ class TRLPolicyBackend(PolicyBackend):
         trl = _import_trl()
         rank = _env_int("RANK", 0)
 
-        trainer = trl.GRPOTrainer(**trainer_kwargs)
+        trainer = None
         try:
+            trainer = trl.GRPOTrainer(**trainer_kwargs)
             train_result = trainer.train()
             return train_result, False
         except Exception as exc:
@@ -551,6 +565,8 @@ class TRLPolicyBackend(PolicyBackend):
                 on_fallback_reset()
 
             self._force_disable_vllm_for_episode = True
+            self._force_disable_vllm_for_run = True
+            self._warned_vllm_disabled_for_run = False
 
             trl_args = self._build_trl_grpo_args(
                 config,
@@ -560,8 +576,10 @@ class TRLPolicyBackend(PolicyBackend):
             )
             fallback_kwargs = dict(trainer_kwargs)
             fallback_kwargs["args"] = trl_args
-            fallback_trainer = trl.GRPOTrainer(**fallback_kwargs)
+
+            fallback_trainer = None
             try:
+                fallback_trainer = trl.GRPOTrainer(**fallback_kwargs)
                 train_result = fallback_trainer.train()
                 return train_result, True
             finally:
@@ -577,19 +595,34 @@ class TRLPolicyBackend(PolicyBackend):
         try:
             vgen = getattr(trainer, "vllm_generation", None)
             if vgen is not None:
-                close_fn = getattr(vgen, "close_communicator", None)
-                if callable(close_fn):
-                    close_fn()
+                for fn_name in ("close_communicator", "close", "shutdown"):
+                    fn = getattr(vgen, fn_name, None)
+                    if callable(fn):
+                        try:
+                            fn()
+                        except Exception:
+                            pass
 
                 client = getattr(vgen, "vllm_client", None)
                 if client is not None:
-                    close_client = getattr(client, "close_communicator", None)
-                    if callable(close_client):
-                        close_client()
+                    for fn_name in ("close_communicator", "close", "shutdown"):
+                        cfn = getattr(client, fn_name, None)
+                        if callable(cfn):
+                            try:
+                                cfn()
+                            except Exception:
+                                pass
         except Exception:
             pass
         finally:
+            try:
+                if hasattr(trainer, "vllm_generation"):
+                    trainer.vllm_generation = None
+            except Exception:
+                pass
             gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def _build_trl_grpo_args(
         self,
@@ -610,7 +643,10 @@ class TRLPolicyBackend(PolicyBackend):
         rank = _env_int("RANK", 0)
         world_size = _world_size()
         effective_use_vllm = bool(config.use_vllm) if force_use_vllm is None else bool(force_use_vllm)
-        if self._force_disable_vllm_for_episode and force_use_vllm is None:
+        if (self._force_disable_vllm_for_episode or self._force_disable_vllm_for_run) and force_use_vllm is None:
+            if self._force_disable_vllm_for_run and bool(config.use_vllm) and rank == 0 and not self._warned_vllm_disabled_for_run:
+                print("[GRPO][WARN] vLLM has been disabled for the remaining run due to previous communicator/NCCL failure.")
+                self._warned_vllm_disabled_for_run = True
             effective_use_vllm = False
 
         # Multi-process + colocate tends to start duplicate vLLM engines per rank.
@@ -641,7 +677,9 @@ class TRLPolicyBackend(PolicyBackend):
             "generation_batch_size": used_generation_batch_size,
             "max_prompt_length": config.max_prompt_length,
             "max_completion_length": config.max_completion_length,
-            "max_steps": 1,
+            "num_train_epochs": float(config.train_epochs),
+            "max_steps": -1,
+            "epsilon": float(config.clip_epsilon),
             "use_vllm": effective_use_vllm,
             "vllm_mode": config.vllm_mode,
             "vllm_gpu_memory_utilization": config.vllm_gpu_memory_utilization,
@@ -651,6 +689,9 @@ class TRLPolicyBackend(PolicyBackend):
             "save_strategy": "no",
             "logging_steps": 1,
         }
+
+        if config.clip_epsilon_high is not None:
+            kwargs["epsilon_high"] = float(config.clip_epsilon_high)
 
         init_sig = inspect.signature(trl.GRPOConfig.__init__)
         filtered_kwargs = {k: v for k, v in kwargs.items() if k in init_sig.parameters}
@@ -738,7 +779,7 @@ class TRLPolicyBackend(PolicyBackend):
             lora_alpha=self.lora_alpha,
             lora_dropout=self.lora_dropout,
             target_modules=list(self.lora_target_modules),
-            bias="none",
+            bias=self.lora_bias,
             task_type="CAUSAL_LM",
         )
 
@@ -782,6 +823,25 @@ class TRLPolicyBackend(PolicyBackend):
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    @staticmethod
+    def _cuda_mem_snapshot() -> dict[str, float]:
+        if not torch.cuda.is_available():
+            return {}
+
+        try:
+            device = torch.cuda.current_device()
+            allocated = float(torch.cuda.memory_allocated(device) / (1024 ** 2))
+            reserved = float(torch.cuda.memory_reserved(device) / (1024 ** 2))
+            peak = float(torch.cuda.max_memory_allocated(device) / (1024 ** 2))
+            return {
+                "device": float(device),
+                "allocated_mb": round(allocated, 2),
+                "reserved_mb": round(reserved, 2),
+                "peak_allocated_mb": round(peak, 2),
+            }
+        except Exception:
+            return {}
 
     def _resolve_torch_dtype(self):
         if self.torch_dtype == "auto":
@@ -974,5 +1034,7 @@ def _looks_like_vllm_comm_error(exc: Exception) -> bool:
         "close_communicator first",
     )
     return any(k in text for k in keys)
+
+
 
 

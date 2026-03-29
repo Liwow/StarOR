@@ -184,9 +184,9 @@ Useful knobs:
 - Dataset loader: `--dataset-start-index`, `--dataset-limit`, `--dataset-max-numeric-features`, `--dataset-key-param-top-k`
   - Mapping extractor plugin: `--mapping-extractor rule|llm`
   - LLM extractor knobs: `--mapping-llm-max-new-tokens`, `--mapping-llm-temperature`, `--mapping-llm-top-p`
-- GRPO: `--grpo-lr`, `--grpo-batch-size`, `--grpo-grad-accum`, `--grpo-num-generations`, `--grpo-generation-batch-size`, `--grpo-max-completion-len`, `--grpo-use-vllm`, `--grpo-vllm-mode`, `--grpo-vllm-gpu-memory-utilization`, `--grpo-vllm-tensor-parallel-size`, `--grpo-vllm-max-model-len`
+- GRPO: `--grpo-lr`, `--grpo-kl`, `--grpo-train-epochs`, `--grpo-clip-epsilon`, `--grpo-clip-epsilon-high`, `--grpo-batch-size`, `--grpo-grad-accum`, `--grpo-num-generations`, `--grpo-generation-batch-size`, `--grpo-max-completion-len`, `--grpo-use-vllm`, `--grpo-vllm-mode`, `--grpo-vllm-gpu-memory-utilization`, `--grpo-vllm-tensor-parallel-size`, `--grpo-vllm-max-model-len`
 - Logging: `--log-dir` and `--no-save-logs`
-- Backend/model: `--backend`, `--model-name`, `--model-path`, `--seed`, `--torch-dtype`, `--trust-remote-code`
+- Backend/model: `--backend`, `--model-name`, `--model-path`, `--seed`, `--torch-dtype`, `--trust-remote-code`, `--lora-r`, `--lora-alpha`, `--lora-dropout`, `--lora-bias`, `--lora-target-modules`
 - Generation: `--temperature`, `--top-p`, `--max-new-tokens`
 
 ## Configuration Reference
@@ -222,6 +222,10 @@ All defaults are defined in `ttrl_or/config.py`.
   - Primary stability knob.
 - `kl_coef`: KL penalty weight.
   - Higher keeps policy closer to reference behavior.
+- `train_epochs` (Key): GRPO training epochs per selected-node update group.
+  - Default `1.0` keeps one-pass updates; increase for stronger but slower updates.
+- `clip_epsilon` (Key): lower-side policy ratio clip (GRPO clipping).
+- `clip_epsilon_high`: optional upper-side clip. `None` means use TRL default one-sided behavior.
 - `per_device_train_batch_size` (Key): per-device batch size for GRPO.
 - `gradient_accumulation_steps` (Key): accumulation factor.
   - Effective batch is `batch_size * grad_accum`.
@@ -249,6 +253,8 @@ All defaults are defined in `ttrl_or/config.py`.
 - `torch_dtype`: dtype passed into model loading (`auto`, `float16`, `bfloat16`, etc.).
 - `trust_remote_code`: whether to allow remote model code when loading.
 - `lora_r`, `lora_alpha`, `lora_dropout`: LoRA adapter hyperparameters in TRL backend.
+- `lora_bias`: LoRA bias mode (`none` / `all` / `lora_only`).
+- `lora_target_modules`: target linear modules to inject LoRA (comma-separated in CLI).
 
 ### PipelineConfig
 - `save_logs`: whether to write per-task artifacts.

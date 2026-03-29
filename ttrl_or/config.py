@@ -23,6 +23,9 @@ class RewardConfig:
 class GRPOConfig:
     learning_rate: float = 3e-5
     kl_coef: float = 0.0
+    train_epochs: float = 1.0
+    clip_epsilon: float = 0.2
+    clip_epsilon_high: float | None = None
     per_device_train_batch_size: int = 1
     gradient_accumulation_steps: int = 1
     num_generations: int = 3
@@ -68,6 +71,16 @@ class BackendConfig:
     lora_r: int = 8
     lora_alpha: int = 16
     lora_dropout: float = 0.05
+    lora_bias: str = "none"
+    lora_target_modules: tuple[str, ...] = (
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    )
     reuse_base_model_across_tasks: bool = True
     reset_lora_on_begin_episode: bool = True
 
