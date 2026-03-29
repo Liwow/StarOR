@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 
@@ -38,6 +38,7 @@ class GRPOConfig:
     vllm_gpu_memory_utilization: float = 0.85
     vllm_tensor_parallel_size: int = 1
     vllm_max_model_len: int = 16384
+    vllm_max_num_batched_tokens: int = 0
     vllm_enable_sleep_mode: bool = False
     vllm_reset_prefix_cache_after_update: bool = True
     vllm_close_communicator_after_update: bool = True

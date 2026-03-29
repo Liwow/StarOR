@@ -54,6 +54,7 @@ VLLM_MODE="server" # server | colocate
 VLLM_GPU_MEMORY_UTILIZATION=0.55
 VLLM_TENSOR_PARALLEL_SIZE=1
 VLLM_MAX_MODEL_LEN=8192
+VLLM_MAX_NUM_BATCHED_TOKENS=8192
 GRPO_VLLM_ENABLE_SLEEP_MODE=false
 
 # LoRA
@@ -137,6 +138,7 @@ BASE_CMD=(-m ttrl_or
   --grpo-vllm-gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION}"
   --grpo-vllm-tensor-parallel-size "${VLLM_TENSOR_PARALLEL_SIZE}"
   --grpo-vllm-max-model-len "${VLLM_MAX_MODEL_LEN}"
+  --grpo-vllm-max-num-batched-tokens "${VLLM_MAX_NUM_BATCHED_TOKENS}"
   --log-dir "${LOG_DIR}"
   --out "${OUT_JSON}"
 )
@@ -177,3 +179,4 @@ printf ' %q' "${CMD[@]}"
 echo
 
 "${CMD[@]}"
+
