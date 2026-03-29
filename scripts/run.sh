@@ -1,5 +1,11 @@
 ﻿#!/usr/bin/env bash
 set -euo pipefail
+export VLLM_USE_V1=0
+export NCCL_DEBUG=INFO
+export NCCL_DEBUG_SUBSYS=ALL
+export NCCL_SOCKET_IFNAME=eth0
+# export NCCL_P2P_DISABLE=1
+# export NCCL_IB_DISABLE=1
 
 # =====================================
 # Edit Here: TTRL-OR Common Parameters
@@ -10,8 +16,8 @@ NPROC_PER_NODE=1
 MASTER_PORT=29500
 
 BACKEND="trl"
-MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
-# MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
+# MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
+MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
 
 DATASET_JSONL="data/IndustryOR_fixedV2.jsonl"
 DATASET_LIMIT=0
@@ -42,7 +48,7 @@ MAX_NEW_TOKENS=2048
 # vLLM for TRL
 USE_VLLM=true
 VLLM_MODE="server" # server | colocate
-VLLM_GPU_MEMORY_UTILIZATION=0.9
+VLLM_GPU_MEMORY_UTILIZATION=0.7
 VLLM_TENSOR_PARALLEL_SIZE=1
 VLLM_MAX_MODEL_LEN=16384
 

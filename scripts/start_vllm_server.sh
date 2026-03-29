@@ -1,33 +1,39 @@
 ﻿#!/usr/bin/env bash
 set -euo pipefail
 
+export VLLM_USE_V1=0
+export NCCL_SOCKET_IFNAME=eth0
+export NCCL_DEBUG=INFO
+export CUDA_LAUNCH_BLOCKING=1
+
+
 # ==================================
 # Edit Here: TRL vLLM Server Params
 # ==================================
 CUDA_VISIBLE_DEVICES="1"
-MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
-# MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
+MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
 
 VLLM_HOST="0.0.0.0"
 VLLM_PORT=8000
 VLLM_TENSOR_PARALLEL_SIZE=1
-VLLM_GPU_MEMORY_UTILIZATION=0.90
+VLLM_GPU_MEMORY_UTILIZATION=0.65
 VLLM_MAX_MODEL_LEN=16384
 
-# server kind:
-# - trl: required for TRL GRPO server mode
-# - openai: plain vLLM OpenAI API server (will NOT work with TRL server mode)
-
-# NOTE: For TRL LoRA training, server mode may fail with NCCL in some notebook/distributed envs.
-# If you hit NCCL socket/remote-process errors, prefer run.sh with VLLM_MODE=colocate or enable fallback.
 SERVER_KIND="trl"
 
 export CUDA_VISIBLE_DEVICES
 
-echo "[vLLM] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
-echo "[vLLM] MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH}"
-echo "[vLLM] HOST=${VLLM_HOST} PORT=${VLLM_PORT}"
-echo "[vLLM] SERVER_KIND=${SERVER_KIND}"
+# 🔧 [新增] 打印关键环境变量，方便调试确认
+echo "========================================"
+echo "[vLLM] Environment Check:"
+echo "  - CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES}"
+echo "  - MODEL_NAME_OR_PATH: ${MODEL_NAME_OR_PATH}"
+echo "  - HOST: ${VLLM_HOST} PORT: ${VLLM_PORT}"
+echo "  - SERVER_KIND: ${SERVER_KIND}"
+echo "  - VLLM_USE_V1: ${VLLM_USE_V1} (v0 engine)"
+echo "  - NCCL_SOCKET_IFNAME: ${NCCL_SOCKET_IFNAME}"
+echo "  - NCCL_DEBUG: ${NCCL_DEBUG}"
+echo "========================================"
 
 if [[ "${SERVER_KIND}" == "openai" ]]; then
   echo "[WARN] You are launching plain OpenAI API server."
@@ -88,5 +94,12 @@ fi
 echo "[TRL-vLLM] Running command:"
 printf ' %q' "${CMD[@]}"
 echo
+echo "----------------------------------------"
 
+# 🔧 [关键修改] 执行命令时显式前置环境变量，确保 100% 传递给子进程
+# 即使 export 失效，这里也能兜底
+VLLM_USE_V1=0 \
+NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME}" \
+NCCL_DEBUG="${NCCL_DEBUG}" \
+CUDA_LAUNCH_BLOCKING=1 \
 "${CMD[@]}"
