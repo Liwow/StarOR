@@ -272,6 +272,29 @@ All defaults are defined in `ttrl_or/config.py`.
 - `mapping_llm_temperature`: temperature for LLM extractor generation.
 - `mapping_llm_top_p`: top-p for LLM extractor generation.
 
+
+## Accuracy Statistics Script
+
+Compute per-dataset accuracy from saved logs (`|obj_answer - gt| / |gt| <= 0.5%`):
+
+```bash
+python tools/eval_accuracy.py --log-root logs/run --dataset-json data/IndustryOR_fixedV2.jsonl
+```
+
+Pass multiple datasets (repeat or comma-separated):
+
+```bash
+python tools/eval_accuracy.py \
+  --log-root logs/run \
+  --dataset-json data/IndustryOR_fixedV2.jsonl \
+  --dataset-json data/NL4OPT.jsonl
+
+python tools/eval_accuracy.py --log-root logs/run --dataset-jsons data/IndustryOR_fixedV2.jsonl,data/NL4OPT.jsonl
+```
+
+Output file defaults to `logs/run/accuracy_summary.json` (override with `--out`).
+You can also pass datasets via env: `DATASET_JSON=data/A.jsonl,data/B.jsonl python tools/eval_accuracy.py --log-root logs/run`.
+
 ## Recommended Starting Ranges
 
 - `max_iterations`: `8` to `64`
