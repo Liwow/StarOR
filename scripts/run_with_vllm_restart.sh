@@ -49,7 +49,7 @@ restart_server_if_needed() {
   fi
 
   echo "[periodic] restarting vLLM server (port=${VLLM_PORT}) ..."
-  PORT="${VLLM_PORT}" bash "${STOP_SERVER_SCRIPT}" || true
+  PORT="${VLLM_PORT}" bash "${STOP_SERVER_SCRIPT}"
   bash "${START_SERVER_SCRIPT}" &
   local spid=$!
   disown "${spid}" || true

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 export VLLM_USE_V1="${VLLM_USE_V1:-0}"
@@ -54,7 +54,7 @@ fi
 if [[ "${CLEAN_START}" == "true" ]]; then
   if [[ -x "scripts/stop_vllm_server.sh" ]]; then
     echo "[vLLM] clean start: stopping existing server on port ${VLLM_PORT}"
-    PORT="${VLLM_PORT}" scripts/stop_vllm_server.sh || true
+    PORT="${VLLM_PORT}" scripts/stop_vllm_server.sh
   fi
 fi
 
