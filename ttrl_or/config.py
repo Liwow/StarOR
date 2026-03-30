@@ -50,6 +50,7 @@ class DatasetConfig:
     jsonl_path: str = ""
     start_index: int = 0
     limit: int = 0
+    resume_skip_completed: bool = True
     max_numeric_features: int = 16
     key_param_top_k: int = 8
     mapping_extractor: str = "rule"

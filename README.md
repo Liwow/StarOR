@@ -139,7 +139,7 @@ All launch scripts are under `scripts/`.
   - single-card: `NPROC_PER_NODE=1`
   - multi-card: `NPROC_PER_NODE=2` (or 4)
 - `MODEL_NAME_OR_PATH`
-- `DATASET_JSONL`, `DATASET_LIMIT`
+- `DATASET_JSONL`, `DATASET_LIMIT`, `RESUME_SKIP_COMPLETED`
 - `USE_VLLM`, `VLLM_MODE`
 
 `run.sh` now auto-selects launcher:
@@ -170,6 +170,8 @@ If you hit `Weight update group already initialized`, stop server processes (`sc
 scripts/run.sh
 ```
 
+Resume behavior: when `RESUME_SKIP_COMPLETED=true` (default), completed samples are skipped by checking `best_code.py` under `LOG_DIR/<dataset_name>/<sample_id>/best_code.py`.
+
 3.1 Optional: periodic vLLM restart wrapper (external script)
 
 Edit script-internal config at `scripts/run_with_periodic_vllm_restart.sh` (for example `CHUNK_SAMPLES=5`), then run:
@@ -191,7 +193,7 @@ Useful knobs:
 - MCTS: `--max-iterations`, `--c-puct`, `--mcts-stop-on-reward-one`
 - Reward: `--global-consensus-rel-tol`, `--robustness-cases`, `--code-timeout-sec`, `--enable-r3-reward`, `--disable-r3-reward`
   - `r3` perturbation now uses backend pre-extracted mapping (`focus_keys` + value map).
-- Dataset loader: `--dataset-start-index`, `--dataset-limit`, `--dataset-max-numeric-features`, `--dataset-key-param-top-k`
+- Dataset loader: `--dataset-start-index`, `--dataset-limit`, `--dataset-resume-skip-completed`, `--no-dataset-resume-skip-completed`, `--dataset-max-numeric-features`, `--dataset-key-param-top-k`
   - Mapping extractor plugin: `--mapping-extractor rule|llm`
   - LLM extractor knobs: `--mapping-llm-max-new-tokens`, `--mapping-llm-temperature`, `--mapping-llm-top-p`
 - GRPO: `--grpo-lr`, `--grpo-kl`, `--grpo-train-epochs`, `--grpo-clip-epsilon`, `--grpo-clip-epsilon-high`, `--grpo-batch-size`, `--grpo-grad-accum`, `--grpo-num-generations`, `--grpo-generation-batch-size`, `--grpo-max-completion-len`, `--grpo-use-vllm`, `--grpo-vllm-mode`, `--grpo-vllm-gpu-memory-utilization`, `--grpo-vllm-tensor-parallel-size`, `--grpo-vllm-max-model-len`, `--grpo-vllm-max-num-batched-tokens`, `--grpo-vllm-enable-sleep-mode`, `--grpo-vllm-no-reset-prefix-cache-after-update`, `--grpo-vllm-no-close-communicator-after-update`
@@ -380,6 +382,5 @@ scripts/start_vllm_server.sh
 ```
 
 The backend now also clamps prompt/completion lengths under `vllm_max_model_len` and logs a warning when clamping is applied.
-
 
 

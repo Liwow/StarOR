@@ -106,6 +106,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset-jsonl", type=str, default=defaults.dataset.jsonl_path)
     parser.add_argument("--dataset-start-index", type=int, default=defaults.dataset.start_index)
     parser.add_argument("--dataset-limit", type=int, default=defaults.dataset.limit)
+    resume_group = parser.add_mutually_exclusive_group()
+    resume_group.add_argument("--dataset-resume-skip-completed", dest="dataset_resume_skip_completed", action="store_true")
+    resume_group.add_argument("--no-dataset-resume-skip-completed", dest="dataset_resume_skip_completed", action="store_false")
+    parser.set_defaults(dataset_resume_skip_completed=defaults.dataset.resume_skip_completed)
     parser.add_argument("--dataset-max-numeric-features", type=int, default=defaults.dataset.max_numeric_features)
     parser.add_argument("--dataset-key-param-top-k", type=int, default=defaults.dataset.key_param_top_k)
     parser.add_argument(
@@ -266,6 +270,7 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.dataset.jsonl_path = args.dataset_jsonl
     config.dataset.start_index = args.dataset_start_index
     config.dataset.limit = args.dataset_limit
+    config.dataset.resume_skip_completed = args.dataset_resume_skip_completed
     config.dataset.max_numeric_features = args.dataset_max_numeric_features
     config.dataset.key_param_top_k = args.dataset_key_param_top_k
     config.dataset.mapping_extractor = args.mapping_extractor
@@ -482,6 +487,11 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
     return priors
 
 
+def _has_completed_sample_artifact(dataset_log_dir: Path, sample_id: str) -> bool:
+    sample_dir = dataset_log_dir / _safe_path_component(sample_id)
+    return (sample_dir / "best_code.py").exists()
+
+
 def _run_dataset(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
     dataset_cfg = runner.config.dataset
     dataset_path = dataset_cfg.jsonl_path
@@ -496,18 +506,32 @@ def _run_dataset(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
     else:
         samples = all_samples[start:]
 
-    rank, world_size = _distributed_context()
-    if world_size > 1:
-        samples = [sample for i, sample in enumerate(samples) if i % world_size == rank]
-
     dataset_name = Path(dataset_path).stem
     base_log_dir = Path(runner.config.log_dir)
     dataset_log_dir = base_log_dir / dataset_name
     runner.config.log_dir = str(dataset_log_dir)
 
+    resume_skip_completed = bool(dataset_cfg.resume_skip_completed)
+    skipped_completed = 0
+    if resume_skip_completed:
+        pending = []
+        for sample in samples:
+            if _has_completed_sample_artifact(dataset_log_dir, sample.sample_id):
+                skipped_completed += 1
+                continue
+            pending.append(sample)
+        samples = pending
+
+    rank, world_size = _distributed_context()
+    pending_before_shard = len(samples)
+    if world_size > 1:
+        samples = [sample for i, sample in enumerate(samples) if i % world_size == rank]
+
     print(
         f"[dataset] rank={rank}/{world_size} num_samples={len(samples)} "
-        f"dataset={Path(dataset_path).resolve()} log_root={dataset_log_dir.resolve()}"
+        f"dataset={Path(dataset_path).resolve()} log_root={dataset_log_dir.resolve()} "
+        f"resume_skip_completed={resume_skip_completed} skipped_completed={skipped_completed} "
+        f"pending_before_shard={pending_before_shard}"
     )
 
     r3_priors: dict[str, dict[str, Any]] = {}
@@ -586,10 +610,11 @@ def _run_dataset(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
         "rank": rank,
         "world_size": world_size,
         "num_samples": len(samples),
+        "resume_skip_completed": resume_skip_completed,
+        "num_skipped_completed": skipped_completed,
+        "num_pending_before_shard": pending_before_shard,
         "runs": runs,
     }
-
-
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -614,4 +639,3 @@ def main() -> int:
         print(json.dumps(output, ensure_ascii=False, indent=2))
 
     return 0
-

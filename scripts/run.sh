@@ -22,6 +22,7 @@ MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-$HOME/model/Qwen/Qwen2.5-7B-Instruct}"
 DATASET_JSONL="${DATASET_JSONL:-data/IndustryOR_fixedV2.jsonl}"
 DATASET_START_INDEX="${DATASET_START_INDEX:-0}"
 DATASET_LIMIT="${DATASET_LIMIT:-0}"
+RESUME_SKIP_COMPLETED="${RESUME_SKIP_COMPLETED:-true}"
 LOG_DIR="${LOG_DIR:-logs/run}"
 OUT_JSON="${OUT_JSON:-outputs/run.json}"
 
@@ -154,6 +155,11 @@ if [[ "${ENABLE_R3_REWARD}" != "true" ]]; then
   BASE_CMD+=(--disable-r3-reward)
 fi
 
+if [[ "${RESUME_SKIP_COMPLETED}" == "true" ]]; then
+  BASE_CMD+=(--dataset-resume-skip-completed)
+else
+  BASE_CMD+=(--no-dataset-resume-skip-completed)
+fi
 if [[ "${USE_VLLM}" == "true" ]]; then
   BASE_CMD+=(--grpo-use-vllm)
 fi
