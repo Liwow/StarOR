@@ -9,14 +9,21 @@ PORT="${PORT:-8000}"
 
 echo "[vLLM-stop] target port=${PORT}"
 
-# 1) Try kill by listening port.
 if command -v lsof >/dev/null 2>&1; then
-  PIDS="$(lsof -ti tcp:"${PORT}" || true)"
-  if [[ -n "${PIDS}" ]]; then
-    echo "[vLLM-stop] kill by port: ${PIDS}"
-    kill -9 ${PIDS} || true
-  fi
+  PIDS=$(lsof -ti tcp:"${PORT}")
+elif command -v ss >/dev/null 2>&1; then
+  PIDS=$(ss -tlnp "sport = :${PORT}" | grep -oP '(?<=pid=)\d+' | sort -u)
+elif command -v netstat >/dev/null 2>&1; then
+  PIDS=$(netstat -tlnp | grep ":${PORT} " | awk '{print $7}' | cut -d'/' -f1 | grep -E '^[0-9]+$')
+elif command -v fuser >/dev/null 2>&1; then
+  PIDS=$(fuser ${PORT}/tcp 2>/dev/null)
 fi
+
+if [[ -n "${PIDS}" ]]; then
+  echo "[vLLM-stop] kill by port: ${PIDS}"
+  kill -9 ${PIDS} || true
+fi
+
 
 # 2) Fallback by process keywords.
 if command -v pkill >/dev/null 2>&1; then
