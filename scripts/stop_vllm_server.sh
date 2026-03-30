@@ -99,7 +99,7 @@ if ((${#initial_pids[@]} == 0)); then
 fi
 
 echo "[vLLM-stop] matched pids: ${initial_pids[*]}"
-
+ps -fp "${initial_pids[@]}" || true
 kill_pids TERM "${initial_pids[@]}"
 sleep "${GRACE_SEC}"
 
