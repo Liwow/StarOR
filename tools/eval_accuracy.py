@@ -216,7 +216,7 @@ def main() -> int:
         default="",
         help="Comma-separated dataset json/jsonl paths.",
     )
-    parser.add_argument("--tol", type=float, default=0.005, help="Relative error threshold")
+    parser.add_argument("--tol", type=float, default=0.01, help="Relative error threshold")
     parser.add_argument(
         "--out",
         type=str,

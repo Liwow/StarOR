@@ -12,9 +12,10 @@ set -euo pipefail
 RUN_SCRIPT="scripts/run.sh"
 START_SERVER_SCRIPT="scripts/start_vllm_server.sh"
 STOP_SERVER_SCRIPT="scripts/stop_vllm_server.sh"
-
+# data/OptMATH_Bench_166.jsonl
+# data/IndustryOR_fixedV2.jsonl
 DATASET_JSONL="data/IndustryOR_fixedV2.jsonl"
-CHUNK_SAMPLES=15         # restart server every N samples
+CHUNK_SAMPLES=16         # restart server every N samples
 TOTAL_LIMIT=0            # 0 = run all samples in dataset
 
 # Keep same output paths across chunks (no split)
