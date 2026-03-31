@@ -180,7 +180,7 @@ class FourStageMCTS:
                 if len(reward_list) != len(prepared_items):
                     reward_list = reward_list[: len(prepared_items)]
                     while len(reward_list) < len(prepared_items):
-                        reward_list.append(RewardBreakdown(r1=0.0, r2=0.0, r3=0.0, total=0.0))
+                        reward_list.append(RewardBreakdown(r1=0.0, r2=0.0, r3=0.0, r4=0.0, total=0.0))
 
                 rewards: list[float] = []
                 per_item_reward_sec = reward_sec_total / max(1, len(prepared_items))
@@ -300,6 +300,7 @@ class FourStageMCTS:
                         "r1": reward_obj.r1,
                         "r2": reward_obj.r2,
                         "r3": reward_obj.r3,
+                        "r4": reward_obj.r4,
                         "total": reward_obj.total,
                         "consensus_signature": reward_obj.consensus_signature,
                         "execution_success": reward_obj.execution_success,
@@ -362,6 +363,7 @@ class FourStageMCTS:
                             "r1": reward_obj.r1,
                             "r2": reward_obj.r2,
                             "r3": reward_obj.r3,
+                            "r4": reward_obj.r4,
                             "total": reward_obj.total,
                         },
                         "obj_answer": (reward_obj.metadata or {}).get("obj_answer"),
@@ -460,9 +462,11 @@ class FourStageMCTS:
                         "r1": float(best_rollout_obj.r1),
                         "r2": float(best_rollout_obj.r2),
                         "r3": float(best_rollout_obj.r3),
+                        "r4": float(best_rollout_obj.r4),
                         "total": float(best_rollout_obj.total),
                         "obj_answer": (best_rollout_obj.metadata or {}).get("obj_answer"),
                         "r1_debug": (best_rollout_obj.metadata or {}).get("r1_debug", {}),
+                        "r4_debug": (best_rollout_obj.metadata or {}).get("r4_debug", {}),
                     },
                     "timing": best_rollout_timing,
                     "update": best_rollout_update,

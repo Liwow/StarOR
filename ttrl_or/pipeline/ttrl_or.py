@@ -520,6 +520,7 @@ class TTRLORRunner:
                     "r1": reward.get("r1"),
                     "r2": reward.get("r2"),
                     "r3": reward.get("r3"),
+                    "r4": reward.get("r4"),
                     "iter_sec": iter_sec,
                     "rollout_group_wall_sec": timing.get("rollout_group_wall_sec"),
                     "grpo_train_runtime_sec": timing.get("grpo_train_runtime_sec"),
@@ -551,8 +552,8 @@ class TTRLORRunner:
             f"- last_reward: {runtime_summary.get('last_reward')}",
             "",
             "## Per Iteration",
-            "| iter | stage | reward_total | r1 | r2 | r3 | iter_sec | rollout_group_wall_sec | grpo_train_runtime_sec | code_execution_total_sec | reward_callback_total_sec |",
-            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| iter | stage | reward_total | r1 | r2 | r3 | r4 | iter_sec | rollout_group_wall_sec | grpo_train_runtime_sec | code_execution_total_sec | reward_callback_total_sec |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
         for item in runtime_summary.get("per_iteration", []):
             lines.append(
@@ -565,6 +566,7 @@ class TTRLORRunner:
                         str(item.get("r1", "")),
                         str(item.get("r2", "")),
                         str(item.get("r3", "")),
+                        str(item.get("r4", "")),
                         str(item.get("iter_sec", "")),
                         str(item.get("rollout_group_wall_sec", "")),
                         str(item.get("grpo_train_runtime_sec", "")),

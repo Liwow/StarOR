@@ -319,6 +319,7 @@ def _run_single(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
                 "r1": result.best_trajectory.reward.r1,
                 "r2": result.best_trajectory.reward.r2,
                 "r3": result.best_trajectory.reward.r3,
+                "r4": result.best_trajectory.reward.r4,
                 "total": result.best_trajectory.reward.total,
             }
             if result.best_trajectory and result.best_trajectory.reward
