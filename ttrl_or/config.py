@@ -16,7 +16,21 @@ class RewardConfig:
     robustness_cases: int = 3
     enable_r3_reward: bool = False
     global_consensus_rel_tol: float = 0.005
-    code_executor_mode: str = "sandbox" #sandbox or subprocess
+    code_executor_mode: str = "sandbox"  # sandbox or subprocess
+
+    # ─── r1 (semantic cluster) settings ───
+    r1_alpha: float = 0.4  # Smoothing parameter for r1
+    r1_min_clusters: int = 2  # Minimum K value for r1 denominator
+
+    # ─── r4 (structural cluster) settings ───
+    enable_r4_reward: bool = True  # Whether to enable r4
+    r4_alpha: float = 0.2  # Smoothing parameter for r4
+    r4_k: int = 3  # K value for r4 normalization
+    r4_decay: float = 0.95  # Decay factor for historical structural counts
+
+    # ─── Final reward weights ───
+    r3_weight: float = 0.2  # Weight for r3 in final reward
+    r4_weight: float = 0.3  # Weight for r4 in final reward
 
 
 @dataclass(slots=True)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import glob
 import json
 import shutil
 import subprocess
@@ -9,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ttrl_or.types import ExecutionResult
+from ttrl_or.types import ExecutionResult, ModelInfo
 
 
 _RUNNER_CODE = """
@@ -168,10 +169,15 @@ class PythonCodeExecutor:
                 error_type="Timeout",
                 signature="EXEC_ERROR",
                 elapsed_sec=elapsed,
+                model_info=None,
             )
 
         elapsed = time.perf_counter() - start
         parsed = self._parse_stdout(proc.stdout)
+
+        # Extract model info from .lp file if exists
+        model_info = self._extract_model_info_from_lp(cwd)
+
         if proc.returncode == 0 and parsed.get("ok") is True:
             output = parsed.get("result")
             return ExecutionResult(
@@ -181,6 +187,7 @@ class PythonCodeExecutor:
                 stderr=proc.stderr,
                 signature=self._signature(output),
                 elapsed_sec=elapsed,
+                model_info=model_info,
             )
 
         return ExecutionResult(
@@ -191,6 +198,7 @@ class PythonCodeExecutor:
             error_type=parsed.get("type") if isinstance(parsed, dict) else None,
             signature="EXEC_ERROR",
             elapsed_sec=elapsed,
+            model_info=model_info,
         )
 
     @staticmethod
@@ -221,3 +229,89 @@ class PythonCodeExecutor:
             return json.dumps(output, sort_keys=True)
         except TypeError:
             return repr(output)
+
+    @staticmethod
+    def _extract_model_info_from_lp(cwd: Path) -> ModelInfo | None:
+        """Extract Gurobi model structural info from .lp file in working directory."""
+        lp_files = list(glob.glob(str(cwd / "*.lp")))
+        if not lp_files:
+            return None
+
+        # Use the most recently modified .lp file
+        lp_path = max(lp_files, key=lambda f: Path(f).stat().st_mtime)
+
+        try:
+            import gurobipy as gp
+        except ImportError:
+            # Gurobi not available, fallback to text parsing
+            return PythonCodeExecutor._parse_lp_file_text(lp_path)
+
+        try:
+            model = gp.read(lp_path)
+            model_info = ModelInfo(
+                model_sense=int(model.ModelSense),  # 1=min, -1=max
+                num_vars=int(model.NumVars),
+                num_bin_vars=int(model.NumBinVars),
+                num_int_vars=int(model.NumIntVars),
+                num_constrs=int(model.NumConstrs),
+                extracted=True,
+            )
+            model.dispose()
+            return model_info
+        except Exception:
+            return PythonCodeExecutor._parse_lp_file_text(lp_path)
+
+    @staticmethod
+    def _parse_lp_file_text(lp_path: str) -> ModelInfo | None:
+        """Fallback: parse .lp file as text to extract basic structure info."""
+        try:
+            with open(lp_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read().lower()
+
+            # Detect model sense
+            model_sense = 0
+            if "minimize" in content:
+                model_sense = 1
+            elif "maximize" in content:
+                model_sense = -1
+
+            # Count variables (rough estimation from Bounds/Binary/General sections)
+            import re
+            # Count lines in Bounds section
+            bounds_match = re.search(r"bounds\s*\n([\s\S]*?)(?:binary|general|end|$)", content)
+            num_vars = 0
+            if bounds_match:
+                bounds_lines = [l.strip() for l in bounds_match.group(1).strip().split("\n") if l.strip()]
+                num_vars = len(bounds_lines)
+
+            # Count binary variables
+            binary_match = re.search(r"binary\s*\n([\s\S]*?)(?:general|end|$)", content)
+            num_bin_vars = 0
+            if binary_match:
+                bin_lines = [l.strip() for l in binary_match.group(1).strip().split("\n") if l.strip()]
+                num_bin_vars = len(bin_lines)
+
+            # Count integer (general) variables
+            general_match = re.search(r"general\s*\n([\s\S]*?)(?:end|$)", content)
+            num_int_vars = 0
+            if general_match:
+                gen_lines = [l.strip() for l in general_match.group(1).strip().split("\n") if l.strip()]
+                num_int_vars = len(gen_lines)
+
+            # Count constraints (Subject To section)
+            st_match = re.search(r"subject to\s*\n([\s\S]*?)(?:bounds|binary|general|end|$)", content)
+            num_constrs = 0
+            if st_match:
+                constr_lines = [l.strip() for l in st_match.group(1).strip().split("\n") if l.strip() and ":" in l]
+                num_constrs = len(constr_lines)
+
+            return ModelInfo(
+                model_sense=model_sense,
+                num_vars=max(num_vars, num_bin_vars + num_int_vars),
+                num_bin_vars=num_bin_vars,
+                num_int_vars=num_int_vars,
+                num_constrs=num_constrs,
+                extracted=True,
+            )
+        except Exception:
+            return None

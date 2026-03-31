@@ -37,6 +37,21 @@ class Generation:
 
 
 @dataclass(slots=True)
+class ModelInfo:
+    """Gurobi model structural information extracted from .lp file."""
+    model_sense: int = 0  # 1 = minimize, -1 = maximize, 0 = unknown
+    num_vars: int = 0
+    num_bin_vars: int = 0
+    num_int_vars: int = 0
+    num_constrs: int = 0
+    extracted: bool = False  # True if successfully extracted
+
+    def feature_tuple(self) -> tuple[int, int, int, int]:
+        """Return (ModelSense, NumVars, NumBinVars, NumIntVars) for structural clustering."""
+        return (self.model_sense, self.num_vars, self.num_bin_vars, self.num_int_vars)
+
+
+@dataclass(slots=True)
 class ExecutionResult:
     success: bool
     output: Any = None
@@ -45,6 +60,7 @@ class ExecutionResult:
     error_type: str | None = None
     signature: str = ""
     elapsed_sec: float = 0.0
+    model_info: ModelInfo | None = None  # Gurobi model structure info
 
 
 @dataclass(slots=True)
@@ -52,7 +68,8 @@ class RewardBreakdown:
     r1: float
     r2: float
     r3: float
-    total: float
+    r4: float = 0.0  # Structural consensus reward
+    total: float = 0.0
     consensus_signature: str = ""
     execution_success: bool = False
     robustness_success: bool = False

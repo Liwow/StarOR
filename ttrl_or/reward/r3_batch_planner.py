@@ -48,9 +48,10 @@ def build_r3_planner_prompt(
         "   - obj_bounds: {lower: number|null, upper: number|null} broad but meaningful\\n"
         "   - rationale: short text\\n"
         "Rules:\\n"
-        "- Keep bounds broad, but exclude absurd objectives (e.g., gt around 10000 and obj=0).\\n"
+        "- Keep bounds broad, but exclude absurd objectives (e.g., gt around 10000 and obj!=0).\\n"
         "- Prefer edge/boundary stress tests.\\n"
         "- Use only keys that exist in the given instance.\\n"
+        "You should think step by step to output\\n"
     )
 
 
