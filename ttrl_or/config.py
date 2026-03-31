@@ -14,7 +14,6 @@ class MCTSConfig:
 class RewardConfig:
     code_timeout_sec: int = 30
     robustness_cases: int = 3
-    enable_r3_reward: bool = False
     global_consensus_rel_tol: float = 0.005
     code_executor_mode: str = "sandbox"  # sandbox or subprocess
 
@@ -22,6 +21,8 @@ class RewardConfig:
     r1_alpha: float = 0.4  # Smoothing parameter for r1
     r1_min_clusters: int = 2  # Minimum K value for r1 denominator
 
+    enable_r3_reward: bool = True
+        
     # ─── r4 (structural cluster) settings ───
     enable_r4_reward: bool = True  # Whether to enable r4
     r4_alpha: float = 0.2  # Smoothing parameter for r4
