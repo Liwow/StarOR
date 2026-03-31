@@ -565,39 +565,51 @@ class FourStageMCTS:
 
     @staticmethod
     def _extract_tag_block(text: str, tag: str, min_len: int = 0) -> str:
+        """Extract content from the LAST valid closed tag pair.
+        
+        Logic (from back to front):
+        1. Find the last </tag>
+        2. Find the nearest <tag> before it
+        3. If content length > min_len, return it
+        4. Otherwise, find the second-to-last </tag> and repeat
+        """
         raw = (text or "").strip()
         if not raw:
             return ""
 
         open_re = re.compile(rf"<\s*{re.escape(tag)}\s*>", flags=re.IGNORECASE)
         close_re = re.compile(rf"<\s*/\s*{re.escape(tag)}\s*>", flags=re.IGNORECASE)
-
-        # Strict rule:
-        # 1) Find a close tag first, in order.
-        # 2) For that close tag, search backward for the nearest matching open tag.
-        # 3) Tag content is valid only when len(content.strip()) > 20.
         required_len = max(21, int(min_len))
 
-        token_re = re.compile(
-            rf"(<\s*{re.escape(tag)}\s*>)|(<\s*/\s*{re.escape(tag)}\s*>)",
-            flags=re.IGNORECASE,
-        )
-        open_stack: list[re.Match[str]] = []
-        for token in token_re.finditer(raw):
-            token_text = token.group(0)
-            if close_re.fullmatch(token_text):
-                if not open_stack:
-                    continue
-                open_token = open_stack.pop()
-                content = raw[int(open_token.end()) : int(token.start())]
-                cleaned = str(content or "").strip()
-                if len(cleaned) >= required_len:
-                    return cleaned
-                # Invalid tag content (too short) => skip and continue searching.
+        # Find all open and close tag positions
+        open_matches = list(open_re.finditer(raw))
+        close_matches = list(close_re.finditer(raw))
+
+        if not open_matches or not close_matches:
+            return ""
+
+        # Process close tags from back to front
+        for close_match in reversed(close_matches):
+            close_start = close_match.start()
+
+            # Find the nearest open tag BEFORE this close tag
+            nearest_open = None
+            for open_match in reversed(open_matches):
+                if open_match.end() <= close_start:
+                    nearest_open = open_match
+                    break
+
+            if nearest_open is None:
                 continue
 
-            if open_re.fullmatch(token_text):
-                open_stack.append(token)
+            # Extract content between open and close tags
+            content = raw[nearest_open.end():close_start]
+            cleaned = content.strip()
+
+            if len(cleaned) >= required_len:
+                return cleaned
+
+            # Content too short, continue to next (earlier) close tag
 
         return ""
 
