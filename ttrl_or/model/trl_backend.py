@@ -247,7 +247,6 @@ class TRLPolicyBackend(PolicyBackend):
             on_fallback_reset=captured.clear,
             strict_single_group=True,
         )
-
         metrics = dict(getattr(train_result, "metrics", {}) or {})
         mem_after = self._cuda_mem_snapshot()
         if rank == 0:
@@ -455,6 +454,7 @@ class TRLPolicyBackend(PolicyBackend):
             "optimizer_steps_per_epoch_est": int(optimizer_steps_per_epoch),
             "optimizer_steps_total_est": int(total_optimizer_steps_est),
         }
+    
     def generate_mapping_from_description(
         self,
         description: str,
@@ -550,6 +550,7 @@ class TRLPolicyBackend(PolicyBackend):
         completion_ids = output[0][prompt_len:]
         completion = self._tokenizer.decode(completion_ids, skip_special_tokens=True)
         return completion.strip()
+
 
     def _generate_auxiliary_vllm_server(
         self,
@@ -883,7 +884,7 @@ class TRLPolicyBackend(PolicyBackend):
             "max_prompt_length": max_prompt_len,
             "max_completion_length": max_completion_len,
             "num_train_epochs": float(config.train_epochs),
-            "max_steps": -1,
+            "max_steps": 1,
             "epsilon": float(config.clip_epsilon),
             "use_vllm": effective_use_vllm,
             "vllm_mode": config.vllm_mode,

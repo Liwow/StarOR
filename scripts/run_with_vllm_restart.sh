@@ -14,7 +14,7 @@ START_SERVER_SCRIPT="scripts/start_vllm_server.sh"
 STOP_SERVER_SCRIPT="scripts/stop_vllm_server.sh"
 # data/OptMATH_Bench_166.jsonl
 # data/IndustryOR_fixedV2.jsonl
-DATASET_JSONL="data/IndustryOR_fixedV2.jsonl"
+DATASET_JSONL="data/OptMATH_Bench_166.jsonl"
 CHUNK_SAMPLES=16         # restart server every N samples
 TOTAL_LIMIT=0            # 0 = run all samples in dataset
 
