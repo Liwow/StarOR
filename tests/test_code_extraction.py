@@ -108,3 +108,48 @@ short3
     assert "import gurobipy as gp" in code
     assert "short2" not in code
     assert "short3" not in code
+
+
+def test_code_extraction_square_brackets_fallback():
+    """Test that [tag]...[/tag] is used as fallback when <tag> not found."""
+    text = '''
+Some explanation text here.
+
+[Gurobi_code]
+import gurobipy as gp
+from gurobipy import GRB
+
+def solve(instance: dict) -> dict:
+    model = gp.Model()
+    return {"objective": 99.0, "status": "optimal"}
+[/Gurobi_code]
+'''.strip()
+
+    code = FourStageMCTS._sanitize_code_payload(text)
+    assert "import gurobipy as gp" in code
+    assert "def solve(instance: dict)" in code
+    assert "[Gurobi_code]" not in code
+    assert "[/Gurobi_code]" not in code
+
+
+def test_code_extraction_angle_brackets_preferred_over_square():
+    """Test that <tag> takes priority over [tag] when both exist."""
+    text = '''
+[Gurobi_code]
+# This is the square bracket version (should NOT be extracted)
+print("wrong")
+[/Gurobi_code]
+
+<Gurobi_code>
+import gurobipy as gp
+from gurobipy import GRB
+
+def solve(instance: dict) -> dict:
+    return {"objective": 42.0, "status": "ok"}
+</Gurobi_code>
+'''.strip()
+
+    code = FourStageMCTS._sanitize_code_payload(text)
+    # Angle brackets should be preferred
+    assert "import gurobipy as gp" in code
+    assert "print(\"wrong\")" not in code

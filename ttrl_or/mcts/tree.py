@@ -567,23 +567,62 @@ class FourStageMCTS:
     def _extract_tag_block(text: str, tag: str, min_len: int = 0) -> str:
         """Extract content from the LAST valid closed tag pair.
         
+        Supports two formats (in priority order):
+        1. <tag>...</tag>  (angle brackets, preferred)
+        2. [tag]...[/tag]  (square brackets, fallback)
+        
         Logic (from back to front):
-        1. Find the last </tag>
-        2. Find the nearest <tag> before it
+        1. Find the last closing tag
+        2. Find the nearest opening tag before it
         3. If content length > min_len, return it
-        4. Otherwise, find the second-to-last </tag> and repeat
+        4. Otherwise, find the second-to-last closing tag and repeat
         """
         raw = (text or "").strip()
         if not raw:
             return ""
 
-        open_re = re.compile(rf"<\s*{re.escape(tag)}\s*>", flags=re.IGNORECASE)
-        close_re = re.compile(rf"<\s*/\s*{re.escape(tag)}\s*>", flags=re.IGNORECASE)
         required_len = max(21, int(min_len))
 
+        # Try angle brackets first: <tag>...</tag>
+        result = FourStageMCTS._extract_tag_block_with_delimiters(
+            raw, tag, "<", ">", required_len
+        )
+        if result:
+            return result
+
+        # Fallback to square brackets: [tag]...[/tag]
+        result = FourStageMCTS._extract_tag_block_with_delimiters(
+            raw, tag, "[", "]", required_len
+        )
+        return result
+
+    @staticmethod
+    def _extract_tag_block_with_delimiters(
+        text: str,
+        tag: str,
+        open_delim: str,
+        close_delim: str,
+        required_len: int,
+    ) -> str:
+        """Extract content using specific delimiters (e.g., < > or [ ])."""
+        # Escape delimiters for regex
+        od = re.escape(open_delim)
+        cd = re.escape(close_delim)
+
+        # Build patterns: <tag> or [tag]
+        open_re = re.compile(
+            rf"{od}\s*{re.escape(tag)}\s*{cd}",
+            flags=re.IGNORECASE,
+        )
+        # Build patterns: </tag> or [/tag]
+        close_re = re.compile(
+            rf"{od}\s*/\s*{re.escape(tag)}\s*{cd}",
+            flags=re.IGNORECASE,
+        )
+
         # Find all open and close tag positions
-        open_matches = list(open_re.finditer(raw))
-        close_matches = list(close_re.finditer(raw))
+        open_matches = list(open_re.finditer(text))
+        close_matches = list(close_re.finditer(text))
 
         if not open_matches or not close_matches:
             return ""
@@ -603,7 +642,7 @@ class FourStageMCTS:
                 continue
 
             # Extract content between open and close tags
-            content = raw[nearest_open.end():close_start]
+            content = text[nearest_open.end():close_start]
             cleaned = content.strip()
 
             if len(cleaned) >= required_len:
