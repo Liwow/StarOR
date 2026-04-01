@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export VLLM_USE_V1=0
+# export VLLM_USE_V1=0
 # export NCCL_DEBUG=INFO
 # export NCCL_DEBUG_SUBSYS=ALL
 export NCCL_SOCKET_IFNAME=eth0

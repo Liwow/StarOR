@@ -15,7 +15,7 @@ STOP_SERVER_SCRIPT="scripts/stop_vllm_server.sh"
 # data/OptMATH_Bench_166.jsonl
 # data/IndustryOR_fixedV2.jsonl
 DATASET_JSONL="data/OptMATH_Bench_166.jsonl"
-CHUNK_SAMPLES=16         # restart server every N samples
+CHUNK_SAMPLES=10        # restart server every N samples
 TOTAL_LIMIT=0            # 0 = run all samples in dataset
 
 # Keep same output paths across chunks (no split)
@@ -51,10 +51,11 @@ restart_server_if_needed() {
 
   echo "[periodic] restarting vLLM server (port=${VLLM_PORT}) ..."
   PORT="${VLLM_PORT}" bash "${STOP_SERVER_SCRIPT}"
+  sleep 2
   bash "${START_SERVER_SCRIPT}" &
   local spid=$!
   disown "${spid}" || true
-  sleep 20
+  sleep 4
 }
 
 mkdir -p "${LOG_DIR}" "$(dirname "${OUT_JSON}")"
@@ -105,10 +106,11 @@ while (( offset < TARGET_TOTAL )); do
 
   offset=$(( offset + chunk_size ))
   chunk_id=$(( chunk_id + 1 ))
-
+  sleep 5
   if (( offset < TARGET_TOTAL )); then
     restart_server_if_needed
   fi
 done
 
+# PORT="${VLLM_PORT}" bash "${STOP_SERVER_SCRIPT}"
 echo "[periodic] done. chunks=${chunk_id}, processed_samples=${TARGET_TOTAL}"
