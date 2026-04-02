@@ -300,6 +300,45 @@ class TRLPolicyBackend(PolicyBackend):
 
         return captured, report
 
+    def score_action_priors(self, stage: Stage, prompt: str, candidates: list[str]) -> list[float]:
+        if self._model is None or self._tokenizer is None or not candidates:
+            return []
+
+        self._model.eval()
+        prompt_text = _normalize_text(prompt)
+        raw_scores: list[float] = []
+        gamma = 1.0
+        tau = 1.0
+
+        for candidate in candidates:
+            action_block = self._canonical_action_block(stage, str(candidate or ''))
+            if not action_block:
+                raw_scores.append(float('-inf'))
+                continue
+            try:
+                raw_scores.append(self._teacher_forced_action_score(prompt_text, action_block, gamma=gamma))
+            except Exception:
+                raw_scores.append(float('-inf'))
+
+        valid = [score for score in raw_scores if math.isfinite(score)]
+        if not valid:
+            n = len(candidates)
+            return [1.0 / float(max(1, n))] * n
+
+        max_score = max(valid)
+        exp_scores: list[float] = []
+        for score in raw_scores:
+            if not math.isfinite(score):
+                exp_scores.append(0.0)
+            else:
+                exp_scores.append(float(math.exp((score - max_score) / tau)))
+
+        z = sum(exp_scores)
+        if z <= 0:
+            n = len(candidates)
+            return [1.0 / float(max(1, n))] * n
+        return [float(x / z) for x in exp_scores]
+
     def grpo_update(self, samples: list[TrainingSample], config: GRPOConfig, stage: Stage) -> dict[str, Any]:
         if not samples:
             return {"updated": False, "stage": stage.value, "num_samples": 0, "backend": "trl"}
@@ -1084,6 +1123,64 @@ class TRLPolicyBackend(PolicyBackend):
         if hasattr(self._model, "device"):
             return self._model.device
         return next(self._model.parameters()).device
+
+    @staticmethod
+    def _stage_tag(stage: Stage) -> str:
+        if stage in (Stage.SCHEMA, Stage.TYPE_HINT):
+            return 'stage_1'
+        if stage in (Stage.SET_PARAM_VAR, Stage.SETS):
+            return 'stage_2'
+        if stage in (Stage.OBJ_CONS, Stage.PARAMETERS):
+            return 'stage_3'
+        if stage == Stage.VARIABLES:
+            return 'stage_4'
+        if stage == Stage.OBJECTIVE:
+            return 'stage_5'
+        if stage == Stage.CONSTRAINTS:
+            return 'stage_6'
+        return 'Gurobi_code'
+
+    def _canonical_action_block(self, stage: Stage, candidate: str) -> str:
+        content = str(candidate or '').strip()
+        if not content:
+            return ''
+        tag = self._stage_tag(stage)
+        return f'<{tag}>\n{content}\n</{tag}>'
+
+    def _teacher_forced_action_score(self, prompt_text: str, action_block: str, gamma: float = 1.0) -> float:
+        prefix_text = prompt_text.rstrip() + '\n'
+        prefix_ids = self._tokenizer(prefix_text, add_special_tokens=False, return_tensors='pt')['input_ids'][0]
+        full_ids = self._tokenizer(prefix_text + action_block, add_special_tokens=False, return_tensors='pt')['input_ids'][0]
+
+        prefix_len = int(prefix_ids.shape[0])
+        if int(full_ids.shape[0]) <= prefix_len:
+            return float('-inf')
+
+        max_ctx = int(getattr(getattr(self._model, 'config', None), 'max_position_embeddings', 32768) or 32768)
+        if int(full_ids.shape[0]) > max_ctx:
+            full_ids = full_ids[-max_ctx:]
+            prefix_len = max(1, min(prefix_len, int(full_ids.shape[0]) - 1))
+
+        device = self._infer_device()
+        input_ids = full_ids.unsqueeze(0).to(device)
+        attention_mask = torch.ones_like(input_ids, device=device)
+
+        with torch.no_grad():
+            logits = self._model(input_ids=input_ids, attention_mask=attention_mask).logits[0]
+            log_probs = torch.log_softmax(logits, dim=-1)
+
+        action_start = max(1, prefix_len)
+        action_token_count = int(full_ids.shape[0]) - action_start
+        if action_token_count <= 0:
+            return float('-inf')
+
+        total_logp = 0.0
+        full_ids_cpu = full_ids.detach().cpu()
+        for pos in range(action_start, int(full_ids.shape[0])):
+            token_id = int(full_ids_cpu[pos].item())
+            total_logp += float(log_probs[pos - 1, token_id].item())
+
+        return float(total_logp / (max(1, action_token_count) ** gamma))
 
     def _sequence_prior(self, seq_index: int, completion_ids: torch.Tensor, scores: list[torch.Tensor]) -> float:
         if not scores:

@@ -49,6 +49,20 @@ class MockPolicyBackend(PolicyBackend):
             )
         return outputs
 
+    def score_action_priors(self, stage: Stage, prompt: str, candidates: list[str]) -> list[float]:
+        if not candidates:
+            return []
+        weights: list[float] = []
+        for idx, candidate in enumerate(candidates):
+            if not str(candidate or '').strip():
+                weights.append(1e-6)
+                continue
+            rng = self._rng(stage, prompt + '||' + str(candidate), 1000 + idx)
+            weights.append(max(1e-6, 0.5 + rng.random()))
+        total = sum(weights)
+        if total <= 0:
+            return [1.0 / float(len(candidates))] * len(candidates)
+        return [float(w / total) for w in weights]
 
     def grpo_rollout_group(
         self,
@@ -101,6 +115,7 @@ class MockPolicyBackend(PolicyBackend):
             "reason": "MockPolicyBackend does not train. Use TRLPolicyBackend for GRPO updates.",
         }
         return out, report
+
     def grpo_update(self, samples: list[TrainingSample], config: GRPOConfig, stage: Stage) -> dict[str, Any]:
         return {
             "updated": False,
@@ -120,7 +135,37 @@ class MockPolicyBackend(PolicyBackend):
         prefer_vllm: bool = False,
         vllm_mode: str = "",
     ) -> str | None:
-        return None
+        return """<stage_2>
+- i: items
+</stage_2>
+
+<stage_3>
+- c_i: item cost
+- v_i: item value
+- cap: capacity
+</stage_3>
+
+<stage_4>
+- x_i: choose item i (BINARY)
+</stage_4>
+
+<stage_5>
+- maximize_total_value: maximize total selected value
+</stage_5>
+
+<stage_6>
+- capacity_limit: total cost does not exceed capacity
+</stage_6>
+
+<Gurobi_code>
+def solve(instance: dict) -> dict:
+    total = 0.0
+    for value in instance.values():
+        if isinstance(value, (int, float)):
+            total += float(value)
+    print(f"Optimal value: {total}")
+    return {"objective": total, "status": "ok"}
+</Gurobi_code>"""
 
     def generate_test_instances(self, task: OptimizationTask, k: int) -> list[dict[str, Any]]:
         from ttrl_or.reward.perturbation import generate_perturbed_instances_from_map
@@ -150,48 +195,48 @@ class MockPolicyBackend(PolicyBackend):
     def _candidate_bank(stage: Stage) -> list[tuple[float, str]]:
         if stage == Stage.SCHEMA:
             return [
-                (
-                    0.68,
-                    '{"schema":{"entities":["items"],"data_fields":["cost","value","capacity"],"assumptions":["single objective"]},"skill":{"modeling_patterns":["knapsack-like binary selection"],"decomposition_plan":["extract index set","define value/cost parameters","build capacity constraint"],"solver_tips":["prefer MILP with binary vars"]},"cautions":["units of cost/value must be consistent"]}',
-                ),
-                (
-                    0.61,
-                    '{"schema":{"entities":["jobs","machines"],"data_fields":["processing_time","deadline"],"assumptions":["deterministic"]},"skill":{"modeling_patterns":["single-machine scheduling"],"decomposition_plan":["define job index","derive completion variables","encode lateness penalty"],"solver_tips":["use linearized tardiness constraints"]},"cautions":["check due-date inequality directions"]}',
-                ),
-                (
-                    0.49,
-                    '{"schema":{"entities":["routes"],"data_fields":["distance","demand","fleet_size"],"assumptions":["static demand"]},"skill":{"modeling_patterns":["vehicle routing style flow model"],"decomposition_plan":["define node/arc sets","add flow conservation","add capacity linking"],"solver_tips":["watch subtour constraints"]},"cautions":["ensure depot degree constraints"]}',
-                ),
+                (0.68, '{"schema":{"entities":["items"],"goal":"maximize value under capacity"},"skill":{"patterns":["knapsack MILP"]},"cautions":["keep indexing consistent"]}'),
+                (0.52, '{"schema":{"entities":["jobs","machines"],"goal":"assign jobs feasibly"},"skill":{"patterns":["assignment / scheduling"]},"cautions":["respect resource balance"]}'),
             ]
         if stage == Stage.SET_PARAM_VAR:
             return [
-                (
-                    0.67,
-                    "Sets\\n- I: item set\\n\\nParameters\\n- cost[i]\\n- value[i]\\n- cap\\n\\nVariables\\n- x[i] in {0,1}",
-                ),
-                (
-                    0.58,
-                    "Sets\\n- J: jobs\\n\\nParameters\\n- p[j], d[j]\\n\\nVariables\\n- start[j] >= 0",
-                ),
-                (
-                    0.45,
-                    "Sets\\n- N nodes\\n\\nParameters\\n- dist[i,j]\\n\\nVariables\\n- y[i,j] in {0,1}",
-                ),
+                (0.67, 'Sets\n- I: item set\n\nParameters\n- cost[i]\n- value[i]\n- cap\n\nVariables\n- x[i] in {0,1}'),
+                (0.52, 'Sets\n- J: jobs\n\nParameters\n- p[j], d[j]\n\nVariables\n- start[j] >= 0'),
             ]
         if stage == Stage.OBJ_CONS:
             return [
-                (
-                    0.69,
-                    "Objective\\nmaximize sum(value[i] * x[i])\\n\\nConstraints\\n1) sum(cost[i] * x[i]) <= cap",
-                ),
-                (
-                    0.56,
-                    "Objective\\nminimize sum(lateness[j])\\n\\nConstraints\\n1) completion[j] = start[j] + p[j]\\n2) lateness[j] >= completion[j] - d[j]",
-                ),
-                (
-                    0.44,
-                    "Objective\\nminimize route distance\\n\\nConstraints\\n1) flow conservation\\n2) capacity limit",
-                ),
+                (0.69, 'Objective\nmaximize sum(value[i] * x[i])\n\nConstraints\n1) sum(cost[i] * x[i]) <= cap'),
+                (0.56, 'Objective\nminimize sum(lateness[j])\n\nConstraints\n1) completion[j] = start[j] + p[j]\n2) lateness[j] >= completion[j] - d[j]'),
+            ]
+        if stage == Stage.TYPE_HINT:
+            return [
+                (0.72, '{"type":"MILP","subtype":"resource allocation","modeling_hints":["identify discrete decisions","preserve resource balance"],"cautions":["watch integrality and indexing"]}'),
+                (0.54, '{"type":"LP","subtype":"production planning","modeling_hints":["start from flow balance","keep objective linear"],"cautions":["verify bound directions"]}'),
+            ]
+        if stage == Stage.SETS:
+            return [
+                (0.68, '- i: items\n- r: resources'),
+                (0.52, '- j: jobs\n- m: machines'),
+            ]
+        if stage == Stage.PARAMETERS:
+            return [
+                (0.67, '- c_i: item cost\n- v_i: item value\n- cap: capacity'),
+                (0.51, '- p_j: processing time\n- d_j: deadline'),
+            ]
+        if stage == Stage.VARIABLES:
+            return [
+                (0.66, '- x_i: whether item i is selected (BINARY)'),
+                (0.49, '- x_j: assignment decision (BINARY)'),
+            ]
+        if stage == Stage.OBJECTIVE:
+            return [
+                (0.68, '- maximize_total_value: maximize total selected value'),
+                (0.47, '- minimize_total_cost: minimize total cost'),
+            ]
+        if stage == Stage.CONSTRAINTS:
+            return [
+                (0.67, '- capacity_limit: total used resource does not exceed capacity'),
+                (0.46, '- assignment_consistency: each job assigned appropriately'),
             ]
         return [
             (0.78, _code_variant_sum_numeric()),
@@ -218,6 +263,7 @@ def solve(instance: dict) -> dict:
     for value in instance.values():
         if isinstance(value, (int, float)):
             total += float(value)
+    print(f"Optimal value: {total}")
     return {"objective": total, "status": "ok"}
 """.strip()
 
@@ -230,6 +276,7 @@ def solve(instance: dict) -> dict:
         value = instance[key]
         if isinstance(value, (int, float)):
             total += float(value) * (idx + 1)
+    print(f"Optimal value: {total}")
     return {"objective": total, "status": "ok"}
 """.strip()
 
@@ -239,5 +286,3 @@ def _code_variant_broken() -> str:
 def solve(instance: dict) -> dict:
     return {"objective": float(undefined_symbol), "status": "fail"}
 """.strip()
-
-

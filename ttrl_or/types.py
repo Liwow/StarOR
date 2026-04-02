@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -9,15 +9,57 @@ class Stage(str, Enum):
     SCHEMA = "Stage 1: Schema and Modeling Skill Analysis"
     SET_PARAM_VAR = "Stage 2: Set, Parameters, and Variables Construction"
     OBJ_CONS = "Stage 3: Objective and Constraints Modeling"
-    CODE = "Stage 4: Problem Python Code with Gurobi"
+
+    TYPE_HINT = "Stage 1: Type and Modeling Hint Analysis"
+    SETS = "Stage 2: Sets Construction"
+    PARAMETERS = "Stage 3: Parameters Construction"
+    VARIABLES = "Stage 4: Variables Construction"
+    OBJECTIVE = "Stage 5: Objective Construction"
+    CONSTRAINTS = "Stage 6: Constraints Construction"
+
+    CODE = "Problem Python Code with Gurobi"
 
 
-STAGE_ORDER: tuple[Stage, ...] = (
+DEFAULT_STAGE_ORDER: tuple[Stage, ...] = (
     Stage.SCHEMA,
     Stage.SET_PARAM_VAR,
     Stage.OBJ_CONS,
     Stage.CODE,
 )
+
+SOLVERLLM_STAGE_ORDER: tuple[Stage, ...] = (
+    Stage.TYPE_HINT,
+    Stage.SETS,
+    Stage.PARAMETERS,
+    Stage.VARIABLES,
+    Stage.OBJECTIVE,
+    Stage.CONSTRAINTS,
+    Stage.CODE,
+)
+
+STAGE_ORDER: tuple[Stage, ...] = DEFAULT_STAGE_ORDER
+
+
+_STAGE_TAG_MAP: dict[Stage, str] = {
+    Stage.SCHEMA: "stage_1",
+    Stage.SET_PARAM_VAR: "stage_2",
+    Stage.OBJ_CONS: "stage_3",
+    Stage.TYPE_HINT: "stage_1",
+    Stage.SETS: "stage_2",
+    Stage.PARAMETERS: "stage_3",
+    Stage.VARIABLES: "stage_4",
+    Stage.OBJECTIVE: "stage_5",
+    Stage.CONSTRAINTS: "stage_6",
+    Stage.CODE: "Gurobi_code",
+}
+
+
+def get_stage_order(solverllm_compare_mode: bool = False) -> tuple[Stage, ...]:
+    return SOLVERLLM_STAGE_ORDER if bool(solverllm_compare_mode) else DEFAULT_STAGE_ORDER
+
+
+def stage_output_tag(stage: Stage) -> str:
+    return _STAGE_TAG_MAP[stage]
 
 
 @dataclass(slots=True)
@@ -39,15 +81,14 @@ class Generation:
 @dataclass(slots=True)
 class ModelInfo:
     """Gurobi model structural information extracted from .lp file."""
-    model_sense: int = 0  # 1 = minimize, -1 = maximize, 0 = unknown
+    model_sense: int = 0
     num_vars: int = 0
     num_bin_vars: int = 0
     num_int_vars: int = 0
     num_constrs: int = 0
-    extracted: bool = False  # True if successfully extracted
+    extracted: bool = False
 
     def feature_tuple(self) -> tuple[int, int, int, int]:
-        """Return (ModelSense, NumVars, NumBinVars, NumIntVars) for structural clustering."""
         return (self.model_sense, self.num_vars, self.num_bin_vars, self.num_int_vars)
 
 
@@ -60,7 +101,7 @@ class ExecutionResult:
     error_type: str | None = None
     signature: str = ""
     elapsed_sec: float = 0.0
-    model_info: ModelInfo | None = None  # Gurobi model structure info
+    model_info: ModelInfo | None = None
 
 
 @dataclass(slots=True)
@@ -68,7 +109,7 @@ class RewardBreakdown:
     r1: float
     r2: float
     r3: float
-    r4: float = 0.0  # Structural consensus reward
+    r4: float = 0.0
     total: float = 0.0
     consensus_signature: str = ""
     execution_success: bool = False
@@ -91,9 +132,9 @@ class Trajectory:
     def code(self) -> str:
         return self.outputs.get(Stage.CODE, "")
 
-    def prefix(self, stage: Stage) -> dict[Stage, str]:
+    def prefix(self, stage: Stage, stage_order: tuple[Stage, ...] = STAGE_ORDER) -> dict[Stage, str]:
         prefix: dict[Stage, str] = {}
-        for s in STAGE_ORDER:
+        for s in stage_order:
             if s == stage:
                 break
             if s in self.outputs:

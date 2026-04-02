@@ -5,14 +5,23 @@ A modular prototype for **test-time reinforcement learning** on optimization mod
 Input: natural language optimization task description.
 
 Pipeline:
-1. `schema` (now outputs schema + skill + cautions)
+1. `schema` (default mode)
 2. `set_param_var`
 3. `obj_cons`
 4. `code`
 
+Optional compare mode: `--solverllm-compare-mode` switches to a SolverLLM-like 7-layer pipeline:
+1. `type+modeling_hint`
+2. `sets`
+3. `parameters`
+4. `variables`
+5. `objective`
+6. `constraints`
+7. `code`
+
 Each stage uses MCTS with PUCT and rollout-to-code evaluation. Inside a stage, each selected node triggers one internal TRL-GRPO rollout group (`num_generations = k`), which simultaneously updates LoRA and expands `k` children for that stage. At the end of stage 4, final candidates are reranked by finalized reward to choose the answer, then LoRA is dropped before the next task.
 
-Provisional consensus (`r1`) now uses a **global consensus pool** per task instance: when pool size is small it uses order-of-magnitude matching, and once pool is large enough it switches to majority voting with relative tolerance.
+Provisional consensus (`r1`) and structural consistency (`r4`) now support both task-level (`global`) and rollout-group (`local`) cluster scopes, controlled by `reward.cluster_scope`.
 
 ## Core Design Goals
 
@@ -23,16 +32,29 @@ Provisional consensus (`r1`) now uses a **global consensus pool** per task insta
 
 ## Reward Definition
 
-For a group of `g` trajectories:
+Current implementation uses four reward terms on each rollout trajectory:
 
-- `r1`: majority-vote consensus reward (`1` if trajectory matches consensus, else `0`)
-- `r2`: execution reward (`1` if code runs, else `0`) when `r1 = 0`
-- `r3`: robustness reward (`1` if model-generated perturbed tests pass, else `0`) when `r1 = 1`
+- `r1`: semantic consensus reward
+- `r2`: executable-solution reward
+- `r3`: perturbation robustness reward
+- `r4`: structural consensus reward
 
-Combination:
+The final score is a weighted combination in `ttrl_or/reward/default_reward.py`.
 
-- if `r1 == 1`: `reward = r1 * 0.9 + r3 * 0.1`
-- else: `reward = r2 * 0.2`
+### Cluster Scope: `global` vs `local`
+
+`r1` and `r4` both depend on clustering. Their scope is controlled by `reward.cluster_scope` / `--reward-cluster-scope`.
+
+- `global`: compare the current rollout against the task-level historical pool accumulated so far.
+  - `r1` uses a task-level semantic consensus pool.
+  - `r4` uses a task-level structural pool.
+  - This is better when you want long-horizon consensus across many MCTS iterations.
+- `local`: compare only within the current rollout group of size `k` produced after selecting one node.
+  - `r1` is computed from the semantic clusters inside that group.
+  - `r4` is computed from the structural clusters inside that group.
+  - This is better when you want strictly local comparison among sibling candidates expanded from the same selected node.
+
+Recommended default for the current MCTS+GRPO workflow: `local`.
 
 ## Environment Setup
 
@@ -141,6 +163,7 @@ All launch scripts are under `scripts/`.
 - `MODEL_NAME_OR_PATH`
 - `DATASET_JSONL`, `DATASET_LIMIT`, `RESUME_SKIP_COMPLETED`
 - `USE_VLLM`, `VLLM_MODE`
+- `REWARD_CLUSTER_SCOPE` (`local` or `global`)
 
 `run.sh` now auto-selects launcher:
 - `NPROC_PER_NODE=1` -> `python -m ttrl_or ...`
@@ -170,7 +193,7 @@ If you hit `Weight update group already initialized`, stop server processes (`sc
 scripts/run.sh
 ```
 
-Resume behavior: when `RESUME_SKIP_COMPLETED=true` (default), completed samples are skipped by checking `best_code.py` under `LOG_DIR/<dataset_name>/<sample_id>/best_code.py`.
+Resume behavior: when `RESUME_SKIP_COMPLETED=true` (default), completed samples are skipped by checking `best_code.py` under `LOG_DIR/model_{mode}_{id}/<dataset_name>/<sample_id>/best_code.py`.
 
 3.1 Optional: periodic vLLM restart wrapper (external script)
 
@@ -191,7 +214,8 @@ Note: in `scripts/run.sh`, if `NPROC_PER_NODE>1` and `VLLM_MODE=colocate`, the s
 Useful knobs:
 
 - MCTS: `--max-iterations`, `--c-puct`, `--mcts-stop-on-reward-one`
-- Reward: `--global-consensus-rel-tol`, `--robustness-cases`, `--code-timeout-sec`, `--enable-r3-reward`, `--disable-r3-reward`
+  - Compare mode: `--solverllm-compare-mode` enables the SolverLLM-like 7-layer decomposition (`type+hint -> sets -> parameters -> variables -> objective -> constraints -> code`) and uses split simulation completion (first generate current-layer content, then a second completion pass to finish the remaining formulation/code).
+- Reward: `--global-consensus-rel-tol`, `--reward-cluster-scope`, `--robustness-cases`, `--code-timeout-sec`, `--enable-r3-reward`, `--disable-r3-reward`
   - `r3` perturbation now uses backend pre-extracted mapping (`focus_keys` + value map).
 - Dataset loader: `--dataset-start-index`, `--dataset-limit`, `--dataset-resume-skip-completed`, `--no-dataset-resume-skip-completed`, `--dataset-max-numeric-features`, `--dataset-key-param-top-k`
   - Mapping extractor plugin: `--mapping-extractor rule|llm`
@@ -274,7 +298,7 @@ All defaults are defined in `ttrl_or/config.py`.
 
 ### PipelineConfig
 - `save_logs`: whether to write per-task artifacts.
-- `log_dir`: output directory root for logs (default `logs/`).
+- `log_dir`: base output directory root. Actual runs are saved under `log_dir/model_{mode}_{id}/...` (default base root `logs/`).
 
 ### DatasetConfig
 
@@ -320,7 +344,13 @@ You can also pass datasets via env: `DATASET_JSON=data/A.jsonl,data/B.jsonl pyth
 
 ## Logs and Artifacts
 
-By default each instance writes logs under `logs/<task_id>/`:
+By default logs are organized under `logs/model_{mode}_{id}/`.
+
+- Single-task mode: `logs/model_{mode}_{id}/<task_id>/`
+- Dataset mode: `logs/model_{mode}_{id}/<dataset_name>/<sample_id>/`
+- Top-level run config: `logs/model_{mode}_{id}/run_config.json`
+
+Per-instance artifacts include:
 
 - `run_summary.json`: task info, config, stage reports, final selection, best trajectory summary
 - `runtime_summary.json`: sample-level runtime summary (overall seconds, iter count, per-iter time/reward)

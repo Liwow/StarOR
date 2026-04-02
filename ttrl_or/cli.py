@@ -5,6 +5,7 @@ import json
 import os
 import re
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,51 @@ def _resolve_model_name_or_path(value: str) -> str:
     if maybe_path.exists():
         return str(maybe_path.resolve())
     return value
+
+
+def _model_mode_label(config: PipelineConfig) -> str:
+    return "solverllm" if bool(config.mcts.solverllm_compare_mode) else "default"
+
+
+def _model_identifier(config: PipelineConfig) -> str:
+    backend_name = str(config.backend.backend or "backend").strip().lower()
+    if backend_name == "mock":
+        return "mock"
+
+    raw = str(config.backend.model_name_or_path or "").strip()
+    if not raw:
+        return backend_name or "model"
+
+    maybe_path = Path(raw)
+    candidate = maybe_path.name or raw.rstrip("/\\").split("/")[-1].split("\\")[-1]
+    return _safe_path_component(candidate) or "model"
+
+
+def _model_log_root(config: PipelineConfig) -> Path:
+    base = Path(config.log_dir)
+    folder = f"model_{_model_mode_label(config)}_{_model_identifier(config)}"
+    return base / folder
+
+
+def _write_run_config(config: PipelineConfig, model_root: Path) -> Path:
+    model_root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "log_root": str(model_root.resolve()),
+        "mode": _model_mode_label(config),
+        "model_id": _model_identifier(config),
+        "config": {
+            "mcts": asdict(config.mcts),
+            "reward": asdict(config.reward),
+            "grpo": asdict(config.grpo),
+            "dataset": asdict(config.dataset),
+            "backend": asdict(config.backend),
+            "save_logs": config.save_logs,
+            "log_dir": config.log_dir,
+        },
+    }
+    out_path = model_root / 'run_config.json'
+    out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    return out_path
 
 
 def _build_backend(config: PipelineConfig):
@@ -165,6 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-iterations", type=int, default=defaults.mcts.max_iterations)
     parser.add_argument("--c-puct", type=float, default=defaults.mcts.c_puct)
     parser.add_argument("--mcts-stop-on-reward-one", action="store_true", default=defaults.mcts.stop_on_reward_one)
+    parser.add_argument("--solverllm-compare-mode", action="store_true", default=defaults.mcts.solverllm_compare_mode)
 
     parser.add_argument("--robustness-cases", type=int, default=defaults.reward.robustness_cases)
     parser.add_argument("--code-timeout-sec", type=int, default=defaults.reward.code_timeout_sec)
@@ -175,6 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=defaults.reward.code_executor_mode,
     )
     parser.add_argument("--global-consensus-rel-tol", type=float, default=defaults.reward.global_consensus_rel_tol)
+    parser.add_argument("--reward-cluster-scope", type=str, choices=["global", "local"], default=defaults.reward.cluster_scope)
 
     r3_group = parser.add_mutually_exclusive_group()
     r3_group.add_argument("--enable-r3-reward", dest="enable_r3_reward", action="store_true")
@@ -238,11 +286,13 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.mcts.max_iterations = args.max_iterations
     config.mcts.c_puct = args.c_puct
     config.mcts.stop_on_reward_one = args.mcts_stop_on_reward_one
+    config.mcts.solverllm_compare_mode = args.solverllm_compare_mode
 
     config.reward.robustness_cases = args.robustness_cases
     config.reward.code_timeout_sec = args.code_timeout_sec
     config.reward.code_executor_mode = args.code_executor_mode
     config.reward.global_consensus_rel_tol = args.global_consensus_rel_tol
+    config.reward.cluster_scope = args.reward_cluster_scope
     config.reward.enable_r3_reward = args.enable_r3_reward
 
     config.grpo.learning_rate = args.grpo_lr
@@ -621,6 +671,10 @@ def main() -> int:
     args = parser.parse_args()
 
     config = _build_config(args)
+    model_log_root = _model_log_root(config)
+    config_path = _write_run_config(config, model_log_root)
+    config.log_dir = str(model_log_root)
+
     backend = _build_backend(config)
     runner = TTRLORRunner(backend=backend, config=config)
 
@@ -628,6 +682,11 @@ def main() -> int:
         output = _run_dataset(args, runner)
     else:
         output = _run_single(args, runner)
+
+    output["log_root"] = str(model_log_root.resolve())
+    output["config_path"] = str(config_path.resolve())
+    output["model_mode"] = _model_mode_label(config)
+    output["model_id"] = _model_identifier(config)
 
     if args.out:
         out_path = Path(args.out)

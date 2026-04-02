@@ -23,6 +23,16 @@ class PolicyBackend(ABC):
     def generate(self, stage: Stage, prompt: str, n: int) -> list[Generation]:
         """Generate n candidates for a specific stage with prior probabilities."""
 
+    def score_action_priors(self, stage: Stage, prompt: str, candidates: list[str]) -> list[float]:
+        """
+        Optional hook: score current-stage child actions under the latest policy state.
+        Returns normalized priors aligned with ``candidates``.
+        """
+        n = len(candidates)
+        if n <= 0:
+            return []
+        return [1.0 / float(n)] * n
+
     @abstractmethod
     def grpo_update(self, samples: list[TrainingSample], config: GRPOConfig, stage: Stage) -> dict[str, Any]:
         """Apply one GRPO-style update step using stage samples."""

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ttrl_or.types import STAGE_ORDER, OptimizationTask, Stage, Trajectory
+from ttrl_or.types import OptimizationTask, Stage, Trajectory
 
 from .notice_prompts import SYSTEM_INSTRUCTION
 
@@ -11,57 +11,62 @@ from .notice_prompts import SYSTEM_INSTRUCTION
 class PromptBuilder:
     templates: dict[Stage, str] = field(default_factory=dict)
     rollout_templates: dict[Stage, str] = field(default_factory=dict)
+    completion_templates: dict[Stage, str] = field(default_factory=dict)
+    stage_order: tuple[Stage, ...] = field(default_factory=tuple)
     system_instruction: str = SYSTEM_INSTRUCTION
 
     def build(self, task: OptimizationTask, stage: Stage, trajectory: Trajectory | None = None) -> str:
         history = self._history_text(trajectory, stage)
         template = self.templates[stage]
-        # Keep literal braces in prompt templates untouched.
         body = (
-            template.replace("{task_description}", task.description)
-            .replace("{history}", history)
+            template.replace('{task_description}', task.description)
+            .replace('{history}', history)
         )
-        system_text = (self.system_instruction or "").strip()
+        system_text = (self.system_instruction or '').strip()
         if not system_text:
             return body
         return f"[SYSTEM]\n{system_text}\n\n[USER]\n{body}".strip()
 
     def build_rollout(self, task: OptimizationTask, stage: Stage, trajectory: Trajectory | None = None) -> str:
         base_prompt = self.build(task, stage, trajectory)
-        rollout_suffix = (self.rollout_templates.get(stage, "") or "").strip()
+        rollout_suffix = (self.rollout_templates.get(stage, '') or '').strip()
         if not rollout_suffix:
             return base_prompt
-
         remaining = self._remaining_stages(stage)
-        remaining_names = " --> ".join(s.value for s in remaining) if remaining else "none"
-        suffix = rollout_suffix.replace("{remaining_stages}", remaining_names)
+        remaining_names = ' --> '.join(s.value for s in remaining) if remaining else 'none'
+        suffix = rollout_suffix.replace('{remaining_stages}', remaining_names)
         return f"{base_prompt}\n\n{suffix}".strip()
 
-    @staticmethod
-    def _remaining_stages(stage: Stage) -> list[Stage]:
-        idx = STAGE_ORDER.index(stage)
-        return list(STAGE_ORDER[idx + 1 :])
+    def build_completion(self, task: OptimizationTask, stage: Stage, trajectory: Trajectory | None = None) -> str:
+        template = (self.completion_templates.get(stage, '') or '').strip()
+        if not template:
+            return ''
+        history = self._history_text(trajectory, None)
+        remaining = self._remaining_stages(stage)
+        remaining_names = ' --> '.join(s.value for s in remaining) if remaining else 'none'
+        body = (
+            template.replace('{task_description}', task.description)
+            .replace('{history}', history)
+            .replace('{current_stage}', stage.value)
+            .replace('{remaining_stages}', remaining_names)
+        )
+        system_text = (self.system_instruction or '').strip()
+        if not system_text:
+            return body
+        return f"[SYSTEM]\n{system_text}\n\n[USER]\n{body}".strip()
 
-    @staticmethod
-    def _history_text(trajectory: Trajectory | None, stage: Stage) -> str:
+    def _remaining_stages(self, stage: Stage) -> list[Stage]:
+        idx = self.stage_order.index(stage)
+        return list(self.stage_order[idx + 1 :])
+
+    def _history_text(self, trajectory: Trajectory | None, stage: Stage | None) -> str:
         if trajectory is None:
-            return ""
-
-        output_stage1 = trajectory.outputs.get(Stage.SCHEMA, "")
-        output_stage2 = trajectory.outputs.get(Stage.SET_PARAM_VAR, "")
-        output_stage3 = trajectory.outputs.get(Stage.OBJ_CONS, "")
-
-        # Required history policy:
-        # Stage 1: ""
-        # Stage 2: output_stage1
-        # Stage 3: output_stage1 + "\n\n" + output_stage2
-        # Stage 4: output_stage1 + "\n\n" + output_stage2 + "\n\n" + output_stage3
-        if stage == Stage.SCHEMA:
-            return ""
-        if stage == Stage.SET_PARAM_VAR:
-            return "# SCHEMA AND SKILLS\n" + output_stage1
-        if stage == Stage.OBJ_CONS:
-            return "# SCHEMA AND SKILLS\n" + output_stage1 + "\n\n" + "# SETS AND PARAMETERS AND VARIABLES\n" + output_stage2
-        if stage == Stage.CODE:
-            return "# SCHEMA AND SKILLS\n" + output_stage1 + "\n\n" + "# SETS AND PARAMETERS AND VARIABLES\n" + output_stage2 + "\n\n" + "# OBJECTIVE AND CONSTRAINTS\n" + output_stage3
-        return ""
+            return ''
+        chunks: list[str] = []
+        for s in self.stage_order:
+            if stage is not None and s == stage:
+                break
+            text = (trajectory.outputs.get(s, '') or '').strip()
+            if text:
+                chunks.append(text)
+        return '\n\n'.join(chunks)

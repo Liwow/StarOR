@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 import time
@@ -65,12 +65,17 @@ class FourStageMCTS:
         rewarder: ProvisionalRewarder,
         config: MCTSConfig,
         selector: PUCTSelector | None = None,
+        stage_order: tuple[Stage, ...] | None = None,
+        split_rollout_completion: bool = False,
     ) -> None:
         self.backend = backend
         self.prompt_builder = prompt_builder
         self.rewarder = rewarder
         self.config = config
         self.selector = selector or PUCTSelector(c_puct=config.c_puct)
+        self.stage_order = tuple(stage_order or STAGE_ORDER)
+        self.split_rollout_completion = bool(split_rollout_completion)
+        self._active_grpo_config: GRPOConfig | None = None
 
     def root(self) -> SearchNode:
         return SearchNode(stage=None, text="<ROOT>", prior=1.0)
@@ -81,13 +86,14 @@ class FourStageMCTS:
         grpo_config: GRPOConfig,
         iteration_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> SearchRunResult:
+        self._active_grpo_config = grpo_config
         root = self.root()
         records: list[StageExpansionRecord] = []
         iteration_logs: list[dict[str, Any]] = []
         best_trajectory: Trajectory | None = None
         best_reward = float("-inf")
 
-        stage_archives: dict[Stage, list[Trajectory]] = {stage: [] for stage in STAGE_ORDER}
+        stage_archives: dict[Stage, list[Trajectory]] = {stage: [] for stage in self.stage_order}
 
         stop_info: dict[str, Any] = {
             "reason": "max_iterations",
@@ -101,8 +107,8 @@ class FourStageMCTS:
         for iter_idx in range(max(1, int(self.config.max_iterations))):
             iter_t0 = time.perf_counter()
             selection_t0 = time.perf_counter()
-            leaves = [node for node in self._iter_leaves(root) if self._next_stage(node.stage) is not None]
-            if not leaves:
+            ranked_leaves = self._rank_expandable_leaves(root)
+            if not ranked_leaves:
                 stop_info = {
                     "reason": "no_expandable_leaf",
                     "iteration": iter_idx,
@@ -113,9 +119,7 @@ class FourStageMCTS:
                 }
                 break
 
-            ranked_leaves = self._rank_leaves(leaves)
-            selected = ranked_leaves[0][0]
-            selected_score = float(ranked_leaves[0][1])
+            selected, selected_score, selection_path = self._select_leaf_recursive(root)
 
             next_stage = self._next_stage(selected.stage)
             if next_stage is None:
@@ -252,6 +256,20 @@ class FourStageMCTS:
             if not group_rollouts:
                 continue
 
+            resolved_priors, prior_source = self._resolve_child_priors(
+                stage=next_stage,
+                prompt=base_prompt,
+                rollouts=group_rollouts,
+                fallback_generations=generations,
+            )
+            for ridx, rollout in enumerate(group_rollouts):
+                child = rollout["child"]
+                prior_value = float(resolved_priors[ridx]) if ridx < len(resolved_priors) else max(1e-6, float(child.prior))
+                child.prior = max(1e-6, prior_value)
+                rollout["prior_source"] = prior_source
+                rollout["resolved_prior"] = float(child.prior)
+                rollout["trajectory"].priors[next_stage] = float(child.prior)
+
             hit_reward_one = False
             reward_one_payload: dict[str, Any] = {}
             rollout_summaries: list[dict[str, Any]] = []
@@ -265,9 +283,6 @@ class FourStageMCTS:
                 reward_total = float(rollout["reward_total"])
 
                 processed_group_rollouts.append(rollout)
-
-                if ridx < len(generations):
-                    child.prior = max(1e-6, float(generations[ridx].prior))
 
                 parent_q_before = selected.q_value
                 parent_visits_before = selected.visits
@@ -308,6 +323,7 @@ class FourStageMCTS:
                     },
                     "timing": rollout_timing,
                     "priors": {s.value: p for s, p in completed.priors.items()},
+                    "prior_source": str(rollout.get("prior_source", "fallback_generation")),
                 }
 
                 current_hit_reward_one = bool(self.config.stop_on_reward_one and reward_total >= 1.0)
@@ -414,6 +430,7 @@ class FourStageMCTS:
                         "puct_score": float(selected_score),
                         "content": selected.text,
                     },
+                    "selection_path": selection_path,
                     "leaf_candidates": [
                         {
                             "node_id": node.node_id,
@@ -453,7 +470,7 @@ class FourStageMCTS:
                     },
                     "trajectory_content": {
                         stage.value: best_rollout_traj.outputs.get(stage, "")
-                        for stage in STAGE_ORDER
+                        for stage in self.stage_order
                     },
                     "code": best_rollout_traj.code,
                     "code_execution": (best_rollout_obj.metadata or {}).get("execution", {}),
@@ -468,9 +485,14 @@ class FourStageMCTS:
                         "r1_debug": (best_rollout_obj.metadata or {}).get("r1_debug", {}),
                         "r4_debug": (best_rollout_obj.metadata or {}).get("r4_debug", {}),
                     },
+                    "prior": {
+                        "source": str(best_rollout.get("prior_source", "fallback_generation")),
+                        "resolved_prior": float(best_rollout_child.prior),
+                    },
                     "timing": best_rollout_timing,
                     "update": best_rollout_update,
                 },
+                "rollout_group": rollout_summaries,
                 "timing": {
                     "selection_sec": selection_sec,
                     "prompt_build_sec": prompt_build_sec,
@@ -555,27 +577,33 @@ class FourStageMCTS:
 
     @staticmethod
     def _tag_for_stage(stage: Stage) -> str:
-        if stage == Stage.SCHEMA:
+        if stage in (Stage.SCHEMA, Stage.TYPE_HINT):
             return "stage_1"
-        if stage == Stage.SET_PARAM_VAR:
+        if stage in (Stage.SET_PARAM_VAR, Stage.SETS):
             return "stage_2"
-        if stage == Stage.OBJ_CONS:
+        if stage in (Stage.OBJ_CONS, Stage.PARAMETERS):
             return "stage_3"
+        if stage == Stage.VARIABLES:
+            return "stage_4"
+        if stage == Stage.OBJECTIVE:
+            return "stage_5"
+        if stage == Stage.CONSTRAINTS:
+            return "stage_6"
         return "Gurobi_code"
 
     @staticmethod
     def _extract_tag_block(text: str, tag: str, min_len: int = 0) -> str:
-        """Extract content from the LAST valid closed tag pair.
-        
+        """Extract content from the FIRST valid closed tag pair.
+
         Supports two formats (in priority order):
         1. <tag>...</tag>  (angle brackets, preferred)
         2. [tag]...[/tag]  (square brackets, fallback)
-        
-        Logic (from back to front):
-        1. Find the last closing tag
+
+        Logic (from front to back):
+        1. Find the first closing tag
         2. Find the nearest opening tag before it
         3. If content length > min_len, return it
-        4. Otherwise, find the second-to-last closing tag and repeat
+        4. Otherwise, continue to the next closing tag
         """
         raw = (text or "").strip()
         if not raw:
@@ -583,18 +611,15 @@ class FourStageMCTS:
 
         required_len = max(21, int(min_len))
 
-        # Try angle brackets first: <tag>...</tag>
         result = FourStageMCTS._extract_tag_block_with_delimiters(
             raw, tag, "<", ">", required_len
         )
         if result:
             return result
 
-        # Fallback to square brackets: [tag]...[/tag]
-        result = FourStageMCTS._extract_tag_block_with_delimiters(
+        return FourStageMCTS._extract_tag_block_with_delimiters(
             raw, tag, "[", "]", required_len
         )
-        return result
 
     @staticmethod
     def _extract_tag_block_with_delimiters(
@@ -605,33 +630,27 @@ class FourStageMCTS:
         required_len: int,
     ) -> str:
         """Extract content using specific delimiters (e.g., < > or [ ])."""
-        # Escape delimiters for regex
         od = re.escape(open_delim)
         cd = re.escape(close_delim)
 
-        # Build patterns: <tag> or [tag]
         open_re = re.compile(
             rf"{od}\s*{re.escape(tag)}\s*{cd}",
             flags=re.IGNORECASE,
         )
-        # Build patterns: </tag> or [/tag]
         close_re = re.compile(
             rf"{od}\s*/\s*{re.escape(tag)}\s*{cd}",
             flags=re.IGNORECASE,
         )
 
-        # Find all open and close tag positions
         open_matches = list(open_re.finditer(text))
         close_matches = list(close_re.finditer(text))
 
         if not open_matches or not close_matches:
             return ""
 
-        # Process close tags from back to front
-        for close_match in reversed(close_matches):
+        for close_match in close_matches:
             close_start = close_match.start()
 
-            # Find the nearest open tag BEFORE this close tag
             nearest_open = None
             for open_match in reversed(open_matches):
                 if open_match.end() <= close_start:
@@ -641,14 +660,10 @@ class FourStageMCTS:
             if nearest_open is None:
                 continue
 
-            # Extract content between open and close tags
             content = text[nearest_open.end():close_start]
             cleaned = content.strip()
-
             if len(cleaned) >= required_len:
                 return cleaned
-
-            # Content too short, continue to next (earlier) close tag
 
         return ""
 
@@ -663,6 +678,11 @@ class FourStageMCTS:
         from_node: SearchNode,
         full_completion: str = "",
     ) -> Trajectory:
+        if self.split_rollout_completion and from_node.stage != Stage.CODE:
+            return self._complete_for_reward_split(task, from_node)
+        return self._trajectory_from_rollout_completion(from_node, full_completion)
+
+    def _trajectory_from_rollout_completion(self, from_node: SearchNode, full_completion: str = "") -> Trajectory:
         partial = from_node.to_partial_trajectory()
         partial.trajectory_id = str(uuid.uuid4())
 
@@ -672,8 +692,8 @@ class FourStageMCTS:
             return partial
 
         full_text = str(full_completion or "")
-        start_idx = STAGE_ORDER.index(from_node.stage)
-        for next_stage in STAGE_ORDER[start_idx + 1 :]:
+        start_idx = self.stage_order.index(from_node.stage)
+        for next_stage in self.stage_order[start_idx + 1 :]:
             block = self._extract_rollout_stage_block(full_text, next_stage)
             if not block:
                 continue
@@ -691,9 +711,28 @@ class FourStageMCTS:
 
         if not partial.outputs.get(Stage.CODE, "").strip():
             partial.metadata["rollout_missing_code"] = True
-
-        # Important: no extra multi-step generation fallback here.
         return partial
+
+    def _complete_for_reward_split(self, task: OptimizationTask, from_node: SearchNode) -> Trajectory:
+        partial = from_node.to_partial_trajectory()
+        partial.trajectory_id = str(uuid.uuid4())
+        completion_prompt = self.prompt_builder.build_completion(task, from_node.stage, partial)
+        completion_text = ""
+        if completion_prompt:
+            completion_text = str(
+                self.backend.generate_auxiliary_text(
+                    completion_prompt,
+                    max_new_tokens=int(getattr(self.backend, "max_new_tokens", 2048) or 2048),
+                    temperature=float(getattr(self.backend, "temperature", 0.0) or 0.0),
+                    top_p=float(getattr(self.backend, "top_p", 1.0) or 1.0),
+                    prefer_vllm=bool(self._active_grpo_config.use_vllm) if self._active_grpo_config is not None else False,
+                    vllm_mode=str(self._active_grpo_config.vllm_mode) if self._active_grpo_config is not None else "",
+                )
+                or ""
+            )
+        if not completion_text.strip():
+            return self.rollout_to_code(task, from_node)
+        return self._trajectory_from_rollout_completion(from_node, completion_text)
 
     def _complete_for_reward(self, task: OptimizationTask, from_node: SearchNode) -> Trajectory:
         if from_node.stage == Stage.CODE:
@@ -709,15 +748,108 @@ class FourStageMCTS:
         if from_node.stage is None:
             start_idx = -1
         else:
-            start_idx = STAGE_ORDER.index(from_node.stage)
+            start_idx = self.stage_order.index(from_node.stage)
 
-        for next_stage in STAGE_ORDER[start_idx + 1 :]:
+        for next_stage in self.stage_order[start_idx + 1 :]:
             prompt = self.prompt_builder.build(task, next_stage, partial)
             generation = self.backend.generate(next_stage, prompt, 1)[0]
             partial.outputs[next_stage] = self._extract_stage_payload(next_stage, generation.text)
             partial.priors[next_stage] = generation.prior
 
         return partial
+
+    def _resolve_child_priors(
+        self,
+        stage: Stage,
+        prompt: str,
+        rollouts: list[dict[str, Any]],
+        fallback_generations: list[Generation],
+    ) -> tuple[list[float], str]:
+        fallback: list[float] = []
+        for ridx, rollout in enumerate(rollouts):
+            if ridx < len(fallback_generations):
+                fallback.append(max(1e-6, float(fallback_generations[ridx].prior)))
+            else:
+                fallback.append(max(1e-6, float(rollout['child'].prior)))
+
+        score_method = getattr(self.backend, 'score_action_priors', None)
+        if not callable(score_method):
+            return self._normalize_priors(fallback), 'fallback_generation'
+
+        candidates = [str(rollout['child'].text or '') for rollout in rollouts]
+        try:
+            priors = list(score_method(stage=stage, prompt=prompt, candidates=candidates))
+        except TypeError:
+            priors = list(score_method(stage, prompt, candidates))
+        except Exception:
+            priors = []
+
+        if len(priors) != len(rollouts):
+            return self._normalize_priors(fallback), 'fallback_generation'
+
+        normalized = self._normalize_priors(priors)
+        if not normalized:
+            return self._normalize_priors(fallback), 'fallback_generation'
+        return normalized, 'teacher_forcing_lora'
+
+    def _select_leaf_recursive(self, root: SearchNode) -> tuple[SearchNode, float, list[dict[str, Any]]]:
+        cur = root
+        selection_path: list[dict[str, Any]] = []
+
+        while cur.children:
+            candidate_scores: list[tuple[SearchNode, float]] = []
+            for child in cur.children:
+                if not self._subtree_has_expandable_leaf(child):
+                    continue
+                candidate_scores.append((child, float(self.selector.score(cur, child))))
+
+            if not candidate_scores:
+                break
+
+            candidate_scores.sort(key=lambda item: item[1], reverse=True)
+            chosen, chosen_score = candidate_scores[0]
+            selection_path.append(
+                {
+                    'parent_node_id': cur.node_id,
+                    'parent_stage': cur.stage.value if cur.stage else '<ROOT>',
+                    'candidates': [
+                        {
+                            'node_id': node.node_id,
+                            'stage': node.stage.value if node.stage else '<ROOT>',
+                            'puct_score': float(score),
+                            'value': float(node.q_value),
+                            'visits': int(node.visits),
+                            'prior': float(node.prior),
+                            'content': node.text,
+                        }
+                        for node, score in candidate_scores
+                    ],
+                    'selected_child_id': chosen.node_id,
+                    'selected_child_score': float(chosen_score),
+                }
+            )
+            cur = chosen
+
+        return cur, float(self._leaf_score(cur)), selection_path
+
+    def _rank_expandable_leaves(self, root: SearchNode) -> list[tuple[SearchNode, float]]:
+        leaves = [node for node in self._iter_leaves(root) if self._next_stage(node.stage) is not None]
+        return self._rank_leaves(leaves)
+
+    def _subtree_has_expandable_leaf(self, node: SearchNode) -> bool:
+        if not node.children:
+            return self._next_stage(node.stage) is not None
+        return any(self._subtree_has_expandable_leaf(child) for child in node.children)
+
+    @staticmethod
+    def _normalize_priors(values: list[float]) -> list[float]:
+        if not values:
+            return []
+        cleaned = [max(0.0, float(v)) if v == v else 0.0 for v in values]
+        total = sum(cleaned)
+        if total <= 0:
+            return [1.0 / float(len(cleaned))] * len(cleaned)
+        return [float(v / total) for v in cleaned]
 
     def _rank_leaves(self, leaves: list[SearchNode]) -> list[tuple[SearchNode, float]]:
         ranked = [(node, self._leaf_score(node)) for node in leaves]
@@ -759,14 +891,13 @@ class FourStageMCTS:
             stack.extend(cur.children)
         return nodes
 
-    @staticmethod
-    def _next_stage(stage: Stage | None) -> Stage | None:
+    def _next_stage(self, stage: Stage | None) -> Stage | None:
         if stage is None:
-            return STAGE_ORDER[0]
-        idx = STAGE_ORDER.index(stage)
-        if idx >= len(STAGE_ORDER) - 1:
+            return self.stage_order[0]
+        idx = self.stage_order.index(stage)
+        if idx >= len(self.stage_order) - 1:
             return None
-        return STAGE_ORDER[idx + 1]
+        return self.stage_order[idx + 1]
 
     @staticmethod
     def _extract_stage_payload(stage: Stage, text: str) -> str:
@@ -906,3 +1037,6 @@ class FourStageMCTS:
 
         cleaned = "\n".join(code_lines).strip()
         return cleaned
+
+
+

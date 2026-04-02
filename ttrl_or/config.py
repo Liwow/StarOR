@@ -8,6 +8,7 @@ class MCTSConfig:
     max_iterations: int = 18
     c_puct: float = 1.414
     stop_on_reward_one: bool = False
+    solverllm_compare_mode: bool = False
 
 
 @dataclass(slots=True)
@@ -16,6 +17,7 @@ class RewardConfig:
     robustness_cases: int = 3
     global_consensus_rel_tol: float = 0.005
     code_executor_mode: str = "sandbox"  # sandbox or subprocess
+    cluster_scope: str = "global"  # global or local
 
     # ─── r1 (semantic cluster) settings ───
     r1_alpha: float = 0.6  # Smoothing parameter for r1
