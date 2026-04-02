@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 @dataclass(slots=True)
 class MCTSConfig:
-    max_iterations: int = 18
+    max_iterations: int = 20
     c_puct: float = 1.414
     stop_on_reward_one: bool = False
     solverllm_compare_mode: bool = False
@@ -17,13 +17,13 @@ class RewardConfig:
     robustness_cases: int = 3
     global_consensus_rel_tol: float = 0.005
     code_executor_mode: str = "sandbox"  # sandbox or subprocess
-    cluster_scope: str = "global"  # global or local
+    cluster_scope: str = "local"  # global or local
 
     # ─── r1 (semantic cluster) settings ───
     r1_alpha: float = 0.6  # Smoothing parameter for r1
     r1_min_clusters: int = 3  # Minimum K value for r1 denominator
 
-    enable_r3_reward: bool = True
+    enable_r3_reward: bool = False
         
     # ─── r4 (structural cluster) settings ───
     enable_r4_reward: bool = True  # Whether to enable r4
@@ -47,8 +47,8 @@ class GRPOConfig:
     gradient_accumulation_steps: int = 1
     num_generations: int = 3
     generation_batch_size: int = 0
-    max_prompt_length: int = 8196
-    max_completion_length: int = 2048
+    max_prompt_length: int = 10240
+    max_completion_length: int = 4096
 
     use_vllm: bool = False
     vllm_mode: str = "server"
@@ -75,14 +75,14 @@ class DatasetConfig:
     mapping_llm_temperature: float = 0.0
     mapping_llm_top_p: float = 1.0
 
-    r3_plan_max_new_tokens: int = 1200
+    r3_plan_max_new_tokens: int = 1024
     r3_plan_temperature: float = 0.0
-    r3_plan_top_p: float = 1.0
+    r3_plan_top_p: float = 0.3
 
 
 @dataclass(slots=True)
 class BackendConfig:
-    backend: str = "mock"
+    backend: str = "trl"
     model_name_or_path: str = ""
     seed: int = 7
     temperature: float = 0.8

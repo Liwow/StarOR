@@ -988,18 +988,19 @@ class TRLPolicyBackend(PolicyBackend):
             model_kwargs["dtype"] = dtype
 
         if torch.cuda.is_available():
-            # In multi-process training, each rank must bind to one GPU only.
-            if world_size > 1:
-                local_rank = min(local_rank, max(0, torch.cuda.device_count() - 1))
-                torch.cuda.set_device(local_rank)
-                model_kwargs["device_map"] = {"": local_rank}
-                if rank == 0:
-                    print(
-                        "[MODEL] multi-process load: binding each rank to one GPU "
-                        f"(world_size={world_size})."
-                    )
-            else:
-                model_kwargs["device_map"] = "auto"
+            # Always bind the training process to exactly one visible GPU.
+            # This prevents single-process runs from spilling onto the vLLM server GPU
+            # when multiple devices are visible in the environment.
+            local_rank = min(local_rank, max(0, torch.cuda.device_count() - 1))
+            torch.cuda.set_device(local_rank)
+            model_kwargs["device_map"] = {"": local_rank}
+            if rank == 0:
+                mode = "multi-process" if world_size > 1 else "single-process"
+                print(
+                    "[MODEL] forcing single-device load for trainer "
+                    f"(mode={mode}, world_size={world_size}, local_rank={local_rank}, "
+                    f"visible_cuda_devices={torch.cuda.device_count()})."
+                )
 
         try:
             base_model = transformers.AutoModelForCausalLM.from_pretrained(self.model_name_or_path, **model_kwargs)
