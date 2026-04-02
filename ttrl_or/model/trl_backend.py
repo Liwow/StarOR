@@ -795,6 +795,7 @@ class TRLPolicyBackend(PolicyBackend):
             return None
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "left"
         self._tokenizer = tokenizer
         return tokenizer
 
@@ -1178,6 +1179,8 @@ class TRLPolicyBackend(PolicyBackend):
 
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "left"
+
 
         lora_config = peft.LoraConfig(
             r=self.lora_r,
@@ -1557,4 +1560,5 @@ def _looks_like_vllm_comm_error(exc: Exception) -> bool:
         "close_communicator first",
     )
     return any(k in text for k in keys)
+
 
