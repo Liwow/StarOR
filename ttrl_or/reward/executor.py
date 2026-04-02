@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -76,7 +77,7 @@ class PythonCodeExecutor:
 
         self._sandbox_dir: Path | None = None
         self._runner_file: Path | None = None
-        self._sandbox_run_index: int = 0
+        self._thread_state = threading.local()
 
         if self.mode == "sandbox":
             self._init_sandbox()
@@ -110,19 +111,17 @@ class PythonCodeExecutor:
         self._runner_file = runner_file
 
     def _run_in_sandbox(self, code: str, instance: dict[str, Any]) -> ExecutionResult:
-        assert self._sandbox_dir is not None
-        assert self._runner_file is not None
+        worker_dir, runner_file, run_index = self._get_worker_sandbox()
 
         start = time.perf_counter()
-        self._sandbox_run_index += 1
-        solution_file = self._sandbox_dir / f"solution_{self._sandbox_run_index}.py"
+        solution_file = worker_dir / f"solution_{run_index}.py"
         solution_file.write_text(code, encoding="utf-8")
 
         return self._invoke_runner(
-            runner_path=self._runner_file,
+            runner_path=runner_file,
             solution_path=solution_file,
             instance=instance,
-            cwd=self._sandbox_dir,
+            cwd=worker_dir,
             start=start,
         )
 
@@ -142,6 +141,26 @@ class PythonCodeExecutor:
                 cwd=temp_dir,
                 start=start,
             )
+
+    def _get_worker_sandbox(self) -> tuple[Path, Path, int]:
+        assert self._sandbox_dir is not None
+
+        worker_dir = getattr(self._thread_state, "worker_dir", None)
+        runner_file = getattr(self._thread_state, "runner_file", None)
+        run_index = int(getattr(self._thread_state, "run_index", 0)) + 1
+
+        if worker_dir is None or runner_file is None:
+            worker_name = f"worker_{threading.get_ident()}"
+            worker_dir = self._sandbox_dir / worker_name
+            worker_dir.mkdir(parents=True, exist_ok=True)
+            runner_file = worker_dir / "runner.py"
+            if not runner_file.exists():
+                runner_file.write_text(_RUNNER_CODE, encoding="utf-8")
+            self._thread_state.worker_dir = worker_dir
+            self._thread_state.runner_file = runner_file
+
+        self._thread_state.run_index = run_index
+        return worker_dir, runner_file, run_index
 
     def _invoke_runner(
         self,

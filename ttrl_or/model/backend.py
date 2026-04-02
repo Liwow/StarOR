@@ -109,6 +109,29 @@ class PolicyBackend(ABC):
         """
         return None
 
+    def generate_auxiliary_texts(
+        self,
+        prompts: list[str],
+        *,
+        max_new_tokens: int = 1024,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        prefer_vllm: bool = False,
+        vllm_mode: str = "",
+    ) -> list[str | None]:
+        """Batch auxiliary generation fallback: run one-by-one unless backend overrides it."""
+        return [
+            self.generate_auxiliary_text(
+                prompt,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                prefer_vllm=prefer_vllm,
+                vllm_mode=vllm_mode,
+            )
+            for prompt in prompts
+        ]
+
     def generate_test_instances(self, task: OptimizationTask, k: int) -> list[dict[str, Any]]:
         """Optional: model-authored robustness tests (r3)."""
         return []

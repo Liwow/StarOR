@@ -11,9 +11,14 @@ export NCCL_SOCKET_IFNAME=eth0
 # Edit Here: TTRL-OR Common Parameters
 # =====================================
 export CUDA_VISIBLE_DEVICES=0
-# Set 1 for single-card, 2/4 for multi-card (must be <= visible GPU count)
+# Launch config
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 MASTER_PORT="${MASTER_PORT:-29500}"
+MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
+MACHINE_RANK="${MACHINE_RANK:-0}"
+NUM_MACHINES="${NUM_MACHINES:-1}"
+ACCELERATE_MIXED_PRECISION="${ACCELERATE_MIXED_PRECISION:-no}"
+ACCELERATE_CONFIG_FILE="${ACCELERATE_CONFIG_FILE:-}"
 
 BACKEND="${BACKEND:-trl}"
 # MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
@@ -91,15 +96,23 @@ is_true() {
   [[ "$lowered" == "true" || "$lowered" == "1" || "$lowered" == "yes" || "$lowered" == "y" ]]
 }
 
-if (( NPROC_PER_NODE == 1 && VLLM_TENSOR_PARALLEL_SIZE > 1 )); then
-  echo "[WARN] NPROC_PER_NODE=1 but VLLM_TENSOR_PARALLEL_SIZE=${VLLM_TENSOR_PARALLEL_SIZE}."
-  echo "[WARN] Runtime may auto-fallback TP to 1."
+VISIBLE_GPU_COUNT=$(visible_gpu_count "${CUDA_VISIBLE_DEVICES}")
+
+if is_true "${USE_VLLM}" && [[ "${VLLM_MODE}" == "colocate" ]]; then
+  if (( VISIBLE_GPU_COUNT == 0 )); then
+    echo "[WARN] CUDA_VISIBLE_DEVICES is empty under colocate mode."
+  elif (( VLLM_TENSOR_PARALLEL_SIZE > VISIBLE_GPU_COUNT )); then
+    echo "[WARN] VLLM_TENSOR_PARALLEL_SIZE=${VLLM_TENSOR_PARALLEL_SIZE} exceeds visible GPU count ${VISIBLE_GPU_COUNT}."
+    echo "[WARN] TRL/vLLM may fail or auto-fallback."
+  else
+    echo "[INFO] colocate mode: WORLD_SIZE/NPROC_PER_NODE=${NPROC_PER_NODE}, visible GPUs=${VISIBLE_GPU_COUNT}, vLLM TP=${VLLM_TENSOR_PARALLEL_SIZE}."
+    echo "[INFO] In official colocate mode, each rank trains on its local GPU and also participates in colocated vLLM generation."
+  fi
 fi
 
-if (( NPROC_PER_NODE > 1 )) && is_true "${USE_VLLM}" && [[ "${VLLM_MODE}" == "colocate" ]]; then
-  echo "[WARN] multi-process training with vLLM colocate is unstable and may duplicate GPU memory/processes."
-  echo "[WARN] Auto-disabling USE_VLLM for this run. Use VLLM_MODE=server if you need external vLLM."
-  USE_VLLM=false
+if (( VLLM_TENSOR_PARALLEL_SIZE > 1 && VISIBLE_GPU_COUNT <= 1 )); then
+  echo "[WARN] VLLM_TENSOR_PARALLEL_SIZE=${VLLM_TENSOR_PARALLEL_SIZE}, but visible GPUs=${VISIBLE_GPU_COUNT}."
+  echo "[WARN] Runtime may auto-fallback TP to 1 or fail if colocate/server settings are inconsistent."
 fi
 
 
@@ -175,18 +188,34 @@ if is_true "${TRUST_REMOTE_CODE}"; then
 fi
 
 if (( NPROC_PER_NODE > 1 )); then
-  CMD=(torchrun --standalone --nproc_per_node "${NPROC_PER_NODE}" --master_port "${MASTER_PORT}" "${BASE_CMD[@]}")
+  CMD=(accelerate launch --multi_gpu)
+  if [[ -n "${ACCELERATE_CONFIG_FILE}" && -f "${ACCELERATE_CONFIG_FILE}" ]]; then
+    CMD+=(--config_file "${ACCELERATE_CONFIG_FILE}")
+  fi
+  CMD+=(
+    --num_processes "${NPROC_PER_NODE}"
+    --num_machines "${NUM_MACHINES}"
+    --machine_rank "${MACHINE_RANK}"
+    --main_process_ip "${MASTER_ADDR}"
+    --main_process_port "${MASTER_PORT}"
+    --mixed_precision "${ACCELERATE_MIXED_PRECISION}"
+    "${BASE_CMD[@]}"
+  )
 else
   CMD=(python "${BASE_CMD[@]}")
 fi
 
 echo "[TTRL-OR] NPROC_PER_NODE=${NPROC_PER_NODE} BACKEND=${BACKEND}"
+echo "[TTRL-OR] MASTER_ADDR=${MASTER_ADDR} MASTER_PORT=${MASTER_PORT} NUM_MACHINES=${NUM_MACHINES} MACHINE_RANK=${MACHINE_RANK}"
 echo "[TTRL-OR] MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH}"
 echo "[TTRL-OR] DATASET_JSONL=${DATASET_JSONL} START=${DATASET_START_INDEX} LIMIT=${DATASET_LIMIT}"
 echo "[TTRL-OR] SOLVERLLM_COMPARE_MODE=${SOLVERLLM_COMPARE_MODE}"
+echo "[TTRL-OR] ACCELERATE_MIXED_PRECISION=${ACCELERATE_MIXED_PRECISION} ACCELERATE_CONFIG_FILE=${ACCELERATE_CONFIG_FILE:-<none>}"
+echo "[TTRL-OR] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} USE_VLLM=${USE_VLLM} VLLM_MODE=${VLLM_MODE} VISIBLE_GPU_COUNT=${VISIBLE_GPU_COUNT} VLLM_TP=${VLLM_TENSOR_PARALLEL_SIZE}"
 
 echo "[TTRL-OR] Running command:"
 printf ' %q' "${CMD[@]}"
 echo
 
 "${CMD[@]}"
+

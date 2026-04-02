@@ -152,25 +152,87 @@ class FourStageMCTS:
                     prompt=base_prompt,
                 )
 
-                complete_t0 = time.perf_counter()
-                completed = self._complete_for_reward_from_rollout(task, child, completion_text)
-                complete_sec = float(time.perf_counter() - complete_t0)
-
                 return {
                     "rollout_index": ridx,
                     "callback_started": callback_t0,
                     "child": child,
-                    "trajectory": completed,
+                    "trajectory": None,
                     "completion_full": completion_text,
                     "answer_current_stage": parsed_text,
                     "answer_rollout_suffix": "",
                     "parse_sec": parse_sec,
-                    "complete_sec": complete_sec,
+                    "complete_sec": 0.0,
                 }
+
+            def _complete_prepared_group(prepared_items: list[dict[str, Any]]) -> None:
+                if not prepared_items:
+                    return
+
+                complete_t0 = time.perf_counter()
+                average_complete_sec = 0.0
+
+                if self.split_rollout_completion and next_stage != Stage.CODE:
+                    prompts: list[str] = []
+                    prompt_indices: list[int] = []
+                    for idx, item in enumerate(prepared_items):
+                        child = item["child"]
+                        partial = child.to_partial_trajectory()
+                        partial.trajectory_id = str(uuid.uuid4())
+                        completion_prompt = self.prompt_builder.build_completion(task, child.stage, partial)
+                        item["split_completion_prompt"] = completion_prompt
+                        if completion_prompt.strip():
+                            prompts.append(completion_prompt)
+                            prompt_indices.append(idx)
+
+                    completion_texts: list[str | None] = []
+                    if prompts:
+                        batch_method = getattr(self.backend, "generate_auxiliary_texts", None)
+                        if callable(batch_method):
+                            completion_texts = list(
+                                batch_method(
+                                    prompts,
+                                    max_new_tokens=int(getattr(self.backend, "max_new_tokens", 2048) or 2048),
+                                    temperature=float(getattr(self.backend, "temperature", 0.0) or 0.0),
+                                    top_p=float(getattr(self.backend, "top_p", 1.0) or 1.0),
+                                    prefer_vllm=bool(self._active_grpo_config.use_vllm) if self._active_grpo_config is not None else False,
+                                    vllm_mode=str(self._active_grpo_config.vllm_mode) if self._active_grpo_config is not None else "",
+                                )
+                            )
+                        else:
+                            completion_texts = []
+
+                    mapped_texts: list[str | None] = [None for _ in prepared_items]
+                    for local_idx, prepared_idx in enumerate(prompt_indices):
+                        mapped_texts[prepared_idx] = completion_texts[local_idx] if local_idx < len(completion_texts) else None
+
+                    total_complete_sec = float(time.perf_counter() - complete_t0)
+                    average_complete_sec = total_complete_sec / max(1, len(prepared_items))
+
+                    for idx, item in enumerate(prepared_items):
+                        child = item["child"]
+                        completion_text = str(mapped_texts[idx] or "")
+                        item["answer_rollout_suffix"] = completion_text
+                        item["complete_sec"] = average_complete_sec
+                        if completion_text.strip():
+                            item["trajectory"] = self._trajectory_from_rollout_completion(child, completion_text)
+                        else:
+                            item["trajectory"] = self.rollout_to_code(task, child)
+                    return
+
+                for item in prepared_items:
+                    child = item["child"]
+                    completion_text = str(item.get("completion_full", ""))
+                    item["trajectory"] = self._complete_for_reward_from_rollout(task, child, completion_text)
+                total_complete_sec = float(time.perf_counter() - complete_t0)
+                average_complete_sec = total_complete_sec / max(1, len(prepared_items))
+                for item in prepared_items:
+                    item["complete_sec"] = average_complete_sec
 
             def _score_prepared_group(prepared_items: list[dict[str, Any]]) -> list[float]:
                 if not prepared_items:
                     return []
+
+                _complete_prepared_group(prepared_items)
 
                 reward_t0 = time.perf_counter()
                 trajectories = [item["trajectory"] for item in prepared_items]

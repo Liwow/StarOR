@@ -410,7 +410,9 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
     print(f"[r3-batch] rank={rank}/{world_size} start precompute for {len(samples)} samples")
 
     aux_gen = getattr(runner.backend, "generate_auxiliary_text", None)
+    aux_gen_batch = getattr(runner.backend, "generate_auxiliary_texts", None)
     can_llm = callable(aux_gen)
+    can_llm_batch = callable(aux_gen_batch)
     use_vllm = bool(cfg.grpo.use_vllm)
     vllm_mode = str(cfg.grpo.vllm_mode or "")
 
@@ -418,21 +420,47 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
     dataset_name = (samples[0].dataset if samples else "dataset")
     dataset_dir = Path(cfg.log_dir)
 
-    for idx, sample in enumerate(samples, start=1):
+    base_instances: list[dict[str, Any]] = []
+    prompts: list[str] = []
+    for sample in samples:
         base_instance = _build_base_instance_for_sample(sample, cfg)
-
-        llm_text = None
-        precompute_status = "disabled"
-
-        if can_llm:
-            prompt = build_r3_planner_prompt(
+        base_instances.append(base_instance)
+        prompts.append(
+            build_r3_planner_prompt(
                 sample_id=sample.sample_id,
                 description=sample.question,
                 instance=base_instance,
                 num_tests=max(1, int(cfg.reward.robustness_cases)),
             )
+        )
+
+    llm_texts: list[str | None] = [None for _ in samples]
+    if can_llm_batch and prompts:
+        batch_size = min(16, max(1, len(prompts)))
+        for start_idx in range(0, len(prompts), batch_size):
+            batch_prompts = prompts[start_idx:start_idx + batch_size]
             try:
-                llm_text = aux_gen(
+                batch_outputs = list(
+                    aux_gen_batch(
+                        batch_prompts,
+                        max_new_tokens=int(cfg.dataset.r3_plan_max_new_tokens),
+                        temperature=float(cfg.dataset.r3_plan_temperature),
+                        top_p=float(cfg.dataset.r3_plan_top_p),
+                        prefer_vllm=use_vllm,
+                        vllm_mode=vllm_mode,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                batch_outputs = [None for _ in batch_prompts]
+                print(f"[r3-batch][WARN] planner batch generation failed at chunk={start_idx}: {type(exc).__name__}: {exc}")
+            for local_idx, value in enumerate(batch_outputs):
+                abs_idx = start_idx + local_idx
+                if abs_idx < len(llm_texts):
+                    llm_texts[abs_idx] = value
+    elif can_llm and prompts:
+        for idx_prompt, prompt in enumerate(prompts):
+            try:
+                llm_texts[idx_prompt] = aux_gen(
                     prompt,
                     max_new_tokens=int(cfg.dataset.r3_plan_max_new_tokens),
                     temperature=float(cfg.dataset.r3_plan_temperature),
@@ -441,8 +469,13 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
                     vllm_mode=vllm_mode,
                 )
             except Exception as exc:  # noqa: BLE001
-                llm_text = None
-                print(f"[r3-batch][WARN] sample={sample.sample_id} planner generation failed: {type(exc).__name__}: {exc}")
+                llm_texts[idx_prompt] = None
+                print(f"[r3-batch][WARN] sample={samples[idx_prompt].sample_id} planner generation failed: {type(exc).__name__}: {exc}")
+
+    for idx, sample in enumerate(samples, start=1):
+        base_instance = base_instances[idx - 1]
+        llm_text = llm_texts[idx - 1]
+        precompute_status = "disabled"
 
         plan = build_sample_r3_plan(
             sample_id=sample.sample_id,

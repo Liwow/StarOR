@@ -1,4 +1,4 @@
-﻿# TTRL-OR
+# TTRL-OR
 
 A modular prototype for **test-time reinforcement learning** on optimization modeling tasks.
 
@@ -66,6 +66,8 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip setuptools wheel
 pip install -e ".[hf,dev]"
+# if you want TRL + vLLM server/colocate generation on Linux CUDA:
+pip install vllm
 ```
 
 If your pip still fails editable install, use fallback:
@@ -79,7 +81,6 @@ Notes:
 
 - `setup.py` is included for compatibility with older tooling.
 - `pyproject.toml` is the primary package configuration.
-
 ## Data Reading (Raw JSONL First)
 
 You can now run directly on the original raw files under `data/*.jsonl` (no unified conversion required).
@@ -159,15 +160,15 @@ All launch scripts are under `scripts/`.
 - `CUDA_VISIBLE_DEVICES`
 - `NPROC_PER_NODE` (training process count)
   - single-card: `NPROC_PER_NODE=1`
-  - multi-card: `NPROC_PER_NODE=2` (or 4)
+  - colocate 2-card: `NPROC_PER_NODE=2`
 - `MODEL_NAME_OR_PATH`
 - `DATASET_JSONL`, `DATASET_LIMIT`, `RESUME_SKIP_COMPLETED`
 - `USE_VLLM`, `VLLM_MODE`
 - `REWARD_CLUSTER_SCOPE` (`local` or `global`)
 
-`run.sh` now auto-selects launcher:
+`run.sh` auto-selects launcher:
 - `NPROC_PER_NODE=1` -> `python -m ttrl_or ...`
-- `NPROC_PER_NODE>1` -> `torchrun --nproc_per_node=N -m ttrl_or ...`
+- `NPROC_PER_NODE>1` -> `accelerate launch --num_processes N -m ttrl_or ...`
 
 2. (Optional) Terminal A: start vLLM service for server mode
 
@@ -182,7 +183,6 @@ If communicator/state is stale, stop it first:
 PORT=8000 scripts/stop_vllm_server.sh
 ```
 
-
 Important: for `--grpo-vllm-mode server`, do NOT start plain `vllm.entrypoints.openai.api_server` directly. Use `trl vllm-serve` (our script does this by default), otherwise TRL can fail on `init_communicator` with 404.
 
 If you hit `Weight update group already initialized`, stop server processes (`scripts/stop_vllm_server.sh`) and restart `scripts/start_vllm_server.sh`.
@@ -192,6 +192,28 @@ If you hit `Weight update group already initialized`, stop server processes (`sc
 ```bash
 scripts/run.sh
 ```
+
+For colocate mode on a single node with 2 GPUs, use the dedicated script instead of starting an external server:
+
+```bash
+bash scripts/run_colocate.sh
+```
+
+The colocate helper uses `scripts/accelerate_colocate.yaml` as the default Accelerate config file.
+
+Recommended colocate shape in this repo:
+- `CUDA_VISIBLE_DEVICES=0,1`
+- `NPROC_PER_NODE=2`
+- `USE_VLLM=true`
+- `VLLM_MODE=colocate`
+- launcher: `accelerate launch`
+- Do not run `scripts/start_vllm_server.sh`
+
+Recommended starting point for 2 GPUs:
+- `VLLM_TENSOR_PARALLEL_SIZE=1`: each rank keeps a local colocated vLLM engine
+- `VLLM_TENSOR_PARALLEL_SIZE=2`: both GPUs form one TP group for a single vLLM replica
+
+Why: official TRL/vLLM colocate mode is a shared-GPU mode. Training and inference share the same GPUs, and each distributed rank trains on its local GPU while also participating in colocated vLLM generation.
 
 Resume behavior: when `RESUME_SKIP_COMPLETED=true` (default), completed samples are skipped by checking `best_code.py` under `LOG_DIR/model_{mode}_{id}/<dataset_name>/<sample_id>/best_code.py`.
 
@@ -209,7 +231,7 @@ This wrapper runs `scripts/run.sh` in chunks (`--dataset-start-index/--dataset-l
 
 Set `USE_VLLM=false` in `scripts/run.sh`, then run the same script.
 
-Note: in `scripts/run.sh`, if `NPROC_PER_NODE>1` and `VLLM_MODE=colocate`, the script will auto-disable `USE_VLLM` to avoid duplicated GPU memory usage.
+Use `scripts/run_colocate.sh` for the recommended Accelerate-based multi-GPU colocate setup.
 
 Useful knobs:
 
@@ -274,8 +296,12 @@ All defaults are defined in `ttrl_or/config.py`.
   - `False`: default HF generation path.
   - `True`: pass vLLM options into TRL (effective only if your TRL version supports them).
 - `vllm_mode`: vLLM run mode passed to TRL (commonly `server` or `colocate`, depending on TRL version).
+  - `server`: external `trl vllm-serve` process; good when you want training GPU(s) and inference GPU(s) separated.
+  - `colocate`: vLLM shares the same GPUs as training. In this repo, the recommended shape is distributed launch with `accelerate launch`, for example `CUDA_VISIBLE_DEVICES=0,1`, `NPROC_PER_NODE=2`, and `vllm_tensor_parallel_size=1` or `2`.
 - `vllm_gpu_memory_utilization` (Key): target fraction of GPU memory reserved by vLLM KV/cache scheduler.
+  - In colocate mode, start conservatively because training model and vLLM share the same process memory budget.
 - `vllm_tensor_parallel_size` (Key): TP shard count for vLLM inference workers.
+  - For 2-GPU colocate, usually set this to `2`.
 - `vllm_max_model_len` (Key): max sequence length used by vLLM engine.
 - `vllm_max_num_batched_tokens` (Key): max tokens in one vLLM scheduling batch. For colocate mode, keep it >= `vllm_max_model_len` (or leave 0 for auto-align).
 - `vllm_enable_sleep_mode`: optional vLLM sleep mode (if your TRL version supports it).
@@ -412,5 +438,7 @@ scripts/start_vllm_server.sh
 ```
 
 The backend now also clamps prompt/completion lengths under `vllm_max_model_len` and logs a warning when clamping is applied.
+
+
 
 

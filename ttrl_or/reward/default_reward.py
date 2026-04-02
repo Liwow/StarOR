@@ -3,7 +3,10 @@
 import hashlib
 import json
 import math
+import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -23,6 +26,7 @@ class TTRLRewardCalculator(RewardCalculator):
     config: RewardConfig
     executor: PythonCodeExecutor = field(init=False)
     _exec_cache: dict[str, ExecutionResult] = field(default_factory=dict, init=False)
+    _exec_cache_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _semantic_cluster: SemanticCluster = field(init=False)
     _structural_cluster: StructuralCluster = field(init=False)
     _current_iteration: int = field(default=0, init=False)
@@ -70,9 +74,10 @@ class TTRLRewardCalculator(RewardCalculator):
         base_obj_bounds = self._base_obj_bounds()
         local_scope = self._use_local_cluster_scope()
 
+        execution_pairs = self._execute_group(trajectories)
+
         evals: list[dict[str, Any]] = []
-        for traj in trajectories:
-            execution, exec_cache_hit = self._execute(traj)
+        for traj, (execution, exec_cache_hit) in zip(trajectories, execution_pairs, strict=False):
             effective_success = self._effective_execution_success(execution)
             obj_answer = self._extract_objective_from_execution(execution)
             code_text = str(traj.code or "")
@@ -415,15 +420,15 @@ class TTRLRewardCalculator(RewardCalculator):
                 "num_cases": 0,
             }
 
-        details: list[dict] = []
-        for idx, raw_case in enumerate(tests):
-            case_instance, case_bounds, case_meta = self._normalize_r3_case(raw_case)
+        normalized_cases = [self._normalize_r3_case(raw_case) for raw_case in tests]
+
+        def _run_case(args: tuple[int, tuple[dict[str, Any], dict[str, float | None], dict[str, Any]]]) -> dict[str, Any]:
+            idx, (case_instance, case_bounds, case_meta) = args
             res = self.executor.run(trajectory.code, case_instance)
             effective_success = self._effective_execution_success(res)
             case_obj = self._extract_objective_from_execution(res)
             obj_in_bounds = self._objective_within_bounds(case_obj, case_bounds)
-
-            detail = {
+            return {
                 "case_index": idx,
                 "success": bool(res.success),
                 "effective_success": bool(effective_success),
@@ -435,16 +440,29 @@ class TTRLRewardCalculator(RewardCalculator):
                 "changes": list(case_meta.get("changes", [])) if isinstance(case_meta, dict) else [],
                 "case_id": str(case_meta.get("case_id", f"case_{idx}")) if isinstance(case_meta, dict) else f"case_{idx}",
             }
-            details.append(detail)
 
-            if (not effective_success) or (not obj_in_bounds):
-                return 0.0, {
-                    "enabled": True,
-                    "source": source,
-                    "num_cases": len(tests),
-                    "failed_case_index": idx,
-                    "cases": details,
-                }
+        max_workers = min(len(normalized_cases), max(1, min(8, os.cpu_count() or 1)))
+        if len(normalized_cases) <= 1:
+            details = [_run_case((0, normalized_cases[0]))] if normalized_cases else []
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                details = list(pool.map(_run_case, list(enumerate(normalized_cases))))
+            details.sort(key=lambda x: int(x.get("case_index", 0)))
+
+        failed_case_index = None
+        for detail in details:
+            if (not bool(detail.get("effective_success"))) or (not bool(detail.get("obj_in_bounds"))):
+                failed_case_index = int(detail.get("case_index", -1))
+                break
+
+        if failed_case_index is not None:
+            return 0.0, {
+                "enabled": True,
+                "source": source,
+                "num_cases": len(tests),
+                "failed_case_index": failed_case_index,
+                "cases": details,
+            }
 
         return 1.0, {
             "enabled": True,
@@ -452,6 +470,16 @@ class TTRLRewardCalculator(RewardCalculator):
             "num_cases": len(tests),
             "cases": details,
         }
+
+    def _execute_group(self, trajectories: list[Trajectory]) -> list[tuple[ExecutionResult, bool]]:
+        if not trajectories:
+            return []
+        if len(trajectories) == 1:
+            return [self._execute(trajectories[0])]
+
+        max_workers = min(len(trajectories), max(1, min(8, os.cpu_count() or 1)))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            return list(pool.map(self._execute, trajectories))
 
     def _load_r3_tests(self) -> tuple[list[dict[str, Any]], str]:
         precomputed = self._precomputed_r3_cases(self.config.robustness_cases)
@@ -565,11 +593,17 @@ class TTRLRewardCalculator(RewardCalculator):
 
     def _execute(self, trajectory: Trajectory) -> tuple[ExecutionResult, bool]:
         cache_key = self._execution_cache_key(trajectory.code, self.task.instance)
-        if cache_key in self._exec_cache:
-            return self._exec_cache[cache_key], True
+        with self._exec_cache_lock:
+            cached = self._exec_cache.get(cache_key)
+        if cached is not None:
+            return cached, True
 
         result = self.executor.run(trajectory.code, self.task.instance)
-        self._exec_cache[cache_key] = result
+        with self._exec_cache_lock:
+            existing = self._exec_cache.get(cache_key)
+            if existing is not None:
+                return existing, True
+            self._exec_cache[cache_key] = result
         return result, False
 
     @staticmethod

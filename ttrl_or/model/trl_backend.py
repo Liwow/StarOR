@@ -61,6 +61,7 @@ class TRLPolicyBackend(PolicyBackend):
     _warned_lora_persist_across_tasks: bool = field(init=False, default=False, repr=False)
     _warned_vllm_len_clamp: bool = field(init=False, default=False, repr=False)
     _warned_strict_group_override: bool = field(init=False, default=False, repr=False)
+    _active_trainer_for_aux: Any = field(init=False, default=None, repr=False)
 
     def begin_episode(self, task: OptimizationTask) -> None:
         self._episode_key = task.task_id
@@ -306,20 +307,26 @@ class TRLPolicyBackend(PolicyBackend):
 
         self._model.eval()
         prompt_text = _normalize_text(prompt)
-        raw_scores: list[float] = []
         gamma = 1.0
         tau = 1.0
 
+        action_blocks: list[str] = []
+        valid_mask: list[bool] = []
         for candidate in candidates:
             action_block = self._canonical_action_block(stage, str(candidate or ''))
             if not action_block:
-                raw_scores.append(float('-inf'))
-                continue
-            try:
-                raw_scores.append(self._teacher_forced_action_score(prompt_text, action_block, gamma=gamma))
-            except Exception:
-                raw_scores.append(float('-inf'))
+                action_blocks.append('')
+                valid_mask.append(False)
+            else:
+                action_blocks.append(action_block)
+                valid_mask.append(True)
 
+        try:
+            raw_scores = self._teacher_forced_action_scores(prompt_text, action_blocks, gamma=gamma)
+        except Exception:
+            raw_scores = [float('-inf')] * len(candidates)
+
+        raw_scores = [score if valid else float('-inf') for score, valid in zip(raw_scores, valid_mask, strict=False)]
         valid = [score for score in raw_scores if math.isfinite(score)]
         if not valid:
             n = len(candidates)
@@ -546,14 +553,46 @@ class TRLPolicyBackend(PolicyBackend):
         prefer_vllm: bool = False,
         vllm_mode: str = "",
     ) -> str | None:
+        outputs = self.generate_auxiliary_texts(
+            [prompt],
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            prefer_vllm=prefer_vllm,
+            vllm_mode=vllm_mode,
+        )
+        return outputs[0] if outputs else None
+
+    def generate_auxiliary_texts(
+        self,
+        prompts: list[str],
+        *,
+        max_new_tokens: int = 1024,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        prefer_vllm: bool = False,
+        vllm_mode: str = "",
+    ) -> list[str | None]:
+        if not prompts:
+            return []
+
         if bool(prefer_vllm):
-            out = self._generate_auxiliary_vllm_server(
-                prompt=prompt,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                vllm_mode=vllm_mode,
-            )
+            mode = str(vllm_mode or "").lower()
+            if mode == "colocate":
+                out = self._generate_auxiliary_vllm_colocate_batch(
+                    prompts=prompts,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                )
+            else:
+                out = self._generate_auxiliary_vllm_server_batch(
+                    prompts=prompts,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    vllm_mode=vllm_mode,
+                )
             if out:
                 return out
 
@@ -561,10 +600,10 @@ class TRLPolicyBackend(PolicyBackend):
             # Lazy-load base model once for pre-MCTS auxiliary planning.
             self._load_fresh_episode_model()
         if self._model is None or self._tokenizer is None:
-            return None
+            return [None for _ in prompts]
 
         self._model.eval()
-        inputs = self._tokenizer(prompt, return_tensors="pt")
+        inputs = self._tokenizer(prompts, return_tensors="pt", padding=True)
         device = self._infer_device()
         inputs = {k: v.to(device) for k, v in inputs.items()}
 
@@ -585,11 +624,79 @@ class TRLPolicyBackend(PolicyBackend):
         with torch.no_grad():
             output = self._model.generate(**inputs, **gen_kwargs)
 
-        prompt_len = inputs["input_ids"].shape[1]
-        completion_ids = output[0][prompt_len:]
-        completion = self._tokenizer.decode(completion_ids, skip_special_tokens=True)
-        return completion.strip()
+        prompt_lens = inputs["attention_mask"].sum(dim=1).tolist()
+        texts: list[str | None] = []
+        for idx, prompt_len in enumerate(prompt_lens):
+            completion_ids = output[idx][int(prompt_len):]
+            completion = self._tokenizer.decode(completion_ids, skip_special_tokens=True).strip()
+            texts.append(completion or None)
+        return texts
 
+
+    def _generate_auxiliary_vllm_colocate_batch(
+        self,
+        *,
+        prompts: list[str],
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+    ) -> list[str | None]:
+        if not prompts:
+            return []
+
+        trainer = self._active_trainer_for_aux
+        if trainer is None:
+            return []
+
+        tokenizer = self._ensure_tokenizer_for_auxiliary_vllm()
+        if tokenizer is None:
+            return []
+
+        vgen = getattr(trainer, "vllm_generation", None)
+        client = getattr(vgen, "vllm_client", None) if vgen is not None else None
+
+        response = None
+        try:
+            if client is not None and hasattr(client, "generate"):
+                response = client.generate(
+                    prompts=list(prompts),
+                    n=1,
+                    temperature=float(max(0.0, temperature)),
+                    top_p=float(top_p),
+                    max_tokens=int(max_new_tokens),
+                    logprobs=0,
+                )
+            elif vgen is not None and hasattr(vgen, "generate"):
+                response = vgen.generate(
+                    prompts=list(prompts),
+                    n=1,
+                    temperature=float(max(0.0, temperature)),
+                    top_p=float(top_p),
+                    max_tokens=int(max_new_tokens),
+                    logprobs=0,
+                )
+        except Exception:
+            return []
+
+        completion_ids = response.get("completion_ids") if isinstance(response, dict) else None
+        if not isinstance(completion_ids, list) or not completion_ids:
+            return []
+
+        texts: list[str | None] = []
+        for item in completion_ids[: len(prompts)]:
+            if not isinstance(item, list) or not item:
+                texts.append(None)
+                continue
+            try:
+                text = tokenizer.decode(item, skip_special_tokens=True)
+            except Exception:
+                texts.append(None)
+                continue
+            texts.append(str(text or "").strip() or None)
+
+        while len(texts) < len(prompts):
+            texts.append(None)
+        return texts
 
     def _generate_auxiliary_vllm_server(
         self,
@@ -600,32 +707,52 @@ class TRLPolicyBackend(PolicyBackend):
         top_p: float,
         vllm_mode: str,
     ) -> str | None:
+        outputs = self._generate_auxiliary_vllm_server_batch(
+            prompts=[prompt],
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            vllm_mode=vllm_mode,
+        )
+        return outputs[0] if outputs else None
+
+    def _generate_auxiliary_vllm_server_batch(
+        self,
+        *,
+        prompts: list[str],
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+        vllm_mode: str,
+    ) -> list[str | None]:
         # Prefer external TRL vLLM server only for server mode.
         if str(vllm_mode or "").lower() != "server":
-            return None
+            return []
+        if not prompts:
+            return []
 
         try:
             trl = _import_trl()
         except Exception:
-            return None
+            return []
 
         base_url = (os.environ.get("VLLM_BASE_URL") or "http://127.0.0.1:8000").rstrip("/")
         client_cls = _resolve_trl_vllm_client(trl)
         if client_cls is None:
-            return None
+            return []
 
         tokenizer = self._ensure_tokenizer_for_auxiliary_vllm()
         if tokenizer is None:
-            return None
+            return []
 
         try:
             client = client_cls(base_url=base_url)
         except Exception:
-            return None
+            return []
 
         try:
             response = client.generate(
-                prompts=[prompt],
+                prompts=list(prompts),
                 n=1,
                 temperature=float(max(0.0, temperature)),
                 top_p=float(top_p),
@@ -633,21 +760,27 @@ class TRLPolicyBackend(PolicyBackend):
                 logprobs=0,
             )
         except Exception:
-            return None
+            return []
 
         completion_ids = response.get("completion_ids") if isinstance(response, dict) else None
         if not isinstance(completion_ids, list) or not completion_ids:
-            return None
+            return []
 
-        first_ids = completion_ids[0]
-        if not isinstance(first_ids, list) or not first_ids:
-            return None
+        texts: list[str | None] = []
+        for item in completion_ids[: len(prompts)]:
+            if not isinstance(item, list) or not item:
+                texts.append(None)
+                continue
+            try:
+                text = tokenizer.decode(item, skip_special_tokens=True)
+            except Exception:
+                texts.append(None)
+                continue
+            texts.append(str(text or "").strip() or None)
 
-        try:
-            text = tokenizer.decode(first_ids, skip_special_tokens=True)
-        except Exception:
-            return None
-        return str(text or "").strip() or None
+        while len(texts) < len(prompts):
+            texts.append(None)
+        return texts
 
     def _ensure_tokenizer_for_auxiliary_vllm(self):
         if self._tokenizer is not None:
@@ -701,6 +834,7 @@ class TRLPolicyBackend(PolicyBackend):
         try:
             self._vllm_server_maintenance(config=config, before_train=True, after_train=False)
             trainer = trl.GRPOTrainer(**trainer_kwargs)
+            self._active_trainer_for_aux = trainer
             train_result = trainer.train()
             return train_result, False
         except Exception as exc:
@@ -738,11 +872,14 @@ class TRLPolicyBackend(PolicyBackend):
             fallback_trainer = None
             try:
                 fallback_trainer = trl.GRPOTrainer(**fallback_kwargs)
+                self._active_trainer_for_aux = fallback_trainer
                 train_result = fallback_trainer.train()
                 return train_result, True
             finally:
+                self._active_trainer_for_aux = None
                 self._cleanup_trainer_vllm(fallback_trainer)
         finally:
+            self._active_trainer_for_aux = None
             self._cleanup_trainer_vllm(trainer)
             self._vllm_server_maintenance(config=config, before_train=False, after_train=True)
 
@@ -875,16 +1012,9 @@ class TRLPolicyBackend(PolicyBackend):
                 self._warned_vllm_disabled_for_run = True
             effective_use_vllm = False
 
-        # Multi-process + colocate tends to start duplicate vLLM engines per rank.
-        # Disable this combination to avoid doubled memory/process contention.
-        if effective_use_vllm and world_size > 1 and str(config.vllm_mode).lower() == "colocate":
-            if rank == 0:
-                print(
-                    "[GRPO][WARN] Disabling use_vllm for multi-process colocate mode "
-                    f"(world_size={world_size}, vllm_mode={config.vllm_mode}). "
-                    "Use server mode for external vLLM, or keep use_vllm=False for stable multi-GPU training."
-                )
-            effective_use_vllm = False
+        # Official TRL colocate mode supports distributed launch where each rank
+        # both trains locally and participates in the colocated vLLM engine.
+        # Keep use_vllm enabled here and let TRL/vLLM manage the colocated workers.
 
         effective_vllm_tp = _effective_vllm_tensor_parallel_size(
             requested_tp=int(config.vllm_tensor_parallel_size),
@@ -1170,40 +1300,67 @@ class TRLPolicyBackend(PolicyBackend):
         tag = self._stage_tag(stage)
         return f'<{tag}>\n{content}\n</{tag}>'
 
-    def _teacher_forced_action_score(self, prompt_text: str, action_block: str, gamma: float = 1.0) -> float:
+    def _teacher_forced_action_scores(self, prompt_text: str, action_blocks: list[str], gamma: float = 1.0) -> list[float]:
+        if not action_blocks:
+            return []
+
         prefix_text = prompt_text.rstrip() + '\n'
         prefix_ids = self._tokenizer(prefix_text, add_special_tokens=False, return_tensors='pt')['input_ids'][0]
-        full_ids = self._tokenizer(prefix_text + action_block, add_special_tokens=False, return_tensors='pt')['input_ids'][0]
-
-        prefix_len = int(prefix_ids.shape[0])
-        if int(full_ids.shape[0]) <= prefix_len:
-            return float('-inf')
-
+        prefix_len_raw = int(prefix_ids.shape[0])
         max_ctx = int(getattr(getattr(self._model, 'config', None), 'max_position_embeddings', 32768) or 32768)
-        if int(full_ids.shape[0]) > max_ctx:
-            full_ids = full_ids[-max_ctx:]
-            prefix_len = max(1, min(prefix_len, int(full_ids.shape[0]) - 1))
 
+        full_tensors: list[torch.Tensor] = []
+        prefix_lens: list[int] = []
+        scores = [float('-inf')] * len(action_blocks)
+
+        for action_block in action_blocks:
+            if not action_block:
+                full_tensors.append(torch.empty(0, dtype=torch.long))
+                prefix_lens.append(0)
+                continue
+            full_ids = self._tokenizer(prefix_text + action_block, add_special_tokens=False, return_tensors='pt')['input_ids'][0]
+            prefix_len = prefix_len_raw
+            if int(full_ids.shape[0]) > max_ctx:
+                full_ids = full_ids[-max_ctx:]
+                prefix_len = max(1, min(prefix_len, int(full_ids.shape[0]) - 1))
+            full_tensors.append(full_ids)
+            prefix_lens.append(prefix_len)
+
+        valid_indices = [idx for idx, (ids, prefix_len) in enumerate(zip(full_tensors, prefix_lens, strict=False)) if int(ids.shape[0]) > prefix_len > 0]
+        if not valid_indices:
+            return scores
+
+        batch_tensors = [full_tensors[idx] for idx in valid_indices]
+        padded = torch.nn.utils.rnn.pad_sequence(batch_tensors, batch_first=True, padding_value=self._tokenizer.pad_token_id)
+        attention_mask = (padded != self._tokenizer.pad_token_id).long()
         device = self._infer_device()
-        input_ids = full_ids.unsqueeze(0).to(device)
-        attention_mask = torch.ones_like(input_ids, device=device)
+        input_ids = padded.to(device)
+        attention_mask = attention_mask.to(device)
 
         with torch.no_grad():
-            logits = self._model(input_ids=input_ids, attention_mask=attention_mask).logits[0]
+            logits = self._model(input_ids=input_ids, attention_mask=attention_mask).logits
             log_probs = torch.log_softmax(logits, dim=-1)
 
-        action_start = max(1, prefix_len)
-        action_token_count = int(full_ids.shape[0]) - action_start
-        if action_token_count <= 0:
-            return float('-inf')
+        for batch_idx, original_idx in enumerate(valid_indices):
+            full_ids = batch_tensors[batch_idx]
+            prefix_len = int(prefix_lens[original_idx])
+            action_start = max(1, prefix_len)
+            action_token_count = int(full_ids.shape[0]) - action_start
+            if action_token_count <= 0:
+                continue
 
-        total_logp = 0.0
-        full_ids_cpu = full_ids.detach().cpu()
-        for pos in range(action_start, int(full_ids.shape[0])):
-            token_id = int(full_ids_cpu[pos].item())
-            total_logp += float(log_probs[pos - 1, token_id].item())
+            total_logp = 0.0
+            full_ids_cpu = full_ids.detach().cpu()
+            for pos in range(action_start, int(full_ids.shape[0])):
+                token_id = int(full_ids_cpu[pos].item())
+                total_logp += float(log_probs[batch_idx, pos - 1, token_id].item())
 
-        return float(total_logp / (max(1, action_token_count) ** gamma))
+            scores[original_idx] = float(total_logp / (max(1, action_token_count) ** gamma))
+
+        return scores
+
+    def _teacher_forced_action_score(self, prompt_text: str, action_block: str, gamma: float = 1.0) -> float:
+        return self._teacher_forced_action_scores(prompt_text, [action_block], gamma=gamma)[0]
 
     def _sequence_prior(self, seq_index: int, completion_ids: torch.Tensor, scores: list[torch.Tensor]) -> float:
         if not scores:
@@ -1325,7 +1482,7 @@ def _effective_vllm_tensor_parallel_size(
         print(
             "[GRPO][WARN] Invalid vLLM tensor_parallel_size for current WORLD_SIZE; "
             f"requested_tp={tp}, world_size={ws}, using_tp={fallback}. "
-            "If you need tp>1, launch with torchrun so WORLD_SIZE matches."
+            "If you need tp>1, launch with a distributed launcher such as accelerate so WORLD_SIZE matches."
         )
 
     return fallback
@@ -1400,3 +1557,4 @@ def _looks_like_vllm_comm_error(exc: Exception) -> bool:
         "close_communicator first",
     )
     return any(k in text for k in keys)
+
