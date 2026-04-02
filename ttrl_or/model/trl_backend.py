@@ -600,48 +600,70 @@ class TRLPolicyBackend(PolicyBackend):
         top_p: float,
         vllm_mode: str,
     ) -> str | None:
-        # Prefer external vLLM only for server mode.
+        # Prefer external TRL vLLM server only for server mode.
         if str(vllm_mode or "").lower() != "server":
             return None
+
+        try:
+            trl = _import_trl()
+        except Exception:
+            return None
+
         base_url = (os.environ.get("VLLM_BASE_URL") or "http://127.0.0.1:8000").rstrip("/")
-        model_name = (os.environ.get("VLLM_MODEL_NAME") or self.model_name_or_path).strip()
-        url = f"{base_url}/v1/completions"
+        client_cls = _resolve_trl_vllm_client(trl)
+        if client_cls is None:
+            return None
 
-        payload = {
-            "model": model_name,
-            "prompt": prompt,
-            "max_tokens": int(max_new_tokens),
-            "temperature": float(max(0.0, temperature)),
-            "top_p": float(top_p),
-        }
-
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        tokenizer = self._ensure_tokenizer_for_auxiliary_vllm()
+        if tokenizer is None:
+            return None
 
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:  # nosec B310
-                body = resp.read().decode("utf-8", errors="ignore")
+            client = client_cls(base_url=base_url)
         except Exception:
             return None
 
         try:
-            parsed = json.loads(body)
+            response = client.generate(
+                prompts=[prompt],
+                n=1,
+                temperature=float(max(0.0, temperature)),
+                top_p=float(top_p),
+                max_tokens=int(max_new_tokens),
+                logprobs=0,
+            )
         except Exception:
             return None
 
-        choices = parsed.get("choices") if isinstance(parsed, dict) else None
-        if not isinstance(choices, list) or not choices:
+        completion_ids = response.get("completion_ids") if isinstance(response, dict) else None
+        if not isinstance(completion_ids, list) or not completion_ids:
             return None
 
-        first = choices[0] if isinstance(choices[0], dict) else {}
-        text = first.get("text")
-        if isinstance(text, str) and text.strip():
-            return text.strip()
-        return None
+        first_ids = completion_ids[0]
+        if not isinstance(first_ids, list) or not first_ids:
+            return None
+
+        try:
+            text = tokenizer.decode(first_ids, skip_special_tokens=True)
+        except Exception:
+            return None
+        return str(text or "").strip() or None
+
+    def _ensure_tokenizer_for_auxiliary_vllm(self):
+        if self._tokenizer is not None:
+            return self._tokenizer
+        try:
+            transformers = _import_transformers()
+            tokenizer = transformers.AutoTokenizer.from_pretrained(
+                self.model_name_or_path,
+                trust_remote_code=self.trust_remote_code,
+            )
+        except Exception:
+            return None
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        self._tokenizer = tokenizer
+        return tokenizer
 
     def generate_test_instances(self, task: OptimizationTask, k: int) -> list[dict[str, Any]]:
         from ttrl_or.reward.perturbation import generate_perturbed_instances_from_map
@@ -1335,6 +1357,22 @@ def _import_peft():
         return peft
     except ImportError as exc:
         raise RuntimeError("TRL backend requires `peft`. Install with: pip install peft") from exc
+
+
+def _resolve_trl_vllm_client(trl_module: Any):
+    generation_mod = getattr(trl_module, "generation", None)
+    if generation_mod is not None:
+        client_mod = getattr(generation_mod, "vllm_client", None)
+        client_cls = getattr(client_mod, "VLLMClient", None) if client_mod is not None else None
+        if client_cls is not None:
+            return client_cls
+
+    try:
+        from trl.generation.vllm_client import VLLMClient  # type: ignore
+
+        return VLLMClient
+    except Exception:
+        return None
 
 
 def _import_datasets():
