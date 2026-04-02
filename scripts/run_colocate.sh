@@ -10,7 +10,7 @@ set -euo pipefail
 # - each rank trains on its local GPU
 # - colocated vLLM shares the same GPUs for generation
 
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 NPROC_PER_NODE=2
 MASTER_ADDR=127.0.0.1
 MASTER_PORT=29521
@@ -135,3 +135,4 @@ SEED="${SEED}" \
 TORCH_DTYPE="${TORCH_DTYPE}" \
 TRUST_REMOTE_CODE="${TRUST_REMOTE_CODE}" \
 bash ./scripts/run.sh
+

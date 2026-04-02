@@ -22,7 +22,7 @@ VLLM_ENABLE_PREFIX_CACHING=true
 SERVER_KIND="trl"   # trl | openai
 CLEAN_START=false
 
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-1}"
 
 echo "========================================"
 echo "[vLLM] Environment Check:"
@@ -133,3 +133,4 @@ echo
 NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME}" \
 NCCL_DEBUG="${NCCL_DEBUG}" \
 "${CMD[@]}"
+

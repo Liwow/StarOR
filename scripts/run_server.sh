@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# External periodic-restart runner (minimal invasive):
-# - split dataset run into chunks (by sample count)
+# External periodic-restart runner:
+# - split dataset run into chunks
 # - restart TRL vLLM server between chunks
-# - keep logs in the same LOG_DIR as normal run.sh (no chunk split)
-# - auto-detect completed samples for resume
-# - auto-detect completed samples for resume
+# - keep logs in the same LOG_DIR as normal run.sh
+# - resume by skipping completed samples
 
 # ==========================
 # Edit Here (internal config only)
@@ -14,30 +13,25 @@ set -euo pipefail
 RUN_SCRIPT="scripts/run.sh"
 START_SERVER_SCRIPT="scripts/start_vllm_server.sh"
 STOP_SERVER_SCRIPT="scripts/stop_vllm_server.sh"
-# data/OptMATH_Bench_166.jsonl
-# data/IndustryOR_fixedV2.jsonl
-DATASET_JSONL="data/IndustryOR_fixedV2.jsonl"
-CHUNK_SAMPLES=10        # restart server every N samples
-TOTAL_LIMIT=0            # 0 = run all samples in dataset
 
+DATASET_JSONL="data/IndustryOR_fixedV2.jsonl"
+CHUNK_SAMPLES=10
+TOTAL_LIMIT=0   # 0 = run all samples in dataset
 
 LOG_DIR="logs/run"
-DATASET_NAME=$(basename "${DATASET_JSONL}" .jsonl)
-DATASET_DIR_="logs/run/${DATASET_NAME}"
-OUT_JSON="outputs/run_${DATASET_NAME}.json"
+OUT_JSON="outputs/run_$(basename "${DATASET_JSONL}" .jsonl).json"
 
 USE_VLLM=true
 VLLM_MODE="server"
 VLLM_PORT=8000
+TRAIN_CUDA_VISIBLE_DEVICES="${TRAIN_CUDA_VISIBLE_DEVICES:-0}"
+SERVER_CUDA_VISIBLE_DEVICES="${SERVER_CUDA_VISIBLE_DEVICES:-1}"
 
 # pass-through run settings
 NPROC_PER_NODE=1
 BACKEND="trl"
 MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
 
-# ==========================
-# Helpers
-# ==========================
 count_jsonl_lines() {
   local f="$1"
   if [[ ! -f "$f" ]]; then
@@ -47,42 +41,13 @@ count_jsonl_lines() {
   wc -l < "$f"
 }
 
-# Count completed samples from log directory
 count_completed_samples() {
-  local DATASET_DIR_="$1"
-  if [[ ! -d "$DATASET_DIR_" ]]; then
+  local dataset_dir="$1"
+  if [[ ! -d "$dataset_dir" ]]; then
     echo 0
     return
   fi
-  
-  # Method 1: Count subdirectories (each sample creates one)
-  local count=$(find "$DATASET_DIR_" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
-  
-  # Method 2 (fallback): Count unique task_ids from stage_events.jsonl
-  if [[ "$count" -eq 0 ]] && [[ -f "$DATASET_DIR_/stage_events.jsonl" ]]; then
-    count=$(grep -o '"task_id":"[^"]*"' "$DATASET_DIR_/stage_events.jsonl" 2>/dev/null | sort -u | wc -l | tr -d ' ')
-  fi
-  
-  echo "$count"
-}
-
-# Count completed samples from log directory
-count_completed_samples() {
-  local DATASET_DIR_="$1"
-  if [[ ! -d "$DATASET_DIR_" ]]; then
-    echo 0
-    return
-  fi
-  
-  # Method 1: Count subdirectories (each sample creates one)
-  local count=$(find "$DATASET_DIR_" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
-  
-  # Method 2 (fallback): Count unique task_ids from stage_events.jsonl
-  if [[ "$count" -eq 0 ]] && [[ -f "$DATASET_DIR_/stage_events.jsonl" ]]; then
-    count=$(grep -o '"task_id":"[^"]*"' "$DATASET_DIR_/stage_events.jsonl" 2>/dev/null | sort -u | wc -l | tr -d ' ')
-  fi
-  
-  echo "$count"
+  find "$dataset_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '
 }
 
 restart_server_if_needed() {
@@ -90,10 +55,10 @@ restart_server_if_needed() {
     return
   fi
 
-  echo "[periodic] restarting vLLM server (port=${VLLM_PORT}) ..."
+  echo "[server] restarting vLLM server on CUDA_VISIBLE_DEVICES=${SERVER_CUDA_VISIBLE_DEVICES} port=${VLLM_PORT}"
   PORT="${VLLM_PORT}" bash "${STOP_SERVER_SCRIPT}"
   sleep 2
-  bash "${START_SERVER_SCRIPT}" &
+  CUDA_VISIBLE_DEVICES="${SERVER_CUDA_VISIBLE_DEVICES}" bash "${START_SERVER_SCRIPT}" &
   local spid=$!
   disown "${spid}" || true
   sleep 4
@@ -101,14 +66,11 @@ restart_server_if_needed() {
 
 mkdir -p "${LOG_DIR}" "$(dirname "${OUT_JSON}")"
 
+DATASET_NAME=$(basename "${DATASET_JSONL}" .jsonl)
 TOTAL_DATASET_LINES="$(count_jsonl_lines "${DATASET_JSONL}")"
-if (( TOTAL_LIMIT > 0 )); then
+TARGET_TOTAL="${TOTAL_DATASET_LINES}"
+if (( TOTAL_LIMIT > 0 && TOTAL_LIMIT < TARGET_TOTAL )); then
   TARGET_TOTAL="${TOTAL_LIMIT}"
-  if (( TARGET_TOTAL > TOTAL_DATASET_LINES )); then
-    TARGET_TOTAL="${TOTAL_DATASET_LINES}"
-  fi
-else
-  TARGET_TOTAL="${TOTAL_DATASET_LINES}"
 fi
 
 if (( CHUNK_SAMPLES < 1 )); then
@@ -116,31 +78,14 @@ if (( CHUNK_SAMPLES < 1 )); then
   exit 1
 fi
 
-# Auto-detect completed samples for resume
-COMPLETED_SAMPLES=$(count_completed_samples "${DATASET_DIR_}")
-if (( COMPLETED_SAMPLES > 0 )); then
-  echo "[resume] detected ${COMPLETED_SAMPLES} completed samples in ${DATASET_DIR_}"
-fi
-
-# Auto-detect completed samples for resume
-COMPLETED_SAMPLES=$(count_completed_samples "${DATASET_DIR_}")
-if (( COMPLETED_SAMPLES > 0 )); then
-  echo "[resume] detected ${COMPLETED_SAMPLES} completed samples in ${DATASET_DIR_}"
-fi
-
-echo "[periodic] dataset=${DATASET_JSONL} total_lines=${TOTAL_DATASET_LINES} target_total=${TARGET_TOTAL} chunk=${CHUNK_SAMPLES}"
-echo "[periodic] LOG_DIR=${LOG_DIR} OUT_JSON=${OUT_JSON} (shared across chunks)"
-echo "[periodic] completed=${COMPLETED_SAMPLES} remaining=$((TARGET_TOTAL - COMPLETED_SAMPLES))"
-echo "[periodic] completed=${COMPLETED_SAMPLES} remaining=$((TARGET_TOTAL - COMPLETED_SAMPLES))"
+echo "[server] dataset=${DATASET_JSONL} total_lines=${TOTAL_DATASET_LINES} target_total=${TARGET_TOTAL} chunk=${CHUNK_SAMPLES}"
+echo "[server] LOG_DIR=${LOG_DIR} OUT_JSON=${OUT_JSON}"
+echo "[server] TRAIN_CUDA_VISIBLE_DEVICES=${TRAIN_CUDA_VISIBLE_DEVICES} SERVER_CUDA_VISIBLE_DEVICES=${SERVER_CUDA_VISIBLE_DEVICES}"
 
 restart_server_if_needed
 
-# Calculate initial offset and chunk_id based on completed samples
-offset=${COMPLETED_SAMPLES}
-chunk_id=$((COMPLETED_SAMPLES / CHUNK_SAMPLES))
-# Calculate initial offset and chunk_id based on completed samples
-offset=${COMPLETED_SAMPLES}
-chunk_id=$((COMPLETED_SAMPLES / CHUNK_SAMPLES))
+offset=0
+chunk_id=0
 while (( offset < TARGET_TOTAL )); do
   remain=$(( TARGET_TOTAL - offset ))
   chunk_size="${CHUNK_SAMPLES}"
@@ -148,8 +93,9 @@ while (( offset < TARGET_TOTAL )); do
     chunk_size="${remain}"
   fi
 
-  echo "[periodic] chunk=${chunk_id} start=${offset} limit=${chunk_size}"
+  echo "[server] chunk=${chunk_id} start=${offset} limit=${chunk_size} train_cuda=${TRAIN_CUDA_VISIBLE_DEVICES}"
 
+  CUDA_VISIBLE_DEVICES="${TRAIN_CUDA_VISIBLE_DEVICES}" \
   DATASET_JSONL="${DATASET_JSONL}" \
   DATASET_START_INDEX="${offset}" \
   DATASET_LIMIT="${chunk_size}" \
@@ -170,5 +116,4 @@ while (( offset < TARGET_TOTAL )); do
   fi
 done
 
-# PORT="${VLLM_PORT}" bash "${STOP_SERVER_SCRIPT}"
-echo "[periodic] done. chunks=${chunk_id}, processed_samples=${TARGET_TOTAL}"s
+echo "[server] done. chunks=${chunk_id}, processed_samples=${TARGET_TOTAL}"

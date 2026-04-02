@@ -10,7 +10,7 @@ export NCCL_SOCKET_IFNAME=eth0
 # =====================================
 # Edit Here: TTRL-OR Common Parameters
 # =====================================
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 # Launch config
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 MASTER_PORT="${MASTER_PORT:-29500}"
@@ -192,4 +192,5 @@ printf ' %q' "${CMD[@]}"
 echo
 
 "${CMD[@]}"
+
 
