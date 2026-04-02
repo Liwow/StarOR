@@ -63,7 +63,7 @@ if ! command -v trl >/dev/null 2>&1; then
 fi
 
 HELP_TEXT="$(trl vllm-serve --help 2>&1 || true)"
-CMD=(trl vllm-serve --model "${MODEL_NAME_OR_PATH} --max-num-batched-tokens 32768 --max-num-seqs 32")
+CMD=(trl vllm-serve --model "${MODEL_NAME_OR_PATH}")
 
 if grep -q -- '--host' <<<"${HELP_TEXT}"; then
   CMD+=(--host "${VLLM_HOST}")
@@ -108,11 +108,20 @@ if [[ "${VLLM_ENFORCE_EAGER}" == "true" ]]; then
 fi
 
 
-if [[ "${VLLM_ENABLE_PREFIX_CACHING}" == "false" ]]; then
-  if grep -q -- '--no-enable-prefix-caching' <<<"${HELP_TEXT}"; then
-    CMD+=(--no-enable-prefix-caching)
-  elif grep -q -- '--disable-prefix-caching' <<<"${HELP_TEXT}"; then
-    CMD+=(--disable-prefix-caching)
+PREFIX_CACHE_ARG=""
+if grep -q -- '--enable-prefix-caching' <<<"${HELP_TEXT}"; then
+  PREFIX_CACHE_ARG="--enable-prefix-caching"
+elif grep -q -- '--enable_prefix_caching' <<<"${HELP_TEXT}"; then
+  PREFIX_CACHE_ARG="--enable_prefix_caching"
+fi
+
+if [[ -n "${PREFIX_CACHE_ARG}" ]]; then
+  if [[ "${VLLM_ENABLE_PREFIX_CACHING}" == "true" ]]; then
+    CMD+=("${PREFIX_CACHE_ARG}" "True")
+    echo "[INFO] Prefix caching enabled."
+  else
+    CMD+=("${PREFIX_CACHE_ARG}" "False")
+    echo "[INFO] Prefix caching disabled."
   fi
 fi
 
