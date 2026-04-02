@@ -5,6 +5,7 @@ set -euo pipefail
 # - split dataset run into chunks (by sample count)
 # - restart TRL vLLM server between chunks
 # - keep logs in the same LOG_DIR as normal run.sh (no chunk split)
+# - auto-detect completed samples for resume
 
 # ==========================
 # Edit Here (internal config only)
@@ -19,7 +20,10 @@ CHUNK_SAMPLES=10        # restart server every N samples
 TOTAL_LIMIT=0            # 0 = run all samples in dataset
 
 # Keep same output paths across chunks (no split)
+# Extract dataset name for log directory
 LOG_DIR="logs/run"
+DATASET_NAME=$(basename "${DATASET_JSONL}" .jsonl)
+DATASET_DIR_="logs/run/${DATASET_NAME}"
 OUT_JSON="outputs/run.json"
 
 USE_VLLM=true
@@ -42,6 +46,25 @@ count_jsonl_lines() {
     exit 1
   fi
   wc -l < "$f"
+}
+
+# Count completed samples from log directory
+count_completed_samples() {
+  local DATASET_DIR_="$1"
+  if [[ ! -d "$DATASET_DIR_" ]]; then
+    echo 0
+    return
+  fi
+  
+  # Method 1: Count subdirectories (each sample creates one)
+  local count=$(find "$DATASET_DIR_" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+  
+  # Method 2 (fallback): Count unique task_ids from stage_events.jsonl
+  if [[ "$count" -eq 0 ]] && [[ -f "$DATASET_DIR_/stage_events.jsonl" ]]; then
+    count=$(grep -o '"task_id":"[^"]*"' "$DATASET_DIR_/stage_events.jsonl" 2>/dev/null | sort -u | wc -l | tr -d ' ')
+  fi
+  
+  echo "$count"
 }
 
 restart_server_if_needed() {
@@ -75,13 +98,21 @@ if (( CHUNK_SAMPLES < 1 )); then
   exit 1
 fi
 
+# Auto-detect completed samples for resume
+COMPLETED_SAMPLES=$(count_completed_samples "${DATASET_DIR_}")
+if (( COMPLETED_SAMPLES > 0 )); then
+  echo "[resume] detected ${COMPLETED_SAMPLES} completed samples in ${DATASET_DIR_}"
+fi
+
 echo "[periodic] dataset=${DATASET_JSONL} total_lines=${TOTAL_DATASET_LINES} target_total=${TARGET_TOTAL} chunk=${CHUNK_SAMPLES}"
 echo "[periodic] LOG_DIR=${LOG_DIR} OUT_JSON=${OUT_JSON} (shared across chunks)"
+echo "[periodic] completed=${COMPLETED_SAMPLES} remaining=$((TARGET_TOTAL - COMPLETED_SAMPLES))"
 
 restart_server_if_needed
 
-offset=0
-chunk_id=0
+# Calculate initial offset and chunk_id based on completed samples
+offset=${COMPLETED_SAMPLES}
+chunk_id=$((COMPLETED_SAMPLES / CHUNK_SAMPLES))
 while (( offset < TARGET_TOTAL )); do
   remain=$(( TARGET_TOTAL - offset ))
   chunk_size="${CHUNK_SAMPLES}"
@@ -113,4 +144,4 @@ while (( offset < TARGET_TOTAL )); do
 done
 
 # PORT="${VLLM_PORT}" bash "${STOP_SERVER_SCRIPT}"
-echo "[periodic] done. chunks=${chunk_id}, processed_samples=${TARGET_TOTAL}"
+echo "[periodic] done. chunks=${chunk_id}, processed_samples=${TARGET_TOTAL}"s
