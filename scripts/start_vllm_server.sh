@@ -21,7 +21,7 @@ VLLM_ENFORCE_EAGER=false
 VLLM_ENABLE_PREFIX_CACHING=true
 
 SERVER_KIND="trl"   # trl | openai
-CLEAN_START=true
+CLEAN_START=false
 
 export CUDA_VISIBLE_DEVICES
 
@@ -46,7 +46,8 @@ if [[ "${SERVER_KIND}" == "openai" ]]; then
     --port "${VLLM_PORT}" \
     --tensor-parallel-size "${VLLM_TENSOR_PARALLEL_SIZE}" \
     --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION}" \
-    --max-model-len "${VLLM_MAX_MODEL_LEN}"
+    --max-model-len "${VLLM_MAX_MODEL_LEN} \
+    --max-num-seqs 32"
   exit 0
 fi
 
@@ -63,7 +64,7 @@ if ! command -v trl >/dev/null 2>&1; then
 fi
 
 HELP_TEXT="$(trl vllm-serve --help 2>&1 || true)"
-CMD=(trl vllm-serve --model "${MODEL_NAME_OR_PATH}")
+CMD=(trl vllm-serve --model "${MODEL_NAME_OR_PATH} max-num-batched-tokens 32768 --max-num-seqs 32")
 
 if grep -q -- '--host' <<<"${HELP_TEXT}"; then
   CMD+=(--host "${VLLM_HOST}")
