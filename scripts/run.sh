@@ -26,13 +26,15 @@ RESUME_SKIP_COMPLETED="${RESUME_SKIP_COMPLETED:-true}"
 LOG_DIR="${LOG_DIR:-logs/run}"
 OUT_JSON="${OUT_JSON:-outputs/run.json}"
 
-# MCTS (global-leaf selection)
+# MCTS
 MAX_ITERATIONS=18
 C_PUCT=1.414
 MCTS_STOP_ON_REWARD_ONE=false
+SOLVERLLM_COMPARE_MODE=True
 
 # Reward
 GLOBAL_CONSENSUS_REL_TOL=0.005
+REWARD_CLUSTER_SCOPE="${REWARD_CLUSTER_SCOPE:-local}"
 ROBUSTNESS_CASES=3
 ENABLE_R3_REWARD=false
 
@@ -121,6 +123,7 @@ BASE_CMD=(-m ttrl_or
   --max-iterations "${MAX_ITERATIONS}"
   --c-puct "${C_PUCT}"
   --global-consensus-rel-tol "${GLOBAL_CONSENSUS_REL_TOL}"
+  --reward-cluster-scope "${REWARD_CLUSTER_SCOPE}"
   --robustness-cases "${ROBUSTNESS_CASES}"
   --grpo-lr "${GRPO_LR}"
   --grpo-train-epochs "${GRPO_TRAIN_EPOCHS}"
@@ -149,6 +152,10 @@ BASE_CMD=(-m ttrl_or
 
 if [[ "${MCTS_STOP_ON_REWARD_ONE}" == "true" ]]; then
   BASE_CMD+=(--mcts-stop-on-reward-one)
+fi
+
+if [[ "${SOLVERLLM_COMPARE_MODE}" == "true" ]]; then
+  BASE_CMD+=(--solverllm-compare-mode)
 fi
 
 if [[ "${ENABLE_R3_REWARD}" != "true" ]]; then

@@ -26,7 +26,7 @@ TOTAL_LIMIT=0            # 0 = run all samples in dataset
 LOG_DIR="logs/run"
 DATASET_NAME=$(basename "${DATASET_JSONL}" .jsonl)
 DATASET_DIR_="logs/run/${DATASET_NAME}"
-OUT_JSON="outputs/run.json"
+OUT_JSON="outputs/run_${DATASET_NAME}.json"
 
 USE_VLLM=true
 VLLM_MODE="server"

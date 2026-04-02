@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
-import math
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -13,7 +13,7 @@ from ttrl_or.reward.base import RewardCalculator
 from ttrl_or.reward.clusters import SemanticCluster, StructuralCluster
 from ttrl_or.reward.executor import PythonCodeExecutor
 from ttrl_or.reward.perturbation import generate_perturbed_instances_from_map
-from ttrl_or.types import ExecutionResult, ModelInfo, OptimizationTask, RewardBreakdown, Stage, Trajectory
+from ttrl_or.types import ExecutionResult, OptimizationTask, RewardBreakdown, Stage, Trajectory
 
 
 @dataclass(slots=True)
@@ -23,7 +23,6 @@ class TTRLRewardCalculator(RewardCalculator):
     config: RewardConfig
     executor: PythonCodeExecutor = field(init=False)
     _exec_cache: dict[str, ExecutionResult] = field(default_factory=dict, init=False)
-    # Cluster management for the entire task (episode)
     _semantic_cluster: SemanticCluster = field(init=False)
     _structural_cluster: StructuralCluster = field(init=False)
     _current_iteration: int = field(default=0, init=False)
@@ -37,7 +36,6 @@ class TTRLRewardCalculator(RewardCalculator):
             timeout_sec=self.config.code_timeout_sec,
             mode=self.config.code_executor_mode,
         )
-        # Initialize clusters for this task
         self._semantic_cluster = SemanticCluster(
             rel_tol=self.config.global_consensus_rel_tol,
         )
@@ -46,7 +44,12 @@ class TTRLRewardCalculator(RewardCalculator):
         )
 
     def provisional_reward(self, trajectory: Trajectory, explored: list[Trajectory]) -> RewardBreakdown:
-        rewards = self.score_rollout_group(stage=Stage.CODE, trajectories=[trajectory], explored=explored)
+        rewards = self.score_rollout_group(
+            stage=Stage.CODE,
+            trajectories=[trajectory],
+            explored=explored,
+            commit=True,
+        )
         return rewards[0]
 
     def score_rollout_group(
@@ -54,53 +57,56 @@ class TTRLRewardCalculator(RewardCalculator):
         stage: Stage,
         trajectories: list[Trajectory],
         explored: list[Trajectory],
+        commit: bool = True,
     ) -> list[RewardBreakdown]:
-        """Score a group of trajectories using the new r1/r2/r3/r4 reward system."""
+        """Score one rollout group with configurable global/local cluster comparison."""
         if not trajectories:
             return []
 
-        self._current_iteration += 1
-        current_iter = self._current_iteration
-        base_obj_bounds = self._base_obj_bounds()
+        current_iter = self._current_iteration + 1
+        if commit:
+            self._current_iteration = current_iter
 
-        # Phase 1: Execute and evaluate all trajectories
+        base_obj_bounds = self._base_obj_bounds()
+        local_scope = self._use_local_cluster_scope()
+
         evals: list[dict[str, Any]] = []
         for traj in trajectories:
             execution, exec_cache_hit = self._execute(traj)
-            strict_success = bool(execution.success)
             effective_success = self._effective_execution_success(execution)
             obj_answer = self._extract_objective_from_execution(execution)
             code_text = str(traj.code or "")
             has_code = len(code_text.strip()) > 20
             has_valid_obj = self._is_valid_objective(obj_answer)
             obj_in_bounds = self._objective_within_bounds(obj_answer, base_obj_bounds)
-            
-            # r1 eligibility: code + effective_success + valid_obj + in_bounds
             r1_eligible = bool(has_code and effective_success and has_valid_obj and obj_in_bounds)
-            
-            # Extract model info for r4
+
             model_info = execution.model_info
             feature_tuple = model_info.feature_tuple() if model_info and model_info.extracted else None
-            
-            evals.append({
-                "trajectory": traj,
-                "execution": execution,
-                "exec_cache_hit": bool(exec_cache_hit),
-                "strict_success": strict_success,
-                "effective_success": effective_success,
-                "obj_answer": obj_answer,
-                "has_code": has_code,
-                "code_len": int(len(code_text.strip())),
-                "has_valid_obj": has_valid_obj,
-                "obj_in_bounds": obj_in_bounds,
-                "r1_eligible": r1_eligible,
-                "model_info": model_info,
-                "feature_tuple": feature_tuple,
-            })
 
-        # Phase 2: Compute rewards for each trajectory
+            evals.append(
+                {
+                    "trajectory": traj,
+                    "execution": execution,
+                    "exec_cache_hit": bool(exec_cache_hit),
+                    "effective_success": bool(effective_success),
+                    "obj_answer": obj_answer,
+                    "has_code": has_code,
+                    "code_len": int(len(code_text.strip())),
+                    "has_valid_obj": has_valid_obj,
+                    "obj_in_bounds": obj_in_bounds,
+                    "r1_eligible": r1_eligible,
+                    "model_info": model_info,
+                    "feature_tuple": feature_tuple,
+                    "semantic_leader": None,
+                }
+            )
+
+        semantic_group_counts, semantic_group_total = self._prepare_semantic_group(evals, local_scope=local_scope)
+        structural_group_counts = self._prepare_structural_group(evals)
+        structural_group_total = len(evals)
+
         rewards: list[RewardBreakdown] = []
-        
         for e in evals:
             traj = e["trajectory"]
             execution = e["execution"]
@@ -109,61 +115,61 @@ class TTRLRewardCalculator(RewardCalculator):
             r1_eligible = bool(e["r1_eligible"])
             feature_tuple = e["feature_tuple"]
             model_info = e["model_info"]
-            
-            # ─── r2: Execution success (computed first, r3 depends on it) ───
+            semantic_leader = e.get("semantic_leader")
+
             r2 = 1.0 if effective_success else 0.0
-            
-            # ─── r1: Semantic cluster ratio ───
+
             r1 = 0.0
             r1_debug: dict[str, Any] = {
+                "cluster_scope": self.config.cluster_scope,
                 "r1_eligible": r1_eligible,
                 "obj_answer": obj_answer,
                 "effective_success": effective_success,
                 "has_valid_obj": e["has_valid_obj"],
                 "obj_in_bounds": e["obj_in_bounds"],
             }
-            
-            if r1_eligible and isinstance(obj_answer, (int, float)):
-                # Add to semantic cluster
-                leader = self._semantic_cluster.add_sample(
-                    obj_value=float(obj_answer),
-                    iteration=current_iter,
-                )
-                # Compute r1
-                r1, r1_cluster_debug = self._semantic_cluster.compute_r1(
-                    obj_value=float(obj_answer),
-                    alpha=self.config.r1_alpha,
-                    min_k=self.config.r1_min_clusters,
-                )
+            if r1_eligible and isinstance(obj_answer, (int, float)) and isinstance(semantic_leader, (int, float)):
+                if local_scope:
+                    r1, r1_cluster_debug = self._compute_local_r1(
+                        leader=float(semantic_leader),
+                        group_counts=semantic_group_counts,
+                        valid_total=semantic_group_total,
+                    )
+                else:
+                    r1, r1_cluster_debug = self._semantic_cluster.preview_r1(
+                        leader=float(semantic_leader),
+                        alpha=self.config.r1_alpha,
+                        min_k=self.config.r1_min_clusters,
+                        additional_clusters=semantic_group_counts,
+                        additional_total=semantic_group_total,
+                    )
                 r1_debug.update(r1_cluster_debug)
-            
-            # ─── r4: Structural consensus ───
+
             r4 = 0.0
-            r4_debug: dict[str, Any] = {"enabled": bool(self.config.enable_r4_reward)}
-            
-            # Add to structural cluster (all samples, including failed)
-            self._structural_cluster.add_sample(
-                feature_tuple=feature_tuple,
-                iteration=current_iter,
-            )
-            
+            r4_debug: dict[str, Any] = {"enabled": bool(self.config.enable_r4_reward), "cluster_scope": self.config.cluster_scope}
             if self.config.enable_r4_reward and feature_tuple is not None:
-                r4, r4_debug = self._structural_cluster.compute_r4(
-                    feature_tuple=feature_tuple,
-                    current_iteration=current_iter,
-                    alpha=self.config.r4_alpha,
-                    k=self.config.r4_k,
-                )
-            
-            # ─── r3: Robustness (only when r2=1.0) ───
+                if local_scope:
+                    r4, r4_debug = self._compute_local_r4(
+                        feature_tuple=feature_tuple,
+                        group_feature_counts=structural_group_counts,
+                        group_total_count=structural_group_total,
+                    )
+                else:
+                    r4, r4_debug = self._structural_cluster.preview_r4(
+                        feature_tuple=feature_tuple,
+                        current_iteration=current_iter,
+                        alpha=self.config.r4_alpha,
+                        k=self.config.r4_k,
+                        group_feature_counts=structural_group_counts,
+                        group_total_count=structural_group_total,
+                    )
+
             r3 = 0.0
             r3_meta: dict[str, Any] = {"triggered": False}
-            
             if r2 == 1.0:
                 r3, r3_meta = self._compute_r3_with_details(traj)
                 r3_meta["triggered"] = True
-            
-            # ─── Combine rewards ───
+
             total = self.combine_rewards(
                 r1=r1,
                 r2=r2,
@@ -172,13 +178,14 @@ class TTRLRewardCalculator(RewardCalculator):
                 r3_weight=self.config.r3_weight,
                 r4_weight=self.config.r4_weight,
             )
-            
-            # Build metadata
+
             common_meta = {
+                "reward_cluster_scope": self.config.cluster_scope,
                 "r1_debug": r1_debug,
                 "r4_debug": r4_debug,
                 "r3": r3_meta,
                 "iteration": current_iter,
+                "iteration_committed": bool(commit),
                 "exec_elapsed_sec": float(execution.elapsed_sec),
                 "exec_cache_hit": bool(e["exec_cache_hit"]),
                 "obj_answer": obj_answer,
@@ -189,30 +196,54 @@ class TTRLRewardCalculator(RewardCalculator):
                     "num_vars": model_info.num_vars if model_info else None,
                     "num_bin_vars": model_info.num_bin_vars if model_info else None,
                     "num_int_vars": model_info.num_int_vars if model_info else None,
-                } if model_info else None,
+                }
+                if model_info
+                else None,
                 "execution": self._execution_summary(
                     execution,
                     obj_answer=obj_answer,
                     effective_success=effective_success,
                 ),
             }
-            
-            rewards.append(RewardBreakdown(
-                r1=r1,
-                r2=r2,
-                r3=r3,
-                r4=r4,
-                total=total,
-                consensus_signature=f"semantic:{r1_debug.get('cluster_leader', '')}" if r1_eligible else "",
-                execution_success=effective_success,
-                robustness_success=(r3 == 1.0),
-                metadata=common_meta,
-            ))
-        
+
+            rewards.append(
+                RewardBreakdown(
+                    r1=r1,
+                    r2=r2,
+                    r3=r3,
+                    r4=r4,
+                    total=total,
+                    consensus_signature=(f"semantic:{r1_debug.get('cluster_leader', '')}" if r1_eligible else ""),
+                    execution_success=effective_success,
+                    robustness_success=(r3 == 1.0),
+                    metadata=common_meta,
+                )
+            )
+
+        if commit and (not local_scope):
+            for e in evals:
+                if bool(e["r1_eligible"]) and isinstance(e["obj_answer"], (int, float)) and isinstance(e.get("semantic_leader"), (int, float)):
+                    self._semantic_cluster.commit_sample(
+                        obj_value=float(e["obj_answer"]),
+                        leader=float(e["semantic_leader"]),
+                        iteration=current_iter,
+                    )
+
+            for e in evals:
+                self._structural_cluster.add_sample(
+                    feature_tuple=e["feature_tuple"],
+                    iteration=current_iter,
+                )
+
         return rewards
 
     def finalize_group(self, trajectories: list[Trajectory]) -> list[Trajectory]:
-        rewards = self.score_rollout_group(stage=Stage.CODE, trajectories=trajectories, explored=[])
+        rewards = self.score_rollout_group(
+            stage=Stage.CODE,
+            trajectories=trajectories,
+            explored=[],
+            commit=False,
+        )
         for traj, reward in zip(trajectories, rewards, strict=False):
             traj.reward = reward
         return trajectories
@@ -234,15 +265,129 @@ class TTRLRewardCalculator(RewardCalculator):
         r3_weight: float = 0.3,
         r4_weight: float = 0.2,
     ) -> float:
-        """
-        Combine rewards using the new formula.
-        
-        Reward_total = max(0, r1 + r3_weight * r3 * r2 + r4_weight * r4)
-        
-        Note: r3 is only meaningful when r2=1.0 (execution succeeded)
-        """
         total = r1 + r3_weight * r3 * r2 + r4_weight * r4
         return max(0.0, total)
+
+    def _use_local_cluster_scope(self) -> bool:
+        return str(self.config.cluster_scope or "global").strip().lower() == "local"
+
+    def _prepare_semantic_group(self, evals: list[dict[str, Any]], *, local_scope: bool) -> tuple[dict[float, int], int]:
+        group_counts: dict[float, int] = {}
+        group_new_leaders: list[float] = []
+
+        eligible_items: list[tuple[int, float]] = []
+        for idx, item in enumerate(evals):
+            if bool(item.get("r1_eligible")) and isinstance(item.get("obj_answer"), (int, float)):
+                eligible_items.append((idx, float(item["obj_answer"])))
+
+        eligible_items.sort(key=lambda x: (x[1], x[0]))
+
+        for idx, obj_value in eligible_items:
+            leader = None if local_scope else self._semantic_cluster.matching_leader(obj_value)
+            if leader is None:
+                for candidate in group_new_leaders:
+                    if self._within_rel_tol(obj_value, candidate, self.config.global_consensus_rel_tol):
+                        leader = candidate
+                        break
+            if leader is None:
+                leader = obj_value
+                group_new_leaders.append(leader)
+
+            evals[idx]["semantic_leader"] = float(leader)
+            group_counts[float(leader)] = group_counts.get(float(leader), 0) + 1
+
+        return group_counts, len(eligible_items)
+
+    def _compute_local_r1(
+        self,
+        *,
+        leader: float,
+        group_counts: dict[float, int],
+        valid_total: int,
+    ) -> tuple[float, dict[str, Any]]:
+        count_i = int(group_counts.get(leader, 0))
+        n = int(valid_total)
+        num_clusters = len(group_counts)
+        k = max(num_clusters, int(self.config.r1_min_clusters))
+
+        if n <= 0:
+            r1 = 0.0
+        else:
+            r1 = (count_i + float(self.config.r1_alpha)) / (n + float(self.config.r1_alpha) * k)
+
+        return r1, {
+            "cluster_leader": leader,
+            "cluster_count": count_i,
+            "total_valid": n,
+            "num_clusters": num_clusters,
+            "k": k,
+            "alpha": float(self.config.r1_alpha),
+            "r1": r1,
+            "scope": "local",
+        }
+
+    @staticmethod
+    def _prepare_structural_group(evals: list[dict[str, Any]]) -> dict[tuple[int, int, int, int], int]:
+        group_counts: dict[tuple[int, int, int, int], int] = {}
+        for item in evals:
+            feature_tuple = item.get("feature_tuple")
+            if isinstance(feature_tuple, tuple) and len(feature_tuple) == 4:
+                group_counts[feature_tuple] = group_counts.get(feature_tuple, 0) + 1
+        return group_counts
+
+    def _compute_local_r4(
+        self,
+        *,
+        feature_tuple: tuple[int, int, int, int],
+        group_feature_counts: dict[tuple[int, int, int, int], int],
+        group_total_count: int,
+    ) -> tuple[float, dict[str, Any]]:
+        n = int(group_total_count)
+        if n <= 0:
+            return 0.0, {"r4": 0.0, "reason": "no_samples", "total_count": n, "scope": "local"}
+
+        model_sense, num_vars, num_bin_vars, num_int_vars = feature_tuple
+        psi_d = 0.0
+        psi_nv = 0.0
+        psi_nb = 0.0
+        psi_ni = 0.0
+
+        for group_tuple, count in group_feature_counts.items():
+            if not isinstance(group_tuple, tuple) or len(group_tuple) != 4:
+                continue
+            g_sense, g_nv, g_nb, g_ni = group_tuple
+            if g_sense == model_sense:
+                psi_d += float(count)
+            if g_nv == num_vars:
+                psi_nv += float(count)
+            if g_nb == num_bin_vars:
+                psi_nb += float(count)
+            if g_ni == num_int_vars:
+                psi_ni += float(count)
+
+        raw_score = math.sqrt(psi_d) + math.sqrt(psi_nv) + math.sqrt(psi_nb) + math.sqrt(psi_ni)
+        tuple_cluster_count = len(group_feature_counts)
+        k = max(tuple_cluster_count, int(self.config.r4_k))
+        max_score = 4.0 * math.sqrt(n + float(self.config.r4_alpha) * k)
+        r4 = raw_score / max_score if max_score > 0 else 0.0
+        r4 = min(1.0, max(0.0, r4))
+
+        return r4, {
+            "r4": r4,
+            "feature_tuple": feature_tuple,
+            "psi_direction": psi_d,
+            "psi_num_vars": psi_nv,
+            "psi_num_bin_vars": psi_nb,
+            "psi_num_int_vars": psi_ni,
+            "raw_score": raw_score,
+            "max_score": max_score,
+            "total_count": n,
+            "num_structural_samples": sum(group_feature_counts.values()),
+            "tuple_cluster_count": tuple_cluster_count,
+            "alpha": float(self.config.r4_alpha),
+            "k": k,
+            "scope": "local",
+        }
 
     def _compute_r3_with_details(self, trajectory: Trajectory) -> tuple[float, dict]:
         r3_enabled = bool(self.config.enable_r3_reward)
@@ -314,7 +459,6 @@ class TTRLRewardCalculator(RewardCalculator):
             return precomputed, "precomputed"
 
         if bool(self.task.instance.get("__r3_precompute_required__", False)):
-            # Strict mode: if precompute was required but failed, do not fallback.
             return [], "precompute_required_no_cases"
 
         tests = self.backend.generate_test_instances(self.task, self.config.robustness_cases)
@@ -516,8 +660,6 @@ class TTRLRewardCalculator(RewardCalculator):
         if bool(execution.success):
             return True
 
-        # If we can parse a valid objective value from output/stdout/stderr,
-        # treat this as effective execution success even when wrapper shape checks fail.
         obj_answer = self._extract_objective_from_execution(execution)
         if self._is_valid_objective(obj_answer):
             return True
@@ -527,7 +669,6 @@ class TTRLRewardCalculator(RewardCalculator):
         if any(marker in lowered for marker in self._gurobi_success_markers):
             return True
 
-        # Additional textual fallback for common report formats.
         if "optimal value" in lowered or "objective value" in lowered:
             return True
 

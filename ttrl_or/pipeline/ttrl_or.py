@@ -12,9 +12,9 @@ from typing import Any
 from ttrl_or.config import PipelineConfig
 from ttrl_or.mcts import FourStageMCTS
 from ttrl_or.model.backend import PolicyBackend
-from ttrl_or.prompts import DEFAULT_ROLLOUT_TEMPLATES, DEFAULT_TEMPLATES, PromptBuilder
+from ttrl_or.prompts import PromptBuilder, get_prompt_profile
 from ttrl_or.reward import TTRLRewardCalculator
-from ttrl_or.types import OptimizationTask, RunTrace, STAGE_ORDER, Stage, StageTrace, Trajectory
+from ttrl_or.types import OptimizationTask, RunTrace, Stage, StageTrace, Trajectory
 
 
 @dataclass(slots=True)
@@ -40,7 +40,15 @@ class TTRLORRunner:
     def __init__(self, backend: PolicyBackend, config: PipelineConfig | None = None) -> None:
         self.backend = backend
         self.config = config or PipelineConfig()
-        self.prompt_builder = PromptBuilder(templates=DEFAULT_TEMPLATES, rollout_templates=DEFAULT_ROLLOUT_TEMPLATES)
+        profile = get_prompt_profile(self.config.mcts.solverllm_compare_mode)
+        self.stage_order = profile.stage_order
+        self.prompt_builder = PromptBuilder(
+            templates=profile.templates,
+            rollout_templates=profile.rollout_templates,
+            completion_templates=profile.completion_templates,
+            stage_order=profile.stage_order,
+            system_instruction=profile.system_instruction,
+        )
 
     def run_task(self, task: OptimizationTask) -> TaskRunResult:
         run_t0 = time.perf_counter()
@@ -74,6 +82,8 @@ class TTRLORRunner:
                 prompt_builder=self.prompt_builder,
                 rewarder=rewarder,
                 config=self.config.mcts,
+                stage_order=self.stage_order,
+                split_rollout_completion=self.config.mcts.solverllm_compare_mode,
             )
 
             if self.config.save_logs:
@@ -114,7 +124,7 @@ class TTRLORRunner:
 
             stage_reports: dict[str, dict] = {}
 
-            for stage in STAGE_ORDER:
+            for stage in self.stage_order:
                 stage_records = [r for r in records if r.stage == stage]
                 stage_samples = len(stage_records)
                 stage_update_reports = self._collect_group_reports(stage_records)
@@ -278,6 +288,9 @@ class TTRLORRunner:
         runtime_path = run_dir / "runtime_summary.json"
         runtime_md_path = run_dir / "runtime_summary.md"
         selected_trace_path = run_dir / "selected_trajectory.json"
+        config_path = Path(self.config.log_dir) / "run_config.json"
+        if not config_path.exists():
+            config_path = Path(self.config.log_dir).parent / "run_config.json"
 
         summary_payload = {
             "task_id": trace.task_id,
@@ -336,7 +349,7 @@ class TTRLORRunner:
             "trajectory_id": (best.trajectory_id if best is not None else ""),
             "reward": (asdict(best.reward) if best is not None and best.reward else None),
             "content": (
-                {stage.value: best.outputs.get(stage, "") for stage in STAGE_ORDER}
+                {stage.value: best.outputs.get(stage, "") for stage in self.stage_order}
                 if best is not None
                 else {}
             ),
@@ -362,6 +375,7 @@ class TTRLORRunner:
             "runtime_summary": str(runtime_path.resolve()),
             "runtime_summary_md": str(runtime_md_path.resolve()),
             "selected_trajectory": str(selected_trace_path.resolve()),
+            "config_path": str(config_path.resolve()) if config_path.exists() else "",
         }
     @staticmethod
     def _format_iteration_markdown(payload: dict[str, Any]) -> str:
@@ -373,6 +387,9 @@ class TTRLORRunner:
         reward = best.get("reward", {}) if isinstance(best, dict) else {}
         parent = best.get("parent_node", {}) if isinstance(best, dict) else {}
         leaf_candidates = selection.get("leaf_candidates", []) if isinstance(selection, dict) else []
+        selection_path = selection.get("selection_path", []) if isinstance(selection, dict) else []
+        best_prior = best.get("prior", {}) if isinstance(best, dict) else {}
+        rollout_group = payload.get("rollout_group", []) if isinstance(payload, dict) else []
 
         lines = [
             f"# Iter {iter_idx} | Stage {stage}",
@@ -383,8 +400,26 @@ class TTRLORRunner:
             f"- selected_value: {parent.get('value', '')}",
             f"- selected_visits: {parent.get('visits', '')}",
             "",
-            "### Leaf Candidates (PUCT)",
+            "### Recursive Selection Path",
         ]
+        if selection_path:
+            for step_idx, step in enumerate(selection_path):
+                lines.append(
+                    f"- step={step_idx} parent={step.get('parent_node_id', '')} stage={step.get('parent_stage', '')} "
+                    f"selected_child={step.get('selected_child_id', '')} selected_puct={step.get('selected_child_score', '')}"
+                )
+                for cand in step.get('candidates', []) or []:
+                    lines.append(
+                        f"  child={cand.get('node_id', '')} stage={cand.get('stage', '')} "
+                        f"puct={cand.get('puct_score', '')} q={cand.get('value', '')} visits={cand.get('visits', '')} prior={cand.get('prior', '')}"
+                    )
+        else:
+            lines.append("- root selected directly")
+
+        lines.extend([
+            "",
+            "### Expandable Leaf Ranking",
+        ])
         if leaf_candidates:
             for c in leaf_candidates:
                 lines.append(
@@ -394,15 +429,34 @@ class TTRLORRunner:
         else:
             lines.append("- none")
 
+        lines.extend([
+            "",
+            "## Rollout Group Summary",
+        ])
+        if rollout_group:
+            for item in rollout_group:
+                reward_i = item.get('reward', {}) if isinstance(item, dict) else {}
+                timing_i = item.get('timing', {}) if isinstance(item, dict) else {}
+                lines.append(
+                    f"- rollout={item.get('rollout_index', '')} node={item.get('node_id', '')} "
+                    f"prior={item.get('prior', '')} prior_source={item.get('prior_source', '')} "
+                    f"obj={item.get('obj_answer', '')} total={reward_i.get('total', '')} "
+                    f"r1={reward_i.get('r1', '')} r2={reward_i.get('r2', '')} r3={reward_i.get('r3', '')} r4={reward_i.get('r4', '')} "
+                    f"backprop_sec={timing_i.get('backprop_sec', '')}"
+                )
+        else:
+            lines.append("- none")
+
         lines.extend(
             [
                 "",
                 "## Best Rollout",
                 f"- rollout_index: {best.get('rollout_index', '')}",
+                f"- resolved_prior: {best_prior.get('resolved_prior', '')}",
+                f"- prior_source: {best_prior.get('source', '')}",
                 f"- obj: {reward.get('obj_answer', '')}",
                 f"- gt: {best.get('gt', '')}",
-                f"- reward: r1={reward.get('r1', '')}, r2={reward.get('r2', '')}, "
-                f"r3={reward.get('r3', '')}, total={reward.get('total', '')}",
+                f"- reward: r1={reward.get('r1', '')}, r2={reward.get('r2', '')}, r3={reward.get('r3', '')}, r4={reward.get('r4', '')}, total={reward.get('total', '')}",
                 "",
                 "### Prompt",
                 "```text",
@@ -416,10 +470,12 @@ class TTRLORRunner:
                 "",
                 "### Timing (sec)",
                 f"- iteration_total_sec: {timing.get('iteration_total_sec', '')}",
+                f"- selection_sec: {timing.get('selection_sec', '')}",
                 f"- rollout_group_wall_sec: {timing.get('rollout_group_wall_sec', '')}",
                 f"- grpo_train_runtime_sec: {timing.get('grpo_train_runtime_sec', '')}",
                 f"- reward_callback_total_sec: {timing.get('reward_callback_total_sec', '')}",
                 f"- code_execution_total_sec: {timing.get('code_execution_total_sec', '')}",
+                f"- backprop_total_sec: {timing.get('backprop_total_sec', '')}",
                 "",
                 "---",
                 "",
