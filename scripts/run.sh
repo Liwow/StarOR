@@ -85,12 +85,18 @@ visible_gpu_count() {
   awk -F',' '{print NF}' <<< "$ids"
 }
 
+is_true() {
+  local raw="${1:-}"
+  local lowered="${raw,,}"
+  [[ "$lowered" == "true" || "$lowered" == "1" || "$lowered" == "yes" || "$lowered" == "y" ]]
+}
+
 if (( NPROC_PER_NODE == 1 && VLLM_TENSOR_PARALLEL_SIZE > 1 )); then
   echo "[WARN] NPROC_PER_NODE=1 but VLLM_TENSOR_PARALLEL_SIZE=${VLLM_TENSOR_PARALLEL_SIZE}."
   echo "[WARN] Runtime may auto-fallback TP to 1."
 fi
 
-if (( NPROC_PER_NODE > 1 )) && [[ "${USE_VLLM}" == "true" ]] && [[ "${VLLM_MODE}" == "colocate" ]]; then
+if (( NPROC_PER_NODE > 1 )) && is_true "${USE_VLLM}" && [[ "${VLLM_MODE}" == "colocate" ]]; then
   echo "[WARN] multi-process training with vLLM colocate is unstable and may duplicate GPU memory/processes."
   echo "[WARN] Auto-disabling USE_VLLM for this run. Use VLLM_MODE=server if you need external vLLM."
   USE_VLLM=false
@@ -139,32 +145,32 @@ BASE_CMD=(-m ttrl_or
   --out "${OUT_JSON}"
 )
 
-if [[ "${MCTS_STOP_ON_REWARD_ONE}" == "true" ]]; then
+if is_true "${MCTS_STOP_ON_REWARD_ONE}"; then
   BASE_CMD+=(--mcts-stop-on-reward-one)
 fi
 
-if [[ "${SOLVERLLM_COMPARE_MODE}" == "true" ]]; then
+if is_true "${SOLVERLLM_COMPARE_MODE}"; then
   BASE_CMD+=(--solverllm-compare-mode)
 fi
 
-if [[ "${ENABLE_R3_REWARD}" != "true" ]]; then
+if ! is_true "${ENABLE_R3_REWARD}"; then
   BASE_CMD+=(--disable-r3-reward)
 fi
 
-if [[ "${RESUME_SKIP_COMPLETED}" == "true" ]]; then
+if is_true "${RESUME_SKIP_COMPLETED}"; then
   BASE_CMD+=(--dataset-resume-skip-completed)
 else
   BASE_CMD+=(--no-dataset-resume-skip-completed)
 fi
-if [[ "${USE_VLLM}" == "true" ]]; then
+if is_true "${USE_VLLM}"; then
   BASE_CMD+=(--grpo-use-vllm)
 fi
 
-if [[ "${GRPO_VLLM_ENABLE_SLEEP_MODE}" == "true" ]]; then
+if is_true "${GRPO_VLLM_ENABLE_SLEEP_MODE}"; then
   BASE_CMD+=(--grpo-vllm-enable-sleep-mode)
 fi
 
-if [[ "${TRUST_REMOTE_CODE}" == "true" ]]; then
+if is_true "${TRUST_REMOTE_CODE}"; then
   BASE_CMD+=(--trust-remote-code)
 fi
 
@@ -177,6 +183,7 @@ fi
 echo "[TTRL-OR] NPROC_PER_NODE=${NPROC_PER_NODE} BACKEND=${BACKEND}"
 echo "[TTRL-OR] MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH}"
 echo "[TTRL-OR] DATASET_JSONL=${DATASET_JSONL} START=${DATASET_START_INDEX} LIMIT=${DATASET_LIMIT}"
+echo "[TTRL-OR] SOLVERLLM_COMPARE_MODE=${SOLVERLLM_COMPARE_MODE}"
 
 echo "[TTRL-OR] Running command:"
 printf ' %q' "${CMD[@]}"
