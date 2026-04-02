@@ -8,7 +8,6 @@ export NCCL_DEBUG="${NCCL_DEBUG:-INFO}"
 # ==================================
 # Edit Here: TRL vLLM Server Params
 # ==================================
-CUDA_VISIBLE_DEVICES="1"
 MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
 
 VLLM_HOST="0.0.0.0"
@@ -23,7 +22,7 @@ VLLM_ENABLE_PREFIX_CACHING=true
 SERVER_KIND="trl"   # trl | openai
 CLEAN_START=false
 
-export CUDA_VISIBLE_DEVICES
+export CUDA_VISIBLE_DEVICES=1
 
 echo "========================================"
 echo "[vLLM] Environment Check:"
@@ -64,7 +63,7 @@ if ! command -v trl >/dev/null 2>&1; then
 fi
 
 HELP_TEXT="$(trl vllm-serve --help 2>&1 || true)"
-CMD=(trl vllm-serve --model "${MODEL_NAME_OR_PATH} max-num-batched-tokens 32768 --max-num-seqs 32")
+CMD=(trl vllm-serve --model "${MODEL_NAME_OR_PATH} --max-num-batched-tokens 32768 --max-num-seqs 32")
 
 if grep -q -- '--host' <<<"${HELP_TEXT}"; then
   CMD+=(--host "${VLLM_HOST}")

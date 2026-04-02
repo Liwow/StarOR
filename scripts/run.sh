@@ -10,7 +10,7 @@ export NCCL_SOCKET_IFNAME=eth0
 # =====================================
 # Edit Here: TTRL-OR Common Parameters
 # =====================================
-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+export CUDA_VISIBLE_DEVICES=0
 # Set 1 for single-card, 2/4 for multi-card (must be <= visible GPU count)
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 MASTER_PORT="${MASTER_PORT:-29500}"
@@ -50,7 +50,7 @@ GRPO_MAX_COMPLETION_LEN=4096
 # Generation (common)
 TEMPERATURE=1.0
 TOP_P=0.95
-MAX_NEW_TOKENS=2048
+MAX_NEW_TOKENS=4096
 
 # vLLM for TRL
 USE_VLLM="${USE_VLLM:-true}"
@@ -74,7 +74,6 @@ SEED=7
 TORCH_DTYPE="auto"
 TRUST_REMOTE_CODE=false
 
-export CUDA_VISIBLE_DEVICES
 mkdir -p "$(dirname "${OUT_JSON}")" "${LOG_DIR}"
 
 visible_gpu_count() {
@@ -85,16 +84,6 @@ visible_gpu_count() {
   fi
   awk -F',' '{print NF}' <<< "$ids"
 }
-
-VISIBLE_GPU_COUNT="$(visible_gpu_count "${CUDA_VISIBLE_DEVICES}")"
-if (( NPROC_PER_NODE < 1 )); then
-  echo "[ERROR] NPROC_PER_NODE must be >= 1"
-  exit 1
-fi
-if (( NPROC_PER_NODE > VISIBLE_GPU_COUNT )); then
-  echo "[ERROR] NPROC_PER_NODE=${NPROC_PER_NODE} > visible GPUs=${VISIBLE_GPU_COUNT} (CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES})"
-  exit 1
-fi
 
 if (( NPROC_PER_NODE == 1 && VLLM_TENSOR_PARALLEL_SIZE > 1 )); then
   echo "[WARN] NPROC_PER_NODE=1 but VLLM_TENSOR_PARALLEL_SIZE=${VLLM_TENSOR_PARALLEL_SIZE}."
@@ -185,7 +174,6 @@ else
   CMD=(python "${BASE_CMD[@]}")
 fi
 
-echo "[TTRL-OR] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "[TTRL-OR] NPROC_PER_NODE=${NPROC_PER_NODE} BACKEND=${BACKEND}"
 echo "[TTRL-OR] MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH}"
 echo "[TTRL-OR] DATASET_JSONL=${DATASET_JSONL} START=${DATASET_START_INDEX} LIMIT=${DATASET_LIMIT}"

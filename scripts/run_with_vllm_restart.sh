@@ -16,13 +16,11 @@ START_SERVER_SCRIPT="scripts/start_vllm_server.sh"
 STOP_SERVER_SCRIPT="scripts/stop_vllm_server.sh"
 # data/OptMATH_Bench_166.jsonl
 # data/IndustryOR_fixedV2.jsonl
-DATASET_JSONL="data/OptMATH_Bench_166.jsonl"
+DATASET_JSONL="data/IndustryOR_fixedV2.jsonl"
 CHUNK_SAMPLES=10        # restart server every N samples
 TOTAL_LIMIT=0            # 0 = run all samples in dataset
 
-# Keep same output paths across chunks (no split)
-# Extract dataset name for log directory
-# Extract dataset name for log directory
+
 LOG_DIR="logs/run"
 DATASET_NAME=$(basename "${DATASET_JSONL}" .jsonl)
 DATASET_DIR_="logs/run/${DATASET_NAME}"
@@ -33,7 +31,6 @@ VLLM_MODE="server"
 VLLM_PORT=8000
 
 # pass-through run settings
-CUDA_VISIBLE_DEVICES="0"
 NPROC_PER_NODE=1
 BACKEND="trl"
 MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
@@ -160,7 +157,6 @@ while (( offset < TARGET_TOTAL )); do
   OUT_JSON="${OUT_JSON}" \
   USE_VLLM="${USE_VLLM}" \
   VLLM_MODE="${VLLM_MODE}" \
-  CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" \
   NPROC_PER_NODE="${NPROC_PER_NODE}" \
   BACKEND="${BACKEND}" \
   MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH}" \
