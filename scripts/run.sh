@@ -60,7 +60,7 @@ MAX_NEW_TOKENS=4096
 # vLLM for TRL
 USE_VLLM="${USE_VLLM:-true}"
 VLLM_MODE="${VLLM_MODE:-server}" # server | colocate
-VLLM_GPU_MEMORY_UTILIZATION=0.55
+VLLM_GPU_MEMORY_UTILIZATION=0.45
 VLLM_TENSOR_PARALLEL_SIZE=1
 VLLM_MAX_MODEL_LEN=10240
 VLLM_MAX_NUM_BATCHED_TOKENS=32768
@@ -81,14 +81,6 @@ TRUST_REMOTE_CODE=false
 
 mkdir -p "$(dirname "${OUT_JSON}")" "${LOG_DIR}"
 
-visible_gpu_count() {
-  local ids="${1// /}"
-  if [[ -z "$ids" ]]; then
-    echo 0
-    return
-  fi
-  awk -F',' '{print NF}' <<< "$ids"
-}
 
 is_true() {
   local raw="${1:-}"
@@ -96,24 +88,6 @@ is_true() {
   [[ "$lowered" == "true" || "$lowered" == "1" || "$lowered" == "yes" || "$lowered" == "y" ]]
 }
 
-VISIBLE_GPU_COUNT=$(visible_gpu_count "${CUDA_VISIBLE_DEVICES}")
-
-if is_true "${USE_VLLM}" && [[ "${VLLM_MODE}" == "colocate" ]]; then
-  if (( VISIBLE_GPU_COUNT == 0 )); then
-    echo "[WARN] CUDA_VISIBLE_DEVICES is empty under colocate mode."
-  elif (( VLLM_TENSOR_PARALLEL_SIZE > VISIBLE_GPU_COUNT )); then
-    echo "[WARN] VLLM_TENSOR_PARALLEL_SIZE=${VLLM_TENSOR_PARALLEL_SIZE} exceeds visible GPU count ${VISIBLE_GPU_COUNT}."
-    echo "[WARN] TRL/vLLM may fail or auto-fallback."
-  else
-    echo "[INFO] colocate mode: WORLD_SIZE/NPROC_PER_NODE=${NPROC_PER_NODE}, visible GPUs=${VISIBLE_GPU_COUNT}, vLLM TP=${VLLM_TENSOR_PARALLEL_SIZE}."
-    echo "[INFO] In official colocate mode, each rank trains on its local GPU and also participates in colocated vLLM generation."
-  fi
-fi
-
-if (( VLLM_TENSOR_PARALLEL_SIZE > 1 && VISIBLE_GPU_COUNT <= 1 )); then
-  echo "[WARN] VLLM_TENSOR_PARALLEL_SIZE=${VLLM_TENSOR_PARALLEL_SIZE}, but visible GPUs=${VISIBLE_GPU_COUNT}."
-  echo "[WARN] Runtime may auto-fallback TP to 1 or fail if colocate/server settings are inconsistent."
-fi
 
 
 MODEL_ARG=(--model-name "${MODEL_NAME_OR_PATH}")
@@ -211,7 +185,7 @@ echo "[TTRL-OR] MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH}"
 echo "[TTRL-OR] DATASET_JSONL=${DATASET_JSONL} START=${DATASET_START_INDEX} LIMIT=${DATASET_LIMIT}"
 echo "[TTRL-OR] SOLVERLLM_COMPARE_MODE=${SOLVERLLM_COMPARE_MODE}"
 echo "[TTRL-OR] ACCELERATE_MIXED_PRECISION=${ACCELERATE_MIXED_PRECISION} ACCELERATE_CONFIG_FILE=${ACCELERATE_CONFIG_FILE:-<none>}"
-echo "[TTRL-OR] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} USE_VLLM=${USE_VLLM} VLLM_MODE=${VLLM_MODE} VISIBLE_GPU_COUNT=${VISIBLE_GPU_COUNT} VLLM_TP=${VLLM_TENSOR_PARALLEL_SIZE}"
+echo "[TTRL-OR] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} USE_VLLM=${USE_VLLM} VLLM_MODE=${VLLM_MODE} VLLM_TP=${VLLM_TENSOR_PARALLEL_SIZE}"
 
 echo "[TTRL-OR] Running command:"
 printf ' %q' "${CMD[@]}"

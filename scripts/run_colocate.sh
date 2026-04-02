@@ -134,4 +134,4 @@ LORA_TARGET_MODULES="${LORA_TARGET_MODULES}" \
 SEED="${SEED}" \
 TORCH_DTYPE="${TORCH_DTYPE}" \
 TRUST_REMOTE_CODE="${TRUST_REMOTE_CODE}" \
-./scripts/run.sh
+bash ./scripts/run.sh
