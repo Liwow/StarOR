@@ -24,6 +24,8 @@ OUT_JSON="outputs/run_$(basename "${DATASET_JSONL}" .jsonl).json"
 USE_VLLM=true
 VLLM_MODE="server"
 VLLM_PORT=8000
+SERVER_STOP_WAIT_SEC=45
+SERVER_READY_WAIT_SEC=90
 TRAIN_CUDA_VISIBLE_DEVICES="${TRAIN_CUDA_VISIBLE_DEVICES:-0}"
 SERVER_CUDA_VISIBLE_DEVICES="${SERVER_CUDA_VISIBLE_DEVICES:-1}"
 
@@ -51,18 +53,85 @@ count_completed_samples() {
   find "$dataset_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '
 }
 
+port_in_use() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -ti tcp:"${port}" >/dev/null 2>&1 && return 0
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn "sport = :${port}" 2>/dev/null | tail -n +2 | grep -q . && return 0
+  fi
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -tln 2>/dev/null | awk -v p=":${port}" '$4 ~ p {found=1} END {exit !found}' && return 0
+  fi
+  return 1
+}
+
+wait_for_port_free() {
+  local port="$1"
+  local wait_sec="$2"
+  local deadline=$((SECONDS + wait_sec))
+  while (( SECONDS < deadline )); do
+    if ! port_in_use "${port}"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_server_ready() {
+  local host="$1"
+  local port="$2"
+  local wait_sec="$3"
+  local deadline=$((SECONDS + wait_sec))
+  while (( SECONDS < deadline )); do
+    if python - <<PY >/dev/null 2>&1
+import socket
+s = socket.socket()
+s.settimeout(1.0)
+try:
+    s.connect(("${host}", int("${port}")))
+except Exception:
+    raise SystemExit(1)
+else:
+    raise SystemExit(0)
+finally:
+    try:
+        s.close()
+    except Exception:
+        pass
+PY
+    then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 restart_server_if_needed() {
   if [[ "${USE_VLLM}" != "true" ]] || [[ "${VLLM_MODE}" != "server" ]]; then
     return
   fi
 
   echo "[server] restarting vLLM server on CUDA_VISIBLE_DEVICES=${SERVER_CUDA_VISIBLE_DEVICES} port=${VLLM_PORT}"
-  PORT="${VLLM_PORT}" bash "${STOP_SERVER_SCRIPT}"
-  sleep 2
-  CUDA_VISIBLE_DEVICES="${SERVER_CUDA_VISIBLE_DEVICES}" MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH}" bash "${START_SERVER_SCRIPT}" &
+  PORT="${VLLM_PORT}" WAIT_SEC="${SERVER_STOP_WAIT_SEC}" bash "${STOP_SERVER_SCRIPT}"
+
+  if ! wait_for_port_free "${VLLM_PORT}" "${SERVER_STOP_WAIT_SEC}"; then
+    echo "[server][ERROR] port ${VLLM_PORT} still occupied after stop"
+    exit 1
+  fi
+
+  CUDA_VISIBLE_DEVICES="${SERVER_CUDA_VISIBLE_DEVICES}"   MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH}"   VLLM_PORT="${VLLM_PORT}"   CLEAN_START="true"   PORT_WAIT_SEC="${SERVER_STOP_WAIT_SEC}"   bash "${START_SERVER_SCRIPT}" > "${LOG_DIR}/vllm_server.log" 2>&1 &
   local spid=$!
   disown "${spid}" || true
-  sleep 4
+
+  if ! wait_for_server_ready "127.0.0.1" "${VLLM_PORT}" "${SERVER_READY_WAIT_SEC}"; then
+    echo "[server][ERROR] vLLM server did not become ready within ${SERVER_READY_WAIT_SEC}s"
+    exit 1
+  fi
+  echo "[server] vLLM ready on 127.0.0.1:${VLLM_PORT} (pid=${spid})"
 }
 
 mkdir -p "${LOG_DIR}" "$(dirname "${OUT_JSON}")"

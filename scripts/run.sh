@@ -34,6 +34,7 @@ OUT_JSON="${OUT_JSON:-outputs/run.json}"
 # MCTS
 MAX_ITERATIONS=20
 C_PUCT=1.414
+ENABLE_PRIOR=true
 MCTS_STOP_ON_REWARD_ONE=false
 SOLVERLLM_COMPARE_MODE=false #true TODO
 
@@ -131,6 +132,10 @@ BASE_CMD=(-m ttrl_or
   --log-dir "${LOG_DIR}"
   --out "${OUT_JSON}"
 )
+
+if ! is_true "${ENABLE_PRIOR}"; then
+  BASE_CMD+=(--disable-prior)
+fi
 
 if is_true "${MCTS_STOP_ON_REWARD_ONE}"; then
   BASE_CMD+=(--mcts-stop-on-reward-one)

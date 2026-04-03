@@ -105,6 +105,7 @@ class ExecutionResult:
     signature: str = ""
     elapsed_sec: float = 0.0
     model_info: ModelInfo | None = None
+    lp_injection_applied: bool = False
 
 
 @dataclass(slots=True)

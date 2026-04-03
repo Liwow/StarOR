@@ -197,6 +197,7 @@ class TTRLRewardCalculator(RewardCalculator):
                 "iteration_committed": bool(commit),
                 "exec_elapsed_sec": float(execution.elapsed_sec),
                 "exec_cache_hit": bool(e["exec_cache_hit"]),
+                "lp_injection_applied": bool(getattr(execution, "lp_injection_applied", False)),
                 "obj_answer": obj_answer,
                 "base_obj_scale": base_obj_scale,
                 "base_obj_bounds": base_obj_scale,
@@ -210,6 +211,7 @@ class TTRLRewardCalculator(RewardCalculator):
                     "has_objective": model_info.has_objective if model_info else None,
                     "has_constraints": model_info.has_constraints if model_info else None,
                     "has_variables": model_info.has_variables if model_info else None,
+                    "lp_injection_applied": bool(getattr(execution, "lp_injection_applied", False)),
                 }
                 if model_info
                 else None,
@@ -856,6 +858,7 @@ class TTRLRewardCalculator(RewardCalculator):
             "objective_parsed_success": obj_hit,
             "signature": str(execution.signature or ""),
             "error_type": str(execution.error_type or ""),
+            "lp_injection_applied": bool(getattr(execution, "lp_injection_applied", False)),
             "output": TTRLRewardCalculator._jsonable(execution.output),
             "stdout_tail": TTRLRewardCalculator._truncate_text(execution.stdout, 2000),
             "stderr_tail": TTRLRewardCalculator._truncate_text(execution.stderr, 2000),

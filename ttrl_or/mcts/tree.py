@@ -839,6 +839,10 @@ class FourStageMCTS:
         rollouts: list[dict[str, Any]],
         fallback_generations: list[Generation],
     ) -> tuple[list[float], str]:
+        if not bool(getattr(self.config, 'enable_prior', True)):
+            uniform = [1.0 / float(max(1, len(rollouts)))] * len(rollouts)
+            return uniform, 'uniform_disabled'
+
         fallback: list[float] = []
         for ridx, rollout in enumerate(rollouts):
             if ridx < len(fallback_generations):

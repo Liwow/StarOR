@@ -91,10 +91,32 @@ def _rel_error(obj: float, gt: float) -> float:
     return abs(obj - gt) / denom
 
 
-def eval_dataset_dir(dataset_dir: Path, tol: float) -> dict[str, Any]:
+def _infer_model_root(dataset_dir: Path, log_root: Path) -> str:
+    try:
+        rel = dataset_dir.resolve().relative_to(log_root.resolve())
+        parts = rel.parts
+        if len(parts) >= 2 and parts[0].startswith("model_"):
+            return parts[0]
+    except Exception:
+        pass
+    parent = dataset_dir.parent.name
+    if parent.startswith("model_"):
+        return parent
+    return ""
+
+
+def eval_dataset_dir(dataset_dir: Path, tol: float, log_root: Path, limit: int = 0) -> dict[str, Any]:
     rows: list[SampleEval] = []
 
-    for item in sorted(dataset_dir.iterdir()):
+    sample_dirs = [
+        item
+        for item in sorted(dataset_dir.iterdir())
+        if item.is_dir() and (item / "result.json").exists()
+    ]
+    if limit > 0:
+        sample_dirs = sample_dirs[:limit]
+
+    for item in sample_dirs:
         if not item.is_dir():
             continue
         if not (item / "result.json").exists():
@@ -119,6 +141,7 @@ def eval_dataset_dir(dataset_dir: Path, tol: float) -> dict[str, Any]:
 
     return {
         "dataset": dataset_dir.name,
+        "model_root": _infer_model_root(dataset_dir, log_root),
         "dataset_dir": str(dataset_dir.resolve()),
         "tol": tol,
         "num_samples": total,
@@ -154,28 +177,87 @@ def _dataset_names_from_args(dataset_json: list[str], dataset_jsons: str) -> lis
     return names
 
 
-def _find_dataset_dirs(log_root: Path, dataset_names: list[str]) -> list[Path]:
-    if dataset_names:
-        out: list[Path] = []
-        for name in dataset_names:
-            d = log_root / name
-            if d.exists() and d.is_dir():
-                out.append(d)
-        return out
+def _looks_like_sample_dir(path: Path) -> bool:
+    return path.is_dir() and (path / "result.json").exists()
 
-    # Fallback: auto-discover all dataset folders under log_root
-    out = []
-    for d in sorted(log_root.iterdir()):
-        if not d.is_dir():
-            continue
-        has_result = any((x / "result.json").exists() for x in d.iterdir() if x.is_dir())
-        if has_result:
-            out.append(d)
+
+def _looks_like_dataset_dir(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    try:
+        return any(_looks_like_sample_dir(x) for x in path.iterdir() if x.is_dir())
+    except Exception:
+        return False
+
+
+def _candidate_search_roots(log_root: Path) -> list[Path]:
+    roots: list[Path] = []
+    if log_root.exists() and log_root.is_dir():
+        roots.append(log_root)
+        try:
+            for child in sorted(log_root.iterdir()):
+                if child.is_dir() and child.name.startswith("model_"):
+                    roots.append(child)
+        except Exception:
+            pass
+    # deduplicate while preserving order
+    out: list[Path] = []
+    seen: set[str] = set()
+    for item in roots:
+        key = str(item.resolve())
+        if key not in seen:
+            seen.add(key)
+            out.append(item)
+    return out
+
+
+def _find_named_dataset_dirs_under(root: Path, dataset_names: list[str]) -> list[Path]:
+    found: list[Path] = []
+    for name in dataset_names:
+        direct = root / name
+        if _looks_like_dataset_dir(direct):
+            found.append(direct)
+    return found
+
+
+def _discover_dataset_dirs_under(root: Path) -> list[Path]:
+    out: list[Path] = []
+    if _looks_like_dataset_dir(root):
+        return [root]
+    try:
+        for child in sorted(root.iterdir()):
+            if _looks_like_dataset_dir(child):
+                out.append(child)
+    except Exception:
+        pass
+    return out
+
+
+def _find_dataset_dirs(log_root: Path, dataset_names: list[str]) -> list[Path]:
+    search_roots = _candidate_search_roots(log_root)
+    found: list[Path] = []
+
+    if dataset_names:
+        for root in search_roots:
+            found.extend(_find_named_dataset_dirs_under(root, dataset_names))
+    else:
+        for root in search_roots:
+            found.extend(_discover_dataset_dirs_under(root))
+
+    # deduplicate resolved paths while preserving order
+    out: list[Path] = []
+    seen: set[str] = set()
+    for item in found:
+        key = str(item.resolve())
+        if key not in seen:
+            seen.add(key)
+            out.append(item)
     return out
 
 
 def _print_table(summaries: list[dict[str, Any]]) -> None:
     headers = [
+        "model_root",
         "dataset",
         "num_samples",
         "num_numeric_pairs",
@@ -188,6 +270,7 @@ def _print_table(summaries: list[dict[str, Any]]) -> None:
         print(
             "\t".join(
                 [
+                    str(s.get("model_root", "")),
                     str(s["dataset"]),
                     str(s["num_samples"]),
                     str(s["num_numeric_pairs"]),
@@ -218,6 +301,12 @@ def main() -> int:
     )
     parser.add_argument("--tol", type=float, default=0.01, help="Relative error threshold")
     parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Maximum number of samples to evaluate per dataset (0 = all).",
+    )
+    parser.add_argument(
         "--out",
         type=str,
         default="",
@@ -239,7 +328,10 @@ def main() -> int:
         print("No dataset log dirs found.")
         return 1
 
-    summaries = [eval_dataset_dir(d, tol=float(args.tol)) for d in dataset_dirs]
+    summaries = [
+        eval_dataset_dir(d, tol=float(args.tol), log_root=log_root, limit=max(0, int(args.limit)))
+        for d in dataset_dirs
+    ]
 
     total_samples = sum(int(s["num_samples"]) for s in summaries)
     total_numeric = sum(int(s["num_numeric_pairs"]) for s in summaries)
@@ -247,6 +339,7 @@ def main() -> int:
 
     overall = {
         "tol": float(args.tol),
+        "limit": max(0, int(args.limit)),
         "num_datasets": len(summaries),
         "num_samples": total_samples,
         "num_numeric_pairs": total_numeric,

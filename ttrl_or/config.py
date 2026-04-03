@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 class MCTSConfig:
     max_iterations: int = 20
     c_puct: float = 1.414
+    enable_prior: bool = True
     stop_on_reward_one: bool = False
     solverllm_compare_mode: bool = False
 

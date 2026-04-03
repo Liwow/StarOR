@@ -1,4 +1,5 @@
 from __future__ import annotations
+import contextlib
 import gc
 import json
 import inspect
@@ -294,7 +295,7 @@ class TRLPolicyBackend(PolicyBackend):
         self._model.eval()
         prompt_text = self._prompt_to_model_text(prompt, add_generation_prompt=True)
         gamma = 1.0
-        tau = 1.0
+        tau = 0.5
         action_blocks: list[str] = []
         valid_mask: list[bool] = []
         for candidate in candidates:
@@ -306,10 +307,29 @@ class TRLPolicyBackend(PolicyBackend):
                 action_blocks.append(action_block)
                 valid_mask.append(True)
         try:
-            raw_scores = self._teacher_forced_action_scores(prompt_text, action_blocks, gamma=gamma)
+            current_scores = self._teacher_forced_action_scores(prompt_text, action_blocks, gamma=gamma, disable_adapter=False)
         except Exception:
-            raw_scores = [float('-inf')] * len(candidates)
-        raw_scores = [score if valid else float('-inf') for score, valid in zip(raw_scores, valid_mask, strict=False)]
+            current_scores = [float('-inf')] * len(candidates)
+        try:
+            reference_scores = self._teacher_forced_action_scores(prompt_text, action_blocks, gamma=gamma, disable_adapter=True)
+        except Exception:
+            reference_scores = [float('-inf')] * len(candidates)
+
+        raw_scores: list[float] = []
+        reference_used = any(math.isfinite(score) for score in reference_scores)
+        for idx, valid in enumerate(valid_mask):
+            if not valid:
+                raw_scores.append(float('-inf'))
+                continue
+            cur_score = current_scores[idx] if idx < len(current_scores) else float('-inf')
+            ref_score = reference_scores[idx] if idx < len(reference_scores) else float('-inf')
+            if math.isfinite(cur_score) and math.isfinite(ref_score):
+                raw_scores.append(float(cur_score - ref_score))
+            elif math.isfinite(cur_score):
+                raw_scores.append(float(cur_score))
+            else:
+                raw_scores.append(float('-inf'))
+
         valid = [score for score in raw_scores if math.isfinite(score)]
         if not valid:
             n = len(candidates)
@@ -1183,7 +1203,24 @@ class TRLPolicyBackend(PolicyBackend):
             return content
         tag = tags[0] if tags else "python"
         return f"<{tag}>\n{content}\n</{tag}>"
-    def _teacher_forced_action_scores(self, prompt_text: str, action_blocks: list[str], gamma: float = 1.0) -> list[float]:
+    def _disable_adapter_context(self):
+        disable_adapter = getattr(self._model, "disable_adapter", None)
+        if callable(disable_adapter):
+            try:
+                ctx = disable_adapter()
+                if ctx is not None:
+                    return ctx
+            except Exception:
+                pass
+        return contextlib.nullcontext()
+
+    def _teacher_forced_action_scores(
+        self,
+        prompt_text: str,
+        action_blocks: list[str],
+        gamma: float = 1.0,
+        disable_adapter: bool = False,
+    ) -> list[float]:
         if not action_blocks:
             return []
         prefix_text = prompt_text.rstrip() + '\n'
@@ -1214,9 +1251,11 @@ class TRLPolicyBackend(PolicyBackend):
         device = self._infer_device()
         input_ids = padded.to(device)
         attention_mask = attention_mask.to(device)
-        with torch.no_grad():
-            logits = self._model(input_ids=input_ids, attention_mask=attention_mask).logits
-            log_probs = torch.log_softmax(logits, dim=-1)
+        adapter_context = self._disable_adapter_context() if disable_adapter else contextlib.nullcontext()
+        with adapter_context:
+            with torch.no_grad():
+                logits = self._model(input_ids=input_ids, attention_mask=attention_mask).logits
+                log_probs = torch.log_softmax(logits, dim=-1)
         for batch_idx, original_idx in enumerate(valid_indices):
             full_ids = batch_tensors[batch_idx]
             prefix_len = int(prefix_lens[original_idx])
@@ -1231,6 +1270,7 @@ class TRLPolicyBackend(PolicyBackend):
                 total_logp += float(log_probs[batch_idx, pos - 1, token_id].item())
             scores[original_idx] = float(total_logp / (max(1, action_token_count) ** gamma))
         return scores
+
     def _teacher_forced_action_score(self, prompt_text: str, action_block: str, gamma: float = 1.0) -> float:
         return self._teacher_forced_action_scores(prompt_text, [action_block], gamma=gamma)[0]
     def _sequence_prior(self, seq_index: int, completion_ids: torch.Tensor, scores: list[torch.Tensor]) -> float:

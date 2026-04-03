@@ -115,7 +115,8 @@ class PythonCodeExecutor:
 
         start = time.perf_counter()
         solution_file = worker_dir / f"solution_{run_index}.py"
-        solution_file.write_text(code, encoding="utf-8")
+        instrumented_code, lp_injection_applied = self._inject_lp_dump_before_optimize(code)
+        solution_file.write_text(instrumented_code, encoding="utf-8")
 
         return self._invoke_runner(
             runner_path=runner_file,
@@ -123,6 +124,7 @@ class PythonCodeExecutor:
             instance=instance,
             cwd=worker_dir,
             start=start,
+            lp_injection_applied=lp_injection_applied,
         )
 
     def _run_in_subprocess_mode(self, code: str, instance: dict[str, Any]) -> ExecutionResult:
@@ -131,7 +133,8 @@ class PythonCodeExecutor:
             temp_dir = Path(td)
             code_file = temp_dir / "solution.py"
             runner_file = temp_dir / "runner.py"
-            code_file.write_text(code, encoding="utf-8")
+            instrumented_code, lp_injection_applied = self._inject_lp_dump_before_optimize(code)
+            code_file.write_text(instrumented_code, encoding="utf-8")
             runner_file.write_text(_RUNNER_CODE, encoding="utf-8")
 
             return self._invoke_runner(
@@ -140,6 +143,7 @@ class PythonCodeExecutor:
                 instance=instance,
                 cwd=temp_dir,
                 start=start,
+                lp_injection_applied=lp_injection_applied,
             )
 
     def _get_worker_sandbox(self) -> tuple[Path, Path, int]:
@@ -162,6 +166,49 @@ class PythonCodeExecutor:
         self._thread_state.run_index = run_index
         return worker_dir, runner_file, run_index
 
+    @staticmethod
+    def _inject_lp_dump_before_optimize(code: str) -> tuple[str, bool]:
+        raw = str(code or "")
+        if not raw.strip():
+            return raw, False
+
+        lowered = raw.lower()
+        if '.write(' in lowered and '.lp' in lowered:
+            return raw, False
+
+        lines = raw.splitlines()
+        optimize_re = re.compile(r'^(?P<indent>\s*)(?P<var>[A-Za-z_][A-Za-z0-9_]*)\.optimize\s*\(')
+        write_re_template = r'^(?P<indent>\s*){var}\.write\s*\('
+        inserted = False
+
+        def previous_meaningful_line(idx: int) -> str:
+            j = idx - 1
+            while j >= 0:
+                candidate = lines[j].strip()
+                if candidate and not candidate.startswith('#'):
+                    return candidate
+                j -= 1
+            return ''
+
+        new_lines: list[str] = []
+        for idx, line in enumerate(lines):
+            match = optimize_re.match(line)
+            if match is not None:
+                indent = match.group('indent')
+                var_name = match.group('var')
+                previous = previous_meaningful_line(idx)
+                write_re = re.compile(write_re_template.format(var=re.escape(var_name)))
+                if not write_re.match(previous):
+                    new_lines.append(f'{indent}# Auto-added for structural reward extraction')
+                    new_lines.append(f'{indent}{var_name}.write("ttrl_model.lp")')
+                    inserted = True
+            new_lines.append(line)
+
+        if not inserted:
+            return raw, False
+        suffix = "\n" if raw.endswith("\n") else ""
+        return "\n".join(new_lines) + suffix, True
+
     def _invoke_runner(
         self,
         runner_path: Path,
@@ -169,6 +216,7 @@ class PythonCodeExecutor:
         instance: dict[str, Any],
         cwd: Path,
         start: float,
+        lp_injection_applied: bool = False,
     ) -> ExecutionResult:
         try:
             proc = subprocess.run(
@@ -189,6 +237,7 @@ class PythonCodeExecutor:
                 signature="EXEC_ERROR",
                 elapsed_sec=elapsed,
                 model_info=None,
+                lp_injection_applied=bool(lp_injection_applied),
             )
 
         elapsed = time.perf_counter() - start
@@ -207,6 +256,7 @@ class PythonCodeExecutor:
                 signature=self._signature(output),
                 elapsed_sec=elapsed,
                 model_info=model_info,
+                lp_injection_applied=bool(lp_injection_applied),
             )
 
         return ExecutionResult(
@@ -218,6 +268,7 @@ class PythonCodeExecutor:
             signature="EXEC_ERROR",
             elapsed_sec=elapsed,
             model_info=model_info,
+            lp_injection_applied=bool(lp_injection_applied),
         )
 
     @staticmethod

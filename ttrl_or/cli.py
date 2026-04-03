@@ -210,6 +210,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--max-iterations", type=int, default=defaults.mcts.max_iterations)
     parser.add_argument("--c-puct", type=float, default=defaults.mcts.c_puct)
+    prior_group = parser.add_mutually_exclusive_group()
+    prior_group.add_argument("--enable-prior", dest="enable_prior", action="store_true")
+    prior_group.add_argument("--disable-prior", dest="enable_prior", action="store_false")
+    parser.set_defaults(enable_prior=defaults.mcts.enable_prior)
     parser.add_argument("--mcts-stop-on-reward-one", action="store_true", default=defaults.mcts.stop_on_reward_one)
     parser.add_argument("--solverllm-compare-mode", action="store_true", default=defaults.mcts.solverllm_compare_mode)
 
@@ -285,6 +289,7 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
 
     config.mcts.max_iterations = args.max_iterations
     config.mcts.c_puct = args.c_puct
+    config.mcts.enable_prior = args.enable_prior
     config.mcts.stop_on_reward_one = args.mcts_stop_on_reward_one
     config.mcts.solverllm_compare_mode = args.solverllm_compare_mode
 
