@@ -7,15 +7,6 @@ from ttrl_or.types import DEFAULT_STAGE_ORDER, SOLVERLLM_STAGE_ORDER, Stage
 from .notice_prompts import CODE_NOTICE, OBJ_CON_NOTICE, SET_PARA_VAR_NOTICE, SYSTEM_INSTRUCTION
 
 
-TAG_OUTPUT_NOTICE = """
-Tag rules:
-- Output only the required tagged block(s).
-- Do not repeat the same tag multiple times.
-- As soon as one required block is finished, close the tag and move on.
-- Do not continue generating duplicate content after the first valid closing tag.
-""".strip()
-
-
 SPLIT_COMPLETION_NOTICE = """
 Completion rules:
 - The current node content is already fixed. Do NOT rewrite it.
@@ -35,7 +26,7 @@ SOLVERLLM_TYPE_HINT_NOTICE = """
 Inside <Type>, organize the content as:
 ### Type Analysis:
 - type: LP / MILP / NLP / MINLP
-- subtype: classic OR family if identifiable
+- subtype: classical OR family if identifiable
 
 ### Modeling Hints:
 - key_decisions:
@@ -116,29 +107,33 @@ class PromptProfile:
 
 DEFAULT_TEMPLATES: dict[Stage, str] = {
     Stage.SCHEMA: f"""
-You are the first stage of a 4-stage OR modeling pipeline. I need youto help me generate the TYPE component for amathematical optimization formulation. You are also required to determine which category of classic optimization problem the given instance belongs to.
+You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
+I need you to help me generate the TYPE component for a mathematical optimization formulation. You are also required to determine which category of classical optimization problem the given instance belongs to.
 
-Task:
+Here is the specific description of the optimization problem:
 {{task_description}}
 
 
-Please judge the type of this optimization problem and output the subtype of 
-Return exactly one block: <Type> ... </Type>
-Do not define sets, parameters, variables, objective, constraints, or code.
+1. MUST return exactly one block: <Type>...</Type>
+2. This stage is only for optimization type + modeling hint analysis.
+3. Do NOT define sets, parameters, variables, objective, constraints, or code.
+4. Output concise, reusable, downstream-helpful modeling guidance only.
 
-First, you need to determine whether the problem is linear. The rules are as follows:
-* If the objective and constraints ofthe model involve non-linear terms (such as power functions, multiplication, non-linear probability models, etc.), then the problem is non-linear and returns directly to NLP.
-* If the objective and constraint ofthe model are bothlinear, then the problem is linear. Furthermore,you need to determinewhether the problem is LPor MILP
+Inside <Type>, organize the content as:
+### Type Analysis:
+- type: LP / MILP / NLP / MINLP
+- subtype: classical OR family if identifiable, like TSP, SetCover, CVRP and so on.
 
-Second, you should 
+### Modeling Hints
+
 """.strip(),
-    Stage.SET_PARAM_VAR: f"""
-You are the second stage of a 4-stage OR modeling pipeline.
+    Stage.SET_PARAM_VAR: f"""You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
+I need you to help me generate the SETS, PARAMETERS and VARIABLES components for a mathematical optimization formulation.
 
-Task:
+Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the schema and modeling skill that have already been defined:
+Here is the analysis of the classical category for the optimization problem:
 {{schema_skill_str}}
 
 Please provide the sets, parameters, and variables needed for this optimization problem.
@@ -148,17 +143,16 @@ Return exactly these three blocks in order:
 <Variables> ... </Variables>
 Do not write the objective, constraints, or code.
 
-{TAG_OUTPUT_NOTICE}
-
 {SET_PARA_VAR_NOTICE}
 """.strip(),
     Stage.OBJ_CONS: f"""
-You are the third stage of a 4-stage OR modeling pipeline.
+You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
+I need you to help me generate the Objectives and Constraints components for a mathematical optimization formulation.
 
-Task:
+Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the schema and modeling skill that have already been defined:
+Here is the analysis of the classical category for the optimization problem:
 {{schema_skill_str}}
 
 Here are the sets, parameters, and variables that have already been defined:
@@ -170,17 +164,15 @@ Return exactly these two blocks in order:
 <Constraints> ... </Constraints>
 Do not generate code.
 
-{TAG_OUTPUT_NOTICE}
-
 {OBJ_CON_NOTICE}
 """.strip(),
     Stage.CODE: f"""
-You are the final stage of a 4-stage OR modeling pipeline.
+You are an optimization expert. You should solve the optimization problem and only Provide the corresponding Gurobi Python code to implement the model within <python> and </python>
 
-Task:
+Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the schema and modeling skill that have already been defined:
+Here is the analysis of the classical category for the optimization problem:
 {{schema_skill_str}}
 
 Here are the sets, parameters, and variables that have already been defined:
@@ -189,11 +181,8 @@ Here are the sets, parameters, and variables that have already been defined:
 Here are the objective and constraints that have already been defined:
 {{obj_cons_str}}
 
-Please provide the executable Gurobi Python code needed for this optimization problem.
-Return exactly one block: <python> ... </python>
+Please provide the executable Gurobi Python code needed for this optimization problem within <python>.
 Translate the finalized model faithfully and do not redesign it.
-
-{TAG_OUTPUT_NOTICE}
 
 {CODE_NOTICE}
 """.strip(),
@@ -202,115 +191,155 @@ Translate the finalized model faithfully and do not redesign it.
 
 DEFAULT_ROLLOUT_TEMPLATES: dict[Stage, str] = {
     Stage.SCHEMA: f"""
-You are the first stage of a 4-stage OR modeling pipeline.
-
-Task:
+You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
+Here is the specific description of the optimization problem:
 {{task_description}}
 
-No earlier components have been fixed yet.
+1. You should first think step by step in <thought> and Carefully analyze the problem to identify decision variables, objective, and constraints.
 
-Please first provide the schema and modeling skill analysis for this optimization problem.
-Then continue to finish the remaining stages in the same response and end with <python> ... </python>.
-Output the current stage block first, followed by the later-stage blocks in order: {{remaining_stages}}.
+2. Then You should generate the TYPE component for a mathematical optimization formulation within <Type> and </Type>. You are also required to determine which category of classical optimization problem the given instance belongs to.
 
-{TAG_OUTPUT_NOTICE}
+Inside <Type>, organize the content as:
+### Type Analysis:
+- type: LP / MILP / NLP / MINLP
+- subtype: classical OR family if identifiable, like TSP, SetCover, CVRP and so on.
 
-{SCHEMA_SKILL_NOTICE}
+### Modeling Hints
+
+3. Finally, you should Develop a complete mathematical model step bt step, and  Provide the corresponding Gurobi Python code to implement the model in <python>.
+
+The required order from this point is:
+1. <thought>
+2. <Type>
+3. <python>
 
 {CODE_NOTICE}
 """.strip(),
-    Stage.SET_PARAM_VAR: f"""
-You are the second stage of a 4-stage OR modeling pipeline.
+    Stage.SET_PARAM_VAR: f"""You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
 
-Task:
+Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the schema and modeling skill that have already been defined:
+Here is the analysis of the classical category for the optimization problem:
 {{schema_skill_str}}
 
-Please first provide the sets, parameters, and variables needed for this optimization problem.
-Then continue to finish the remaining stages in the same response and end with <python> ... </python>.
-Output the current stage block first, followed by the later-stage blocks in order: {{remaining_stages}}.
+1. You should first think step by step in <thought> and Carefully analyze the problem to identify decision variables, objective, and constraints.
 
-{TAG_OUTPUT_NOTICE}
+2. Then You should generate the SETS, PARAMETERS and VARIABLES components for a mathematical optimization formulation.
+
+- Return exactly these three blocks first and in order:
+<Sets> ... </Sets>
+<Parameters> ... </Parameters>
+<Variables> ... </Variables>
+
+3. Finally, you should Develop a complete mathematical model step bt step, and  Provide the corresponding Gurobi Python code to implement the model in <python>.
+
+The required order from this point is:
+1. <thought>
+2. <Sets>
+3. <Parameters>
+4. <Variables>
+5. <python>
 
 {SET_PARA_VAR_NOTICE}
 
 {CODE_NOTICE}
 """.strip(),
     Stage.OBJ_CONS: f"""
-You are the third stage of a 4-stage OR modeling pipeline.
+You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
 
-Task:
+Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the schema and modeling skill that have already been defined:
+Here is the analysis of the classical category for the optimization problem:
 {{schema_skill_str}}
 
 Here are the sets, parameters, and variables that have already been defined:
 {{set_param_var_str}}
 
-Please first provide the objective and constraints needed for this optimization problem.
-Then continue to finish the remaining stages in the same response and end with <python> ... </python>.
-Output the current stage block first, followed by the later-stage blocks in order: {{remaining_stages}}.
+1. You should first think step by step in <thought> and Carefully analyze the problem to identify decision variables, objective, and constraints.
 
-{TAG_OUTPUT_NOTICE}
+2. Then You should generate the Objectives and Constraints components for a mathematical optimization formulation.
+
+- Return exactly these two blocks first and in order:
+<Objective> ... </Objective>
+<Constraints> ... </Constraints>
+- Do not stop after the current stage; continue to produce <python>.
+
+3. Finally, you should Develop a complete mathematical model step bt step, and  Provide the corresponding Gurobi Python code to implement the model in <python>.
+
+The required order from this point is:
+1. <thought>
+2. <Objective>
+3. <Constraints>
+4. <python>
 
 {OBJ_CON_NOTICE}
 
 {CODE_NOTICE}
 """.strip(),
-    Stage.CODE: DEFAULT_TEMPLATES[Stage.CODE],
+    Stage.CODE: f"""
+You are an optimization expert. You should solve the optimization problem and only Provide the corresponding Gurobi Python code to implement the model within <python> and </python>
+
+Here is the specific description of the optimization problem:
+{{task_description}}
+
+Here is the analysis of the classical category for the optimization problem:
+{{schema_skill_str}}
+
+Here are the sets, parameters, and variables that have already been defined:
+{{set_param_var_str}}
+
+Here are the objective and constraints that have already been defined:
+{{obj_cons_str}}
+
+Please only provide the executable Gurobi Python code needed for this optimization problem within <python>.
+Translate the finalized model faithfully and do not redesign it.
+
+{CODE_NOTICE}
+""".strip(),
 }
 
 
 DEFAULT_COMPLETION_TEMPLATES: dict[Stage, str] = {
     Stage.SCHEMA: f"""
-You are in the simulation/completion step of a 4-stage OR modeling pipeline.
+You are an optimization expert. You should solve the optimization problem and only Provide the corresponding Gurobi Python code to implement the model within <python> and </python>
 
-Task:
+Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the schema and modeling skill that has already been fixed:
+Here is the analysis of the classical category for the optimization problem:
 {{schema_skill_str}}
 
-Please provide only the missing later-stage blocks in order: {{remaining_stages}}.
-End with <python> ... </python> and do not rewrite earlier components.
-
-{TAG_OUTPUT_NOTICE}
-
-{SPLIT_COMPLETION_NOTICE}
+please think and Develop a complete mathematical model step by step, explicitly defining: * Sets * Parameters * Decision Variables (and their types) * Objective Function * Constraints 
+Finally, Provide the corresponding Gurobi Python code to implement the model in <python></python>.
 
 {CODE_NOTICE}
 """.strip(),
     Stage.SET_PARAM_VAR: f"""
-You are in the simulation/completion step of a 4-stage OR modeling pipeline.
+You are an optimization expert. You should solve the optimization problem and only Provide the corresponding Gurobi Python code to implement the model within <python> and </python>
 
-Task:
+Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the schema and modeling skill that has already been defined:
+Here is the analysis of the classical category for the optimization problem:
 {{schema_skill_str}}
 
-Here are the sets, parameters, and variables that have already been fixed:
+Here are the sets, parameters, and variables that have already been defined:
 {{set_param_var_str}}
 
-Please provide only the missing later-stage blocks in order: {{remaining_stages}}.
-End with <python> ... </python> and do not rewrite earlier components.
-
-{TAG_OUTPUT_NOTICE}
-
-{SPLIT_COMPLETION_NOTICE}
+please think and Develop a complete mathematical model step by step, explicitly defining: * Objective Function * Constraints 
+Finally, Provide the corresponding Gurobi Python code to implement the model in <python></python>.
 
 {CODE_NOTICE}
 """.strip(),
     Stage.OBJ_CONS: f"""
-You are in the simulation/completion step of a 4-stage OR modeling pipeline.
+You are an optimization expert. You should solve the optimization problem and only Provide the corresponding Gurobi Python code to implement the model within <python> and </python>
 
-Task:
+Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the schema and modeling skill that has already been defined:
+Here is the analysis of the classical category for the optimization problem:
 {{schema_skill_str}}
 
 Here are the sets, parameters, and variables that have already been defined:
@@ -319,17 +348,13 @@ Here are the sets, parameters, and variables that have already been defined:
 Here are the objective and constraints that have already been fixed:
 {{obj_cons_str}}
 
-Please provide only the missing later-stage blocks in order: {{remaining_stages}}.
-End with <python> ... </python> and do not rewrite earlier components.
-
-{TAG_OUTPUT_NOTICE}
-
-{SPLIT_COMPLETION_NOTICE}
+And you should Provide the corresponding Gurobi Python code to implement the model in <python></python>.
 
 {CODE_NOTICE}
 """.strip(),
     Stage.CODE: "",
 }
+
 
 
 SOLVERLLM_TEMPLATES: dict[Stage, str] = {
@@ -345,7 +370,6 @@ Please provide the type analysis and modeling hints needed for this optimization
 Return exactly one block: <Type> ... </Type>
 Do not define sets, parameters, variables, objective, constraints, or code.
 
-{TAG_OUTPUT_NOTICE}
 
 {SOLVERLLM_TYPE_HINT_NOTICE}
 """.strip(),
@@ -364,8 +388,6 @@ Here are some instructions for solving this problem:
 Please provide the sets needed for this optimization problem.
 Return exactly one block: <Sets> ... </Sets>
 Do not generate parameters, variables, objective, constraints, or code.
-
-{TAG_OUTPUT_NOTICE}
 
 {SOLVERLLM_SETS_NOTICE}
 """.strip(),
@@ -387,8 +409,6 @@ Here are the sets that have already been defined:
 Please provide the parameters needed for this optimization problem.
 Return exactly one block: <Parameters> ... </Parameters>
 Do not generate variables, objective, constraints, or code.
-
-{TAG_OUTPUT_NOTICE}
 
 {SOLVERLLM_PARAMETERS_NOTICE}
 """.strip(),
@@ -413,8 +433,6 @@ Here are the parameters that have already been defined:
 Please provide the variables needed for this optimization problem.
 Return exactly one block: <Variables> ... </Variables>
 Do not generate objective, constraints, or code.
-
-{TAG_OUTPUT_NOTICE}
 
 {SOLVERLLM_VARIABLES_NOTICE}
 """.strip(),
@@ -442,8 +460,6 @@ Here are the variables that have already been defined:
 Please provide the objective needed for this optimization problem.
 Return exactly one block: <Objective> ... </Objective>
 Do not generate constraints or code.
-
-{TAG_OUTPUT_NOTICE}
 
 {SOLVERLLM_OBJECTIVE_NOTICE}
 """.strip(),
@@ -474,8 +490,6 @@ Here is the objective that has already been defined:
 Please provide the constraints needed for this optimization problem.
 Return exactly one block: <Constraints> ... </Constraints>
 Do not generate code.
-
-{TAG_OUTPUT_NOTICE}
 
 {SOLVERLLM_CONSTRAINTS_NOTICE}
 """.strip(),
@@ -509,8 +523,6 @@ Here are the constraints that have already been defined:
 Please provide the executable Gurobi Python code needed for this optimization problem.
 Return exactly one block: <python> ... </python>
 Translate the formulation faithfully and do not redesign it.
-
-{TAG_OUTPUT_NOTICE}
 
 {CODE_NOTICE}
 """.strip(),
@@ -558,8 +570,6 @@ Here are the constraints that have already been defined:
 The current node has already fixed the component for: {{current_stage}}
 Please provide only the missing later-stage blocks in order: {{remaining_stages}}.
 End with <python> ... </python> and do not rewrite earlier components.
-
-{TAG_OUTPUT_NOTICE}
 
 {SPLIT_COMPLETION_NOTICE}
 
