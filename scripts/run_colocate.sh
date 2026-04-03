@@ -10,8 +10,8 @@ set -euo pipefail
 # - each rank trains on its local GPU
 # - colocated vLLM shares the same GPUs for generation
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
-NPROC_PER_NODE=2
+export CUDA_VISIBLE_DEVICES=0
+NPROC_PER_NODE=1
 MASTER_ADDR=127.0.0.1
 MASTER_PORT=29521
 NUM_MACHINES=1
@@ -25,8 +25,8 @@ DATASET_JSONL="${DATASET_JSONL:-data/IndustryOR_fixedV2.jsonl}"
 DATASET_START_INDEX=0
 DATASET_LIMIT=0
 RESUME_SKIP_COMPLETED=true
-LOG_DIR="${LOG_DIR:-logs/run_colocate}"
-OUT_JSON="${OUT_JSON:-outputs/run_colocate.json}"
+LOG_DIR="${LOG_DIR:-logs/run}"
+OUT_JSON="${OUT_JSON:-outputs/run.json}"
 
 # MCTS
 MAX_ITERATIONS=20
