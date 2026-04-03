@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 import time
@@ -128,6 +128,8 @@ class FourStageMCTS:
 
             prompt_t0 = time.perf_counter()
             selected_traj = None if selected.stage is None else selected.to_partial_trajectory()
+            base_prompt_messages = self.prompt_builder.build_messages(task, next_stage, selected_traj, prompt_kind="stage")
+            prompt_messages = self.prompt_builder.build_messages(task, next_stage, selected_traj, prompt_kind="rollout")
             base_prompt = self.prompt_builder.build(task, next_stage, selected_traj)
             prompt = self.prompt_builder.build_rollout(task, next_stage, selected_traj)
             prompt_build_sec = float(time.perf_counter() - prompt_t0)
@@ -149,7 +151,6 @@ class FourStageMCTS:
                     text=parsed_text,
                     prior=1.0,
                     parent=selected,
-                    prompt=base_prompt,
                 )
 
                 return {
@@ -302,7 +303,7 @@ class FourStageMCTS:
             rollout_group_t0 = time.perf_counter()
             generations, grpo_report = self._run_internal_grpo_rollout(
                 stage=next_stage,
-                prompt=prompt,
+                prompt=prompt_messages or prompt,
                 grpo_config=grpo_config,
                 reward_callback=_reward_callback,
             )
@@ -320,7 +321,7 @@ class FourStageMCTS:
 
             resolved_priors, prior_source = self._resolve_child_priors(
                 stage=next_stage,
-                prompt=base_prompt,
+                prompt=base_prompt_messages or base_prompt,
                 rollouts=group_rollouts,
                 fallback_generations=generations,
             )
@@ -611,7 +612,7 @@ class FourStageMCTS:
     def _run_internal_grpo_rollout(
         self,
         stage: Stage,
-        prompt: str,
+        prompt: Any,
         grpo_config: GRPOConfig,
         reward_callback: Callable[[str, str, int], float],
     ) -> tuple[list[Generation], dict[str, Any]]:
@@ -638,20 +639,24 @@ class FourStageMCTS:
         return cleaned, cleaned
 
     @staticmethod
-    def _tag_for_stage(stage: Stage) -> str:
+    def _tags_for_stage(stage: Stage) -> list[str]:
         if stage in (Stage.SCHEMA, Stage.TYPE_HINT):
-            return "stage_1"
-        if stage in (Stage.SET_PARAM_VAR, Stage.SETS):
-            return "stage_2"
-        if stage in (Stage.OBJ_CONS, Stage.PARAMETERS):
-            return "stage_3"
+            return ["Type"]
+        if stage == Stage.SET_PARAM_VAR:
+            return ["Sets", "Parameters", "Variables"]
+        if stage == Stage.OBJ_CONS:
+            return ["Objective", "Constraints"]
+        if stage == Stage.SETS:
+            return ["Sets"]
+        if stage == Stage.PARAMETERS:
+            return ["Parameters"]
         if stage == Stage.VARIABLES:
-            return "stage_4"
+            return ["Variables"]
         if stage == Stage.OBJECTIVE:
-            return "stage_5"
+            return ["Objective"]
         if stage == Stage.CONSTRAINTS:
-            return "stage_6"
-        return "Gurobi_code"
+            return ["Constraints"]
+        return ["python"]
 
     @staticmethod
     def _extract_tag_block(text: str, tag: str, min_len: int = 0) -> str:
@@ -660,12 +665,6 @@ class FourStageMCTS:
         Supports two formats (in priority order):
         1. <tag>...</tag>  (angle brackets, preferred)
         2. [tag]...[/tag]  (square brackets, fallback)
-
-        Logic (from front to back):
-        1. Find the first closing tag
-        2. Find the nearest opening tag before it
-        3. If content length > min_len, return it
-        4. Otherwise, continue to the next closing tag
         """
         raw = (text or "").strip()
         if not raw:
@@ -691,7 +690,6 @@ class FourStageMCTS:
         close_delim: str,
         required_len: int,
     ) -> str:
-        """Extract content using specific delimiters (e.g., < > or [ ])."""
         od = re.escape(open_delim)
         cd = re.escape(close_delim)
 
@@ -712,27 +710,22 @@ class FourStageMCTS:
 
         for close_match in close_matches:
             close_start = close_match.start()
-
             nearest_open = None
             for open_match in reversed(open_matches):
                 if open_match.end() <= close_start:
                     nearest_open = open_match
                     break
-
             if nearest_open is None:
                 continue
-
             content = text[nearest_open.end():close_start]
             cleaned = content.strip()
             if len(cleaned) >= required_len:
                 return cleaned
-
         return ""
 
     @staticmethod
     def _extract_rollout_stage_block(rollout_text: str, stage: Stage) -> str:
-        tag = FourStageMCTS._tag_for_stage(stage)
-        return FourStageMCTS._extract_tag_block(rollout_text, tag=tag, min_len=21)
+        return FourStageMCTS._extract_stage_payload(stage, rollout_text)
 
     def _complete_for_reward_from_rollout(
         self,
@@ -756,16 +749,7 @@ class FourStageMCTS:
         full_text = str(full_completion or "")
         start_idx = self.stage_order.index(from_node.stage)
         for next_stage in self.stage_order[start_idx + 1 :]:
-            block = self._extract_rollout_stage_block(full_text, next_stage)
-            if not block:
-                continue
-
-            if next_stage == Stage.CODE:
-                parsed = self._extract_stage_payload(next_stage, block)
-            else:
-                parsed = self._normalize_text_block(block)
-                if len((parsed or "").strip()) <= 20:
-                    parsed = ""
+            parsed = self._extract_stage_payload(next_stage, full_text)
             if not parsed:
                 continue
             partial.outputs[next_stage] = parsed
@@ -813,8 +797,9 @@ class FourStageMCTS:
             start_idx = self.stage_order.index(from_node.stage)
 
         for next_stage in self.stage_order[start_idx + 1 :]:
+            prompt_messages = self.prompt_builder.build_messages(task, next_stage, partial, prompt_kind="stage")
             prompt = self.prompt_builder.build(task, next_stage, partial)
-            generation = self.backend.generate(next_stage, prompt, 1)[0]
+            generation = self.backend.generate(next_stage, prompt_messages or prompt, 1)[0]
             partial.outputs[next_stage] = self._extract_stage_payload(next_stage, generation.text)
             partial.priors[next_stage] = generation.prior
 
@@ -823,7 +808,7 @@ class FourStageMCTS:
     def _resolve_child_priors(
         self,
         stage: Stage,
-        prompt: str,
+        prompt: Any,
         rollouts: list[dict[str, Any]],
         fallback_generations: list[Generation],
     ) -> tuple[list[float], str]:
@@ -971,12 +956,14 @@ class FourStageMCTS:
                 return code
             return ""
 
-        tag = FourStageMCTS._tag_for_stage(stage)
-        block = FourStageMCTS._extract_tag_block(cleaned, tag=tag, min_len=21)
-        if block:
-            return block.strip()
+        blocks: list[str] = []
+        for tag in FourStageMCTS._tags_for_stage(stage):
+            block = FourStageMCTS._extract_tag_block(cleaned, tag=tag, min_len=21)
+            if not block:
+                continue
+            blocks.append(f"<{tag}>\n{block.strip()}\n</{tag}>")
 
-        return ""
+        return "\n\n".join(blocks).strip()
 
     @staticmethod
     def _normalize_text_block(text: str) -> str:
@@ -1055,9 +1042,12 @@ class FourStageMCTS:
             return cleaned
 
         # Unified extraction policy:
-        # 1) Prefer explicit <Gurobi_code> ... </Gurobi_code> with first-close truncation.
-        # 2) Fallback to fenced code block extraction.
-        by_tag = FourStageMCTS._extract_tag_block(cleaned, tag="Gurobi_code", min_len=21)
+        # 1) Prefer explicit <python> ... </python> with first-close truncation.
+        # 2) Fallback to legacy <Gurobi_code> ... </Gurobi_code>.
+        # 3) Fallback to fenced code block extraction.
+        by_tag = FourStageMCTS._extract_tag_block(cleaned, tag="python", min_len=21)
+        if not by_tag:
+            by_tag = FourStageMCTS._extract_tag_block(cleaned, tag="Gurobi_code", min_len=21)
         if by_tag:
             cleaned = by_tag
 
@@ -1099,6 +1089,8 @@ class FourStageMCTS:
 
         cleaned = "\n".join(code_lines).strip()
         return cleaned
+
+
 
 
 

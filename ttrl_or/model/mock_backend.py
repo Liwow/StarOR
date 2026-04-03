@@ -29,13 +29,14 @@ class MockPolicyBackend(PolicyBackend):
         self._episode_key = ""
         self._stage_bias = {stage: 0.0 for stage in Stage}
 
-    def generate(self, stage: Stage, prompt: str, n: int) -> list[Generation]:
+    def generate(self, stage: Stage, prompt: Any, n: int) -> list[Generation]:
         cands = self._candidate_bank(stage)
         outputs: list[Generation] = []
         bias = self._stage_bias.get(stage, 0.0)
+        prompt_key = self._prompt_key(prompt)
 
         for i in range(n):
-            rng = self._rng(stage, prompt, i)
+            rng = self._rng(stage, prompt_key, i)
             weights = [max(0.001, base + bias) for base, _ in cands]
             idx = _sample_index(rng, weights)
             base_prior, text = cands[idx]
@@ -49,15 +50,16 @@ class MockPolicyBackend(PolicyBackend):
             )
         return outputs
 
-    def score_action_priors(self, stage: Stage, prompt: str, candidates: list[str]) -> list[float]:
+    def score_action_priors(self, stage: Stage, prompt: Any, candidates: list[str]) -> list[float]:
         if not candidates:
             return []
+        prompt_key = self._prompt_key(prompt)
         weights: list[float] = []
         for idx, candidate in enumerate(candidates):
             if not str(candidate or '').strip():
                 weights.append(1e-6)
                 continue
-            rng = self._rng(stage, prompt + '||' + str(candidate), 1000 + idx)
+            rng = self._rng(stage, prompt_key + '||' + str(candidate), 1000 + idx)
             weights.append(max(1e-6, 0.5 + rng.random()))
         total = sum(weights)
         if total <= 0:
@@ -67,7 +69,7 @@ class MockPolicyBackend(PolicyBackend):
     def grpo_rollout_group(
         self,
         stage: Stage,
-        prompt: str,
+        prompt: Any,
         config: GRPOConfig,
         reward_callback,
     ) -> tuple[list[Generation], dict[str, Any]]:
@@ -192,6 +194,16 @@ def solve(instance: dict) -> dict:
         return random.Random(int(digest[:8], 16))
 
     @staticmethod
+    def _prompt_key(prompt: Any) -> str:
+        if isinstance(prompt, list):
+            return "\n\n".join(
+                f"[{str(item.get('role', 'user')).upper()}]\n{str(item.get('content', '')).strip()}"
+                for item in prompt
+                if isinstance(item, dict) and str(item.get("content", "")).strip()
+            )
+        return str(prompt)
+
+    @staticmethod
     def _candidate_bank(stage: Stage) -> list[tuple[float, str]]:
         if stage == Stage.SCHEMA:
             return [
@@ -220,69 +232,36 @@ def solve(instance: dict) -> dict:
             ]
         if stage == Stage.PARAMETERS:
             return [
-                (0.67, '- c_i: item cost\n- v_i: item value\n- cap: capacity'),
-                (0.51, '- p_j: processing time\n- d_j: deadline'),
+                (0.67, '- cost[i]: unit cost\n- value[i]: unit value\n- cap: capacity'),
+                (0.53, '- p[j]: processing time\n- d[j]: deadline'),
             ]
         if stage == Stage.VARIABLES:
             return [
-                (0.66, '- x_i: whether item i is selected (BINARY)'),
-                (0.49, '- x_j: assignment decision (BINARY)'),
+                (0.66, '- x[i]: binary selection variable'),
+                (0.55, '- start[j]: start time\n- late[j]: tardiness'),
             ]
         if stage == Stage.OBJECTIVE:
             return [
-                (0.68, '- maximize_total_value: maximize total selected value'),
-                (0.47, '- minimize_total_cost: minimize total cost'),
+                (0.69, '- maximize total value'),
+                (0.54, '- minimize total tardiness'),
             ]
         if stage == Stage.CONSTRAINTS:
             return [
-                (0.67, '- capacity_limit: total used resource does not exceed capacity'),
-                (0.46, '- assignment_consistency: each job assigned appropriately'),
+                (0.69, '- capacity limit\n- logical consistency'),
+                (0.55, '- timing feasibility\n- non-negativity'),
             ]
         return [
-            (0.78, _code_variant_sum_numeric()),
-            (0.62, _code_variant_weighted_numeric()),
-            (0.12, _code_variant_broken()),
+            (0.70, 'def solve(instance: dict) -> dict:\n    total = sum(float(v) for v in instance.values() if isinstance(v, (int, float)))\n    print(f"Optimal value: {total}")\n    return {"objective": total, "status": "ok"}'),
+            (0.50, 'def solve(instance: dict) -> dict:\n    return {"objective": 0.0, "status": "mock"}'),
         ]
 
 
 def _sample_index(rng: random.Random, weights: list[float]) -> int:
     total = sum(weights)
-    pick = rng.uniform(0.0, total)
-    running = 0.0
-    for i, w in enumerate(weights):
-        running += w
-        if pick <= running:
-            return i
-    return max(0, len(weights) - 1)
-
-
-def _code_variant_sum_numeric() -> str:
-    return """
-def solve(instance: dict) -> dict:
-    total = 0.0
-    for value in instance.values():
-        if isinstance(value, (int, float)):
-            total += float(value)
-    print(f"Optimal value: {total}")
-    return {"objective": total, "status": "ok"}
-""".strip()
-
-
-def _code_variant_weighted_numeric() -> str:
-    return """
-def solve(instance: dict) -> dict:
-    total = 0.0
-    for idx, key in enumerate(sorted(instance.keys())):
-        value = instance[key]
-        if isinstance(value, (int, float)):
-            total += float(value) * (idx + 1)
-    print(f"Optimal value: {total}")
-    return {"objective": total, "status": "ok"}
-""".strip()
-
-
-def _code_variant_broken() -> str:
-    return """
-def solve(instance: dict) -> dict:
-    return {"objective": float(undefined_symbol), "status": "fail"}
-""".strip()
+    threshold = rng.uniform(0, total)
+    cursor = 0.0
+    for idx, weight in enumerate(weights):
+        cursor += weight
+        if cursor >= threshold:
+            return idx
+    return len(weights) - 1

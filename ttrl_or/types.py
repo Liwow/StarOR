@@ -41,16 +41,16 @@ STAGE_ORDER: tuple[Stage, ...] = DEFAULT_STAGE_ORDER
 
 
 _STAGE_TAG_MAP: dict[Stage, str] = {
-    Stage.SCHEMA: "stage_1",
-    Stage.SET_PARAM_VAR: "stage_2",
-    Stage.OBJ_CONS: "stage_3",
-    Stage.TYPE_HINT: "stage_1",
-    Stage.SETS: "stage_2",
-    Stage.PARAMETERS: "stage_3",
-    Stage.VARIABLES: "stage_4",
-    Stage.OBJECTIVE: "stage_5",
-    Stage.CONSTRAINTS: "stage_6",
-    Stage.CODE: "Gurobi_code",
+    Stage.SCHEMA: "Type",
+    Stage.SET_PARAM_VAR: "Sets",
+    Stage.OBJ_CONS: "Objective",
+    Stage.TYPE_HINT: "Type",
+    Stage.SETS: "Sets",
+    Stage.PARAMETERS: "Parameters",
+    Stage.VARIABLES: "Variables",
+    Stage.OBJECTIVE: "Objective",
+    Stage.CONSTRAINTS: "Constraints",
+    Stage.CODE: "python",
 }
 
 
@@ -86,6 +86,9 @@ class ModelInfo:
     num_bin_vars: int = 0
     num_int_vars: int = 0
     num_constrs: int = 0
+    has_objective: bool = False
+    has_constraints: bool = False
+    has_variables: bool = False
     extracted: bool = False
 
     def feature_tuple(self) -> tuple[int, int, int, int]:
@@ -180,3 +183,4 @@ class RunTrace:
     final_selection: dict[str, Any] = field(default_factory=dict)
     best_trajectory: dict[str, Any] = field(default_factory=dict)
     artifacts: dict[str, str] = field(default_factory=dict)
+

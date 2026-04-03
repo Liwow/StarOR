@@ -3,41 +3,16 @@ Role: You are an optimization problem modeling master.
 Workflow: You must follow 4 stages to complete optimization modeling tasks:
 
 Stage 1: Schema and Modeling Skill Analysis (Analyze the problem type, complexity, and modeling strategy).
-Stage 2: Set, Parameters, and Variables Construction (Define set indices, input data Parameters, and decision variables).
+Stage 2: Sets, Parameters, and Variables Construction (Define set indices, input data Parameters, and decision variables).
 Stage 3: Objective and Constraints Modeling (Formulate the mathematical expressions).
 Stage 4: Problem Solving Code with Gurobi (Write the Python implementation using the gurobipy library).
 In every current stage, you should output the current stage content following the Output Format below: 
-You MUST wrap the content of each stage in the following specific tags: <stage_1>, <stage_2>, <stage_3>, and <Gurobi_code>.
-Before you output the content of each stage, you should think step bt step first in <thought> and then follow the instruction to check. Only output within the tags when you already think and check.
+You MUST wrap the content of each stage in the required tags. Use <Type> for stage 1, <Sets>/<Parameters>/<Variables> for stage 2, <Objective>/<Constraints> for stage 3, and <python> for code.
+Before you output, you should think step by step first in <thought> and then follow the instruction to output.
 Note: Output only clean, stage-specific content within each tag, without other explanations, descriptions or thoughts.
 """
 
 
-
-SCHEMA_SKILL_NOTICE = """
-# GLOBAL RULES
-
-- Output results directly. Do NOT output chain-of-thought.
-- Be concise but complete.
-- Preserve the original task semantics.
-- Prefer structural abstraction over surface paraphrase.
-- Include only decision-relevant content.
-- Do not drift into downstream stages.
-
-
-# QUALITY CHECK BEFORE OUTPUT
-
-Make sure:
-1. the decision structure is clear,
-2. the main entities and limits are captured,
-3. the optimization goal is explicit,
-4. the anticipated constraint families are meaningful,
-5. the skills are reusable OR patterns,
-6. no sets, parameters, variables, equations, or code appear in this stage.
-
-Put your output within <stage_1></stage_1>
-
-"""
 
 SET_PARA_VAR_NOTICE = """
 # MANDATORY FORMAT RULES
@@ -158,7 +133,7 @@ Make sure:
 4. Names are short, stable, and reusable by the next stage.
 5. No objective, no constraints, and no code appear in this stage.
 
-Put your output within <stage_2></stage_2>
+Put your output within <Sets></Sets>, <Parameters></Parameters>, and <Variables></Variables>
 """
 
 OBJ_CON_NOTICE = """
@@ -260,7 +235,7 @@ Make sure:
 5. No code appears in this stage.
 Before finalizing, verify whether the model covers: feasibility, resource balance, demand/service requirements, linking logic, exclusivity/conflict logic, and domain consistency whenever applicable.
 
-Put your output within <stage_3></stage_3>
+Put your output within <Objective></Objective> and <Constraints></Constraints>
 
 """
 
@@ -297,7 +272,7 @@ The generated code must:
 10. include exactly this print statement in the code:
    print(f"Optimal value: {{optimal}}")
 For example:
-<Gurobi_code>
+<python>
 import gurobipy as gp
 from gurobipy import GRB
 
@@ -312,7 +287,7 @@ if status == GRB.OPTIMAL:
     print(f"Optimal value: {{optimal}}")
 else:
     print(f"Model status: {{status}}")
-</Gurobi_code>
+</python>
 """
 
 

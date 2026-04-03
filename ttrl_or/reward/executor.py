@@ -267,12 +267,18 @@ class PythonCodeExecutor:
 
         try:
             model = gp.read(lp_path)
+            model_sense = int(model.ModelSense)
+            num_vars = int(model.NumVars)
+            num_constrs = int(model.NumConstrs)
             model_info = ModelInfo(
-                model_sense=int(model.ModelSense),  # 1=min, -1=max
-                num_vars=int(model.NumVars),
+                model_sense=model_sense,  # 1=min, -1=max
+                num_vars=num_vars,
                 num_bin_vars=int(model.NumBinVars),
                 num_int_vars=int(model.NumIntVars),
-                num_constrs=int(model.NumConstrs),
+                num_constrs=num_constrs,
+                has_objective=bool(model_sense in (-1, 1)),
+                has_constraints=bool(num_constrs > 0),
+                has_variables=bool(num_vars > 0),
                 extracted=True,
             )
             model.dispose()
@@ -324,13 +330,18 @@ class PythonCodeExecutor:
                 constr_lines = [l.strip() for l in st_match.group(1).strip().split("\n") if l.strip() and ":" in l]
                 num_constrs = len(constr_lines)
 
+            total_vars = max(num_vars, num_bin_vars + num_int_vars)
             return ModelInfo(
                 model_sense=model_sense,
-                num_vars=max(num_vars, num_bin_vars + num_int_vars),
+                num_vars=total_vars,
                 num_bin_vars=num_bin_vars,
                 num_int_vars=num_int_vars,
                 num_constrs=num_constrs,
+                has_objective=bool(model_sense in (-1, 1)),
+                has_constraints=bool(num_constrs > 0),
+                has_variables=bool(total_vars > 0),
                 extracted=True,
             )
         except Exception:
             return None
+

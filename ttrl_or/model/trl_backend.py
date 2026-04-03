@@ -102,12 +102,39 @@ class TRLPolicyBackend(PolicyBackend):
                 print("[LoRA][WARN] reset_lora_on_begin_episode=False, LoRA state may persist across samples.")
                 self._warned_lora_persist_across_tasks = True
 
-    def generate(self, stage: Stage, prompt: str, n: int) -> list[Generation]:
+    def _is_message_list(self, prompt: Any) -> bool:
+        return isinstance(prompt, list) and all(isinstance(item, dict) and "role" in item for item in prompt)
+
+    def _messages_to_text(self, messages: list[dict[str, Any]]) -> str:
+        chunks: list[str] = []
+        for message in messages:
+            role = str(message.get("role", "user") or "user").strip().upper()
+            content = str(message.get("content", "") or "").strip()
+            if not content:
+                continue
+            chunks.append(f"[{role}]\n{content}")
+        return "\n\n".join(chunks).strip()
+
+    def _prompt_to_model_text(self, prompt: Any, *, add_generation_prompt: bool) -> str:
+        if self._is_message_list(prompt):
+            messages = list(prompt)
+            chat_template = getattr(self._tokenizer, "apply_chat_template", None) if self._tokenizer is not None else None
+            if callable(chat_template):
+                try:
+                    rendered = chat_template(messages, tokenize=False, add_generation_prompt=bool(add_generation_prompt))
+                    return str(rendered or "").strip()
+                except Exception:
+                    pass
+            return self._messages_to_text(messages)
+        return _normalize_text(prompt)
+
+    def generate(self, stage: Stage, prompt: Any, n: int) -> list[Generation]:
         if self._model is None or self._tokenizer is None:
             raise RuntimeError("Episode not initialized. Call begin_episode() before generate().")
 
         self._model.eval()
-        inputs = self._tokenizer(prompt, return_tensors="pt")
+        prompt_text = self._prompt_to_model_text(prompt, add_generation_prompt=True)
+        inputs = self._tokenizer(prompt_text, return_tensors="pt")
         device = self._infer_device()
         inputs = {k: v.to(device) for k, v in inputs.items()}
 
@@ -147,7 +174,7 @@ class TRLPolicyBackend(PolicyBackend):
     def grpo_rollout_group(
         self,
         stage: Stage,
-        prompt: str,
+        prompt: Any,
         config: GRPOConfig,
         reward_callback,
     ) -> tuple[list[Generation], dict[str, Any]]:
@@ -167,7 +194,8 @@ class TRLPolicyBackend(PolicyBackend):
                 "requested_num_generations": k,
             }
 
-        train_dataset = datasets.Dataset.from_list([{"prompt": prompt}])
+        prompt_text = self._prompt_to_model_text(prompt, add_generation_prompt=True)
+        train_dataset = datasets.Dataset.from_list([{"prompt": prompt_text}])
         captured: list[Generation] = []
 
         def reward_func(prompts, completions, **kwargs):
@@ -218,7 +246,7 @@ class TRLPolicyBackend(PolicyBackend):
         call_index = int(self._grpo_call_index)
         rank = _env_int("RANK", 0)
         world_size = max(1, _env_int("WORLD_SIZE", 1))
-        prompt_tokens = int(self._tokenizer(prompt, return_tensors="pt")["input_ids"].shape[1])
+        prompt_tokens = int(self._tokenizer(prompt_text, return_tensors="pt")["input_ids"].shape[1])
         mem_before = self._cuda_mem_snapshot()
         lora_adapter_count = self._lora_adapter_count()
         self._assert_single_lora_adapter()
@@ -301,12 +329,12 @@ class TRLPolicyBackend(PolicyBackend):
 
         return captured, report
 
-    def score_action_priors(self, stage: Stage, prompt: str, candidates: list[str]) -> list[float]:
+    def score_action_priors(self, stage: Stage, prompt: Any, candidates: list[str]) -> list[float]:
         if self._model is None or self._tokenizer is None or not candidates:
             return []
 
         self._model.eval()
-        prompt_text = _normalize_text(prompt)
+        prompt_text = self._prompt_to_model_text(prompt, add_generation_prompt=True)
         gamma = 1.0
         tau = 1.0
 
@@ -379,7 +407,8 @@ class TRLPolicyBackend(PolicyBackend):
             }
 
         prompt = next(iter(prompts))
-        train_dataset = datasets.Dataset.from_list([{"prompt": prompt}])
+        prompt_text = self._prompt_to_model_text(prompt, add_generation_prompt=True)
+        train_dataset = datasets.Dataset.from_list([{"prompt": prompt_text}])
 
         cursor = 0
 
@@ -545,7 +574,7 @@ class TRLPolicyBackend(PolicyBackend):
 
     def generate_auxiliary_text(
         self,
-        prompt: str,
+        prompt: Any,
         *,
         max_new_tokens: int = 1024,
         temperature: float = 0.0,
@@ -701,7 +730,7 @@ class TRLPolicyBackend(PolicyBackend):
     def _generate_auxiliary_vllm_server(
         self,
         *,
-        prompt: str,
+        prompt: Any,
         max_new_tokens: int,
         temperature: float,
         top_p: float,
@@ -1560,5 +1589,12 @@ def _looks_like_vllm_comm_error(exc: Exception) -> bool:
         "close_communicator first",
     )
     return any(k in text for k in keys)
+
+
+
+
+
+
+
 
 

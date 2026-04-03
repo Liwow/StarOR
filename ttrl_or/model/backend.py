@@ -20,10 +20,10 @@ class PolicyBackend(ABC):
         """Drop temporary adapters after one task instance is complete."""
 
     @abstractmethod
-    def generate(self, stage: Stage, prompt: str, n: int) -> list[Generation]:
+    def generate(self, stage: Stage, prompt: Any, n: int) -> list[Generation]:
         """Generate n candidates for a specific stage with prior probabilities."""
 
-    def score_action_priors(self, stage: Stage, prompt: str, candidates: list[str]) -> list[float]:
+    def score_action_priors(self, stage: Stage, prompt: Any, candidates: list[str]) -> list[float]:
         """
         Optional hook: score current-stage child actions under the latest policy state.
         Returns normalized priors aligned with ``candidates``.
@@ -39,7 +39,7 @@ class PolicyBackend(ABC):
     def grpo_rollout_group(
         self,
         stage: Stage,
-        prompt: str,
+        prompt: Any,
         config: GRPOConfig,
         reward_callback,
     ) -> tuple[list[Generation], dict[str, Any]]:
@@ -95,7 +95,7 @@ class PolicyBackend(ABC):
 
     def generate_auxiliary_text(
         self,
-        prompt: str,
+        prompt: Any,
         *,
         max_new_tokens: int = 1024,
         temperature: float = 0.0,
@@ -135,4 +135,5 @@ class PolicyBackend(ABC):
     def generate_test_instances(self, task: OptimizationTask, k: int) -> list[dict[str, Any]]:
         """Optional: model-authored robustness tests (r3)."""
         return []
+
 

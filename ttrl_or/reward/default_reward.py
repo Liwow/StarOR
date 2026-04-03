@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import json
@@ -122,7 +122,7 @@ class TTRLRewardCalculator(RewardCalculator):
             model_info = e["model_info"]
             semantic_leader = e.get("semantic_leader")
 
-            r2 = 1.0 if effective_success else 0.0
+            r2 = 1.0 if self._r2_execution_success(execution) else 0.0
 
             r1 = 0.0
             r1_debug: dict[str, Any] = {
@@ -168,6 +168,10 @@ class TTRLRewardCalculator(RewardCalculator):
                         group_feature_counts=structural_group_counts,
                         group_total_count=structural_group_total,
                     )
+                r4_multiplier, lp_debug = self._r4_lp_completeness_multiplier(model_info)
+                r4 *= r4_multiplier
+                r4_debug["lp_completeness_multiplier"] = r4_multiplier
+                r4_debug["lp_completeness"] = lp_debug
 
             r3 = 0.0
             r3_meta: dict[str, Any] = {"triggered": False}
@@ -201,6 +205,10 @@ class TTRLRewardCalculator(RewardCalculator):
                     "num_vars": model_info.num_vars if model_info else None,
                     "num_bin_vars": model_info.num_bin_vars if model_info else None,
                     "num_int_vars": model_info.num_int_vars if model_info else None,
+                    "num_constrs": model_info.num_constrs if model_info else None,
+                    "has_objective": model_info.has_objective if model_info else None,
+                    "has_constraints": model_info.has_constraints if model_info else None,
+                    "has_variables": model_info.has_variables if model_info else None,
                 }
                 if model_info
                 else None,
@@ -256,6 +264,50 @@ class TTRLRewardCalculator(RewardCalculator):
     @staticmethod
     def compute_r2(execution_success: bool) -> float:
         return 1.0 if execution_success else 0.0
+
+    def _r2_execution_success(self, execution: ExecutionResult) -> bool:
+        if bool(execution.success):
+            return True
+
+        if str(execution.error_type or "") == "Timeout":
+            return False
+
+        obj_answer = self._extract_objective_from_execution(execution)
+        if self._is_valid_objective(obj_answer):
+            return True
+
+        stdout_text = str(execution.stdout or "")
+        lowered_stdout = stdout_text.lower()
+        if any(marker in lowered_stdout for marker in self._gurobi_success_markers):
+            return True
+        if "optimal value" in lowered_stdout or "objective value" in lowered_stdout:
+            return True
+
+        stderr_text = str(execution.stderr or "")
+        lowered_stderr = stderr_text.lower()
+        runtime_error_markers = (
+            "traceback",
+            "syntaxerror",
+            "nameerror",
+            "typeerror",
+            "valueerror",
+            "attributeerror",
+            "keyerror",
+            "indexerror",
+            "importerror",
+            "modulenotfounderror",
+            "zerodivisionerror",
+            "assertionerror",
+            "runtimeerror",
+        )
+        if any(marker in lowered_stderr for marker in runtime_error_markers):
+            return False
+
+        # If the code ran to normal process exit without runtime/syntax errors,
+        # malformed or missing JSON output should still count as r2=1.
+        if not lowered_stderr.strip():
+            return True
+        return False
 
     def compute_r3(self, trajectory: Trajectory) -> float:
         score, _ = self._compute_r3_with_details(trajectory)
@@ -691,7 +743,7 @@ class TTRLRewardCalculator(RewardCalculator):
         return abs(value - ref) <= rel_tol * base
 
     def _effective_execution_success(self, execution: ExecutionResult) -> bool:
-        if bool(execution.success):
+        if self._r2_execution_success(execution):
             return True
 
         obj_answer = self._extract_objective_from_execution(execution)
@@ -721,6 +773,7 @@ class TTRLRewardCalculator(RewardCalculator):
         eff = bool(effective_success) if effective_success is not None else bool(execution.success or marker_hit or obj_hit)
         return {
             "success": bool(execution.success),
+            "r2_success": bool(TTRLRewardCalculator._r2_execution_success(execution)),
             "effective_success": eff,
             "solver_success_marker_hit": marker_hit,
             "objective_text_marker_hit": bool("optimal value" in lowered or "objective value" in lowered),
@@ -754,3 +807,26 @@ class TTRLRewardCalculator(RewardCalculator):
             return value
         except Exception:
             return repr(value)
+
+    @staticmethod
+    def _r4_lp_completeness_multiplier(model_info: Any) -> tuple[float, dict[str, Any]]:
+        if model_info is None or not bool(getattr(model_info, 'extracted', False)):
+            return 0.5, {
+                'extracted': False,
+                'has_objective': False,
+                'has_constraints': False,
+                'has_variables': False,
+                'complete': False,
+            }
+        has_objective = bool(getattr(model_info, 'has_objective', False))
+        has_constraints = bool(getattr(model_info, 'has_constraints', False))
+        has_variables = bool(getattr(model_info, 'has_variables', False))
+        complete = bool(has_objective and has_constraints and has_variables)
+        return (1.0 if complete else 0.5), {
+            'extracted': True,
+            'has_objective': has_objective,
+            'has_constraints': has_constraints,
+            'has_variables': has_variables,
+            'complete': complete,
+        }
+
