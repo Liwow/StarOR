@@ -93,6 +93,7 @@ class FourStageMCTS:
         iteration_logs: list[dict[str, Any]] = []
         best_trajectory: Trajectory | None = None
         best_reward = float("-inf")
+        selection_history: list[tuple[str, str]] = []
 
         stage_archives: dict[Stage, list[Trajectory]] = {stage: [] for stage in self.stage_order}
 
@@ -108,7 +109,14 @@ class FourStageMCTS:
         for iter_idx in range(max(1, int(self.config.max_iterations))):
             iter_t0 = time.perf_counter()
             selection_t0 = time.perf_counter()
-            ranked_leaves = self._rank_expandable_leaves(root)
+            blocked_repeat_threshold = self._blocked_sibling_threshold()
+            blocked_group = self._blocked_sibling_group(selection_history, blocked_repeat_threshold)
+            ranked_leaves = self._rank_expandable_leaves(root, blocked_group=blocked_group)
+            block_applied = blocked_group is not None
+            if not ranked_leaves and blocked_group is not None:
+                ranked_leaves = self._rank_expandable_leaves(root, blocked_group=None)
+                blocked_group = None
+                block_applied = False
             if not ranked_leaves:
                 stop_info = {
                     "reason": "no_expandable_leaf",
@@ -120,11 +128,14 @@ class FourStageMCTS:
                 }
                 break
 
-            selected, selected_score, selection_path = self._select_leaf_recursive(root)
+            selected, selected_score, selection_path = self._select_leaf_recursive(root, blocked_group=blocked_group)
 
             next_stage = self._next_stage(selected.stage)
             if next_stage is None:
                 continue
+            selected_group_key = self._selection_group_key(selected)
+            if selected_group_key is not None:
+                selection_history.append(selected_group_key)
             selection_sec = float(time.perf_counter() - selection_t0)
             selected_q_before_group = float(selected.q_value)
             selected_visits_before_group = int(selected.visits)
@@ -491,6 +502,12 @@ class FourStageMCTS:
                 "iter": int(iter_idx),
                 "stage": next_stage.value,
                 "selection": {
+                    "blocked_sibling_group": {
+                        "parent_node_id": (blocked_group[0] if blocked_group else ""),
+                        "stage": (blocked_group[1] if blocked_group else ""),
+                        "applied": bool(block_applied and blocked_group is not None),
+                        "threshold": int(blocked_repeat_threshold),
+                    },
                     "selected_parent": {
                         "node_id": selected.node_id,
                         "stage": selected.stage.value if selected.stage else "<ROOT>",
@@ -870,14 +887,29 @@ class FourStageMCTS:
             return self._normalize_priors(fallback), 'fallback_generation'
         return normalized, 'teacher_forcing_lora'
 
-    def _select_leaf_recursive(self, root: SearchNode) -> tuple[SearchNode, float, list[dict[str, Any]]]:
+    def _select_leaf_recursive(
+        self,
+        root: SearchNode,
+        blocked_group: tuple[str, str] | None = None,
+    ) -> tuple[SearchNode, float, list[dict[str, Any]]]:
         cur = root
         selection_path: list[dict[str, Any]] = []
 
         while cur.children:
             candidate_scores: list[tuple[SearchNode, float]] = []
+            skipped_candidates: list[dict[str, Any]] = []
             for child in cur.children:
-                if not self._subtree_has_expandable_leaf(child):
+                if self._node_matches_selection_group(child, blocked_group):
+                    skipped_candidates.append(
+                        {
+                            'node_id': child.node_id,
+                            'stage': child.stage.value if child.stage else '<ROOT>',
+                            'reason': 'blocked_same_parent_stage',
+                            'content': child.text,
+                        }
+                    )
+                    continue
+                if not self._subtree_has_expandable_leaf(child, blocked_group=blocked_group):
                     continue
                 candidate_scores.append((child, float(self.selector.score(cur, child))))
 
@@ -890,6 +922,11 @@ class FourStageMCTS:
                 {
                     'parent_node_id': cur.node_id,
                     'parent_stage': cur.stage.value if cur.stage else '<ROOT>',
+                    'blocked_group': {
+                        'parent_node_id': (blocked_group[0] if blocked_group else ''),
+                        'stage': (blocked_group[1] if blocked_group else ''),
+                    },
+                    'skipped_candidates': skipped_candidates,
                     'candidates': [
                         {
                             'node_id': node.node_id,
@@ -910,14 +947,73 @@ class FourStageMCTS:
 
         return cur, float(self._leaf_score(cur)), selection_path
 
-    def _rank_expandable_leaves(self, root: SearchNode) -> list[tuple[SearchNode, float]]:
-        leaves = [node for node in self._iter_leaves(root) if self._next_stage(node.stage) is not None]
+    def _rank_expandable_leaves(
+        self,
+        root: SearchNode,
+        blocked_group: tuple[str, str] | None = None,
+    ) -> list[tuple[SearchNode, float]]:
+        leaves = [
+            node
+            for node in self._iter_leaves(root)
+            if self._next_stage(node.stage) is not None and not self._leaf_is_under_blocked_group(node, blocked_group)
+        ]
         return self._rank_leaves(leaves)
 
-    def _subtree_has_expandable_leaf(self, node: SearchNode) -> bool:
+    def _subtree_has_expandable_leaf(
+        self,
+        node: SearchNode,
+        blocked_group: tuple[str, str] | None = None,
+    ) -> bool:
+        if self._node_matches_selection_group(node, blocked_group):
+            return False
         if not node.children:
             return self._next_stage(node.stage) is not None
-        return any(self._subtree_has_expandable_leaf(child) for child in node.children)
+        return any(self._subtree_has_expandable_leaf(child, blocked_group=blocked_group) for child in node.children)
+
+    @staticmethod
+    def _selection_group_key(node: SearchNode) -> tuple[str, str] | None:
+        if node.parent is None or node.stage is None:
+            return None
+        return (str(node.parent.node_id), str(node.stage.value))
+
+    @staticmethod
+    def _node_matches_selection_group(
+        node: SearchNode,
+        blocked_group: tuple[str, str] | None,
+    ) -> bool:
+        if blocked_group is None:
+            return False
+        group_key = FourStageMCTS._selection_group_key(node)
+        return group_key == blocked_group
+
+    @staticmethod
+    def _leaf_is_under_blocked_group(
+        node: SearchNode,
+        blocked_group: tuple[str, str] | None,
+    ) -> bool:
+        cur: SearchNode | None = node
+        while cur is not None:
+            if FourStageMCTS._node_matches_selection_group(cur, blocked_group):
+                return True
+            cur = cur.parent
+        return False
+
+    def _blocked_sibling_threshold(self) -> int:
+        group_k = max(2, int(getattr(self._active_grpo_config, 'num_generations', 0) or 0)) if self._active_grpo_config is not None else 1
+        return max(2, group_k // 2)
+
+    @staticmethod
+    def _blocked_sibling_group(
+        selection_history: list[tuple[str, str]],
+        threshold: int,
+    ) -> tuple[str, str] | None:
+        if threshold <= 0 or len(selection_history) < threshold:
+            return None
+        recent = selection_history[-threshold:]
+        first = recent[0]
+        if all(item == first for item in recent):
+            return first
+        return None
 
     @staticmethod
     def _normalize_priors(values: list[float]) -> list[float]:
