@@ -8,14 +8,15 @@ export NCCL_DEBUG="${NCCL_DEBUG:-INFO}"
 # ==================================
 # Edit Here: TRL vLLM Server Params
 # ==================================
-MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
-
+# MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
+MODEL="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
+MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-${MODEL}}"
 VLLM_HOST="0.0.0.0"
 VLLM_PORT=8000
 VLLM_TENSOR_PARALLEL_SIZE=1
 VLLM_GPU_MEMORY_UTILIZATION=0.45
 
-VLLM_MAX_MODEL_LEN=8196
+VLLM_MAX_MODEL_LEN=16384
 VLLM_ENFORCE_EAGER=false
 VLLM_ENABLE_PREFIX_CACHING=true
 
