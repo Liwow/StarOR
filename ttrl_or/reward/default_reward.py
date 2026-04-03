@@ -71,7 +71,7 @@ class TTRLRewardCalculator(RewardCalculator):
         if commit:
             self._current_iteration = current_iter
 
-        base_obj_bounds = self._base_obj_bounds()
+        base_obj_scale = self._base_obj_scale()
         local_scope = self._use_local_cluster_scope()
 
         execution_pairs = self._execute_group(trajectories)
@@ -83,7 +83,7 @@ class TTRLRewardCalculator(RewardCalculator):
             code_text = str(traj.code or "")
             has_code = len(code_text.strip()) > 20
             has_valid_obj = self._is_valid_objective(obj_answer)
-            obj_in_bounds = self._objective_within_bounds(obj_answer, base_obj_bounds)
+            obj_in_bounds = self._objective_matches_scale(obj_answer, base_obj_scale)
             r1_eligible = bool(has_code and effective_success and has_valid_obj and obj_in_bounds)
 
             model_info = execution.model_info
@@ -198,7 +198,8 @@ class TTRLRewardCalculator(RewardCalculator):
                 "exec_elapsed_sec": float(execution.elapsed_sec),
                 "exec_cache_hit": bool(e["exec_cache_hit"]),
                 "obj_answer": obj_answer,
-                "base_obj_bounds": base_obj_bounds,
+                "base_obj_scale": base_obj_scale,
+                "base_obj_bounds": base_obj_scale,
                 "model_info": {
                     "extracted": bool(model_info and model_info.extracted),
                     "model_sense": model_info.model_sense if model_info else None,
@@ -479,7 +480,7 @@ class TTRLRewardCalculator(RewardCalculator):
             res = self.executor.run(trajectory.code, case_instance)
             effective_success = self._effective_execution_success(res)
             case_obj = self._extract_objective_from_execution(res)
-            obj_in_bounds = self._objective_within_bounds(case_obj, case_bounds)
+            obj_in_bounds = self._objective_matches_scale(case_obj, case_bounds)
             return {
                 "case_index": idx,
                 "success": bool(res.success),
@@ -562,47 +563,50 @@ class TTRLRewardCalculator(RewardCalculator):
                 out.append(item)
         return out
 
-    def _normalize_r3_case(self, raw_case: dict[str, Any] | Any) -> tuple[dict[str, Any], dict[str, float | None], dict[str, Any]]:
+    def _normalize_r3_case(self, raw_case: dict[str, Any] | Any) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         if isinstance(raw_case, dict) and isinstance(raw_case.get("instance"), dict):
             instance = dict(raw_case.get("instance", {}))
-            bounds = self._normalize_bounds_dict(raw_case.get("obj_bounds"))
+            scale = self._normalize_scale_spec(raw_case.get("obj_scale") or raw_case.get("obj_bounds"))
             meta = {
                 "changes": list(raw_case.get("changes", [])) if isinstance(raw_case.get("changes"), list) else [],
+                "patches": list(raw_case.get("patches", [])) if isinstance(raw_case.get("patches"), list) else [],
                 "case_id": raw_case.get("case_id", ""),
             }
-            return instance, bounds, meta
+            return instance, scale, meta
 
         if isinstance(raw_case, dict):
             instance = dict(raw_case)
-            bounds = self._normalize_bounds_dict(None)
+            scale = self._normalize_scale_spec(None)
             case_meta = raw_case.get("__perturbation__") if isinstance(raw_case.get("__perturbation__"), dict) else {}
             meta = {
                 "changes": list(case_meta.get("changes", [])) if isinstance(case_meta.get("changes"), list) else [],
+                "patches": list(case_meta.get("patches", [])) if isinstance(case_meta.get("patches"), list) else [],
                 "case_id": case_meta.get("case_id", ""),
             }
-            return instance, bounds, meta
+            return instance, scale, meta
 
-        return {}, self._normalize_bounds_dict(None), {}
+        return {}, self._normalize_scale_spec(None), {}
 
-    def _base_obj_bounds(self) -> dict[str, float | None]:
+    def _base_obj_scale(self) -> dict[str, Any]:
         from_instance = None
         if isinstance(self.task.instance, dict):
-            from_instance = self.task.instance.get("__r3_base_obj_bounds__")
+            from_instance = self.task.instance.get("__r3_base_obj_scale__")
+            if from_instance is None:
+                from_instance = self.task.instance.get("__r3_base_obj_bounds__")
         if from_instance is not None:
-            return self._normalize_bounds_dict(from_instance)
+            return self._normalize_scale_spec(from_instance)
 
         if isinstance(self.task.perturbation_map, dict):
-            maybe = self.task.perturbation_map.get("base_obj_bounds")
+            maybe = self.task.perturbation_map.get("base_obj_scale")
+            if maybe is None:
+                maybe = self.task.perturbation_map.get("base_obj_bounds")
             if maybe is not None:
-                return self._normalize_bounds_dict(maybe)
+                return self._normalize_scale_spec(maybe)
 
-        return {"lower": None, "upper": None}
+        return {"kind": "interval", "lower": None, "upper": None, "reject_exact": []}
 
     @staticmethod
-    def _normalize_bounds_dict(value: Any) -> dict[str, float | None]:
-        if not isinstance(value, dict):
-            return {"lower": None, "upper": None}
-
+    def _normalize_scale_spec(value: Any) -> dict[str, Any]:
         def _num(x: Any) -> float | None:
             if isinstance(x, bool):
                 return None
@@ -620,28 +624,100 @@ class TTRLRewardCalculator(RewardCalculator):
                     return None
             return None
 
+        if not isinstance(value, dict):
+            return {"kind": "interval", "lower": None, "upper": None, "reject_exact": []}
+
+        kind = str(value.get("kind") or "interval").strip().lower()
+        reject_exact: list[float] = []
+        if isinstance(value.get("reject_exact"), list):
+            for item in value.get("reject_exact", []):
+                num = _num(item)
+                if num is not None:
+                    reject_exact.append(float(num))
+
+        if kind == "point":
+            point = _num(value.get("point"))
+            tol_abs = _num(value.get("tol_abs"))
+            tol_rel = _num(value.get("tol_rel"))
+            return {
+                "kind": "point",
+                "point": point,
+                "tol_abs": tol_abs,
+                "tol_rel": tol_rel,
+                "reject_exact": reject_exact,
+            }
+
+        if kind == "union":
+            intervals: list[dict[str, float | None]] = []
+            if isinstance(value.get("intervals"), list):
+                for item in value.get("intervals", []):
+                    if not isinstance(item, dict):
+                        continue
+                    lo = _num(item.get("lower"))
+                    hi = _num(item.get("upper"))
+                    if lo is not None and hi is not None and lo > hi:
+                        lo, hi = hi, lo
+                    if lo is None and hi is None:
+                        continue
+                    intervals.append({"lower": lo, "upper": hi})
+            return {"kind": "union", "intervals": intervals, "reject_exact": reject_exact}
+
         lo = _num(value.get("lower"))
         hi = _num(value.get("upper"))
         if lo is not None and hi is not None and lo > hi:
             lo, hi = hi, lo
-        return {"lower": lo, "upper": hi}
+        return {"kind": "interval", "lower": lo, "upper": hi, "reject_exact": reject_exact}
 
-    def _objective_within_bounds(self, obj_answer: float | None, bounds: dict[str, float | None] | None) -> bool:
+    def _objective_matches_scale(self, obj_answer: float | None, scale: dict[str, Any] | None) -> bool:
         if not self._is_valid_objective(obj_answer):
             return False
 
-        if not isinstance(bounds, dict):
+        if not isinstance(scale, dict):
             return True
-        lo = bounds.get("lower")
-        hi = bounds.get("upper")
-        val = float(obj_answer)
 
+        val = float(obj_answer)
         eps = 1e-9
+        reject_exact = scale.get("reject_exact") if isinstance(scale.get("reject_exact"), list) else []
+        for item in reject_exact:
+            if isinstance(item, (int, float)) and abs(val - float(item)) <= eps:
+                return False
+
+        kind = str(scale.get("kind") or "interval").strip().lower()
+        if kind == "point":
+            point = scale.get("point")
+            if not isinstance(point, (int, float)):
+                return True
+            tol_abs = scale.get("tol_abs") if isinstance(scale.get("tol_abs"), (int, float)) else 0.0
+            tol_rel = scale.get("tol_rel") if isinstance(scale.get("tol_rel"), (int, float)) else 0.0
+            tol = max(float(tol_abs), abs(float(point)) * float(tol_rel))
+            return abs(val - float(point)) <= tol + eps
+
+        if kind == "union":
+            intervals = scale.get("intervals") if isinstance(scale.get("intervals"), list) else []
+            for item in intervals:
+                if not isinstance(item, dict):
+                    continue
+                lo = item.get("lower")
+                hi = item.get("upper")
+                ok = True
+                if isinstance(lo, (int, float)) and val < float(lo) - eps:
+                    ok = False
+                if isinstance(hi, (int, float)) and val > float(hi) + eps:
+                    ok = False
+                if ok:
+                    return True
+            return False if intervals else True
+
+        lo = scale.get("lower")
+        hi = scale.get("upper")
         if isinstance(lo, (int, float)) and val < float(lo) - eps:
             return False
         if isinstance(hi, (int, float)) and val > float(hi) + eps:
             return False
         return True
+
+    def _objective_within_bounds(self, obj_answer: float | None, bounds: dict[str, Any] | None) -> bool:
+        return self._objective_matches_scale(obj_answer, bounds)
 
     def _execute(self, trajectory: Trajectory) -> tuple[ExecutionResult, bool]:
         cache_key = self._execution_cache_key(trajectory.code, self.task.instance)

@@ -499,7 +499,9 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
             "instance": enriched_instance,
             "source": plan.source,
             "status": precompute_status,
+            "base_obj_scale": plan.base_obj_bounds,
             "base_obj_bounds": plan.base_obj_bounds,
+            "feature_catalog": plan.feature_catalog,
             "num_tests": len(plan.test_cases),
             "mapping": plan.mapping,
             "analysis": plan.analysis,
@@ -511,7 +513,7 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
         print(
             f"[r3-batch] [{idx}/{len(samples)}] sample_id={sample.sample_id} "
             f"status={precompute_status} source={plan.source} tests={len(plan.test_cases)} "
-            f"base_bounds={plan.base_obj_bounds}"
+            f"base_scale={plan.base_obj_bounds}"
         )
 
         if cfg.save_logs:
@@ -524,7 +526,9 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
                 "status": precompute_status,
                 "source": plan.source,
                 "analysis": plan.analysis,
-                "base_obj_bounds": plan.base_obj_bounds,
+                "base_obj_scale": plan.base_obj_bounds,
+            "base_obj_bounds": plan.base_obj_bounds,
+            "feature_catalog": plan.feature_catalog,
                 "num_tests": len(plan.test_cases),
                 "mapping": plan.mapping,
                 "tests": plan.test_cases,
@@ -554,6 +558,7 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
                 sid: {
                     "status": item.get("status"),
                     "source": item.get("source"),
+                    "base_obj_scale": item.get("base_obj_scale", item.get("base_obj_bounds")),
                     "base_obj_bounds": item.get("base_obj_bounds"),
                     "num_tests": item.get("num_tests"),
                     "mapping": item.get("mapping"),
@@ -676,6 +681,7 @@ def _run_dataset(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
                 "r3_precompute": {
                     "status": prepared.get("status") if isinstance(prepared, dict) else "",
                     "source": prepared.get("source") if isinstance(prepared, dict) else "",
+                    "base_obj_scale": prepared.get("base_obj_scale", prepared.get("base_obj_bounds")) if isinstance(prepared, dict) else {},
                     "base_obj_bounds": prepared.get("base_obj_bounds") if isinstance(prepared, dict) else {},
                     "num_tests": prepared.get("num_tests") if isinstance(prepared, dict) else 0,
                 },

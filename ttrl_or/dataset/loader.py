@@ -233,6 +233,8 @@ def build_instance_from_question(
     if not key_params:
         key_params = [row["key"] for row in feature_meta[: min(key_param_top_k, len(feature_meta))]]
 
+    feature_catalog = _build_feature_catalog(feature_meta)
+
     instance["__param_mode__"] = "table" if parsed_tables else "inline"
     instance["__inline_numbers__"] = parsed_inline_numbers
     instance["__table_count__"] = len(parsed_tables)
@@ -247,7 +249,32 @@ def build_instance_from_question(
         }
         for row in feature_meta[:64]
     ]
+    instance["__feature_catalog__"] = feature_catalog
+    instance["__feature_fid_to_key__"] = {
+        str(row["fid"]): str(row["key"])
+        for row in feature_catalog
+        if isinstance(row, dict) and isinstance(row.get("fid"), str) and isinstance(row.get("key"), str)
+    }
     return instance
+
+
+def _build_feature_catalog(feature_meta: list[dict[str, Any]], max_items: int = 64) -> list[dict[str, Any]]:
+    catalog: list[dict[str, Any]] = []
+    for idx, row in enumerate(feature_meta[: max(1, int(max_items))], start=1):
+        key = str(row.get("key", "")).strip()
+        if not key:
+            continue
+        catalog.append(
+            {
+                "fid": f"F{idx:02d}",
+                "key": key,
+                "value": row.get("value"),
+                "source": str(row.get("source", "")),
+                "score": int(row.get("score", 0)),
+                "snippet": str(row.get("snippet", "")).strip(),
+            }
+        )
+    return catalog
 
 
 def normalize_dataset_to_jsonl(input_path: str | Path, output_path: str | Path) -> dict[str, Any]:

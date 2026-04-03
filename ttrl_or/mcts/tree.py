@@ -640,10 +640,12 @@ class FourStageMCTS:
 
     @staticmethod
     def _tags_for_stage(stage: Stage) -> list[str]:
-        if stage in (Stage.SCHEMA, Stage.TYPE_HINT):
+        if stage == Stage.SCHEMA:
+            return ["Type", "Sets"]
+        if stage == Stage.TYPE_HINT:
             return ["Type"]
         if stage == Stage.SET_PARAM_VAR:
-            return ["Sets", "Parameters", "Variables"]
+            return ["Parameters", "Variables"]
         if stage == Stage.OBJ_CONS:
             return ["Objective", "Constraints"]
         if stage == Stage.SETS:

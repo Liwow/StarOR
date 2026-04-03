@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from ttrl_or.types import DEFAULT_STAGE_ORDER, SOLVERLLM_STAGE_ORDER, Stage
 
-from .notice_prompts import CODE_NOTICE, OBJ_CON_NOTICE, SET_PARA_VAR_NOTICE, SYSTEM_INSTRUCTION
+from .notice_prompts import CODE_NOTICE, OBJ_CON_NOTICE, PARA_VAR_NOTICE, SYSTEM_INSTRUCTION, TYPE_SET_NOTICE
 
 
 SPLIT_COMPLETION_NOTICE = """
@@ -108,42 +108,44 @@ class PromptProfile:
 DEFAULT_TEMPLATES: dict[Stage, str] = {
     Stage.SCHEMA: f"""
 You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
-I need you to help me generate the TYPE component for a mathematical optimization formulation. You are also required to determine which category of classical optimization problem the given instance belongs to.
+I need you to help me generate the TYPE and SETS components for a mathematical optimization formulation.
 
 Here is the specific description of the optimization problem:
 {{task_description}}
 
+Please provide the type analysis and the core sets needed for this optimization problem.
+Return exactly these two blocks in order:
+<Type> ... </Type>
+<Sets> ... </Sets>
+Do not define parameters, variables, objective, constraints, or code.
+The required order from this point is:
+1. <thought>
+2. <Type>
+3. <Sets>
 
-1. MUST return exactly one block: <Type>...</Type>
-2. This stage is only for optimization type + modeling hint analysis.
-3. Do NOT define sets, parameters, variables, objective, constraints, or code.
-4. Output concise, reusable, downstream-helpful modeling guidance only.
-
-Inside <Type>, organize the content as:
-### Type Analysis:
-- type: LP / MILP / NLP / MINLP
-- subtype: classical OR family if identifiable, like TSP, SetCover, CVRP and so on.
-
-### Modeling Hints
-
+{TYPE_SET_NOTICE}
 """.strip(),
-    Stage.SET_PARAM_VAR: f"""You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
-I need you to help me generate the SETS, PARAMETERS and VARIABLES components for a mathematical optimization formulation.
+    Stage.SET_PARAM_VAR: f"""
+You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
+I need you to help me generate the PARAMETERS and VARIABLES components for a mathematical optimization formulation.
 
 Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the analysis of the classical category for the optimization problem:
+Here are the type analysis and sets that have already been defined:
 {{schema_skill_str}}
 
-Please provide the sets, parameters, and variables needed for this optimization problem.
-Return exactly these three blocks in order:
-<Sets> ... </Sets>
+Please provide the parameters and variables needed for this optimization problem.
+Return exactly these two blocks in order:
 <Parameters> ... </Parameters>
 <Variables> ... </Variables>
 Do not write the objective, constraints, or code.
+The required order from this point is:
+1. <thought>
+2. <Parameters>
+3. <Variables>
 
-{SET_PARA_VAR_NOTICE}
+{PARA_VAR_NOTICE}
 """.strip(),
     Stage.OBJ_CONS: f"""
 You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
@@ -152,10 +154,10 @@ I need you to help me generate the Objectives and Constraints components for a m
 Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the analysis of the classical category for the optimization problem:
+Here are the type analysis and sets that have already been defined:
 {{schema_skill_str}}
 
-Here are the sets, parameters, and variables that have already been defined:
+Here are the parameters and variables that have already been defined:
 {{set_param_var_str}}
 
 Please provide the objective and constraints needed for this optimization problem.
@@ -163,6 +165,11 @@ Return exactly these two blocks in order:
 <Objective> ... </Objective>
 <Constraints> ... </Constraints>
 Do not generate code.
+The required order from this point is:
+1. <thought>
+2. <Objective>
+3. <Constraints>
+
 
 {OBJ_CON_NOTICE}
 """.strip(),
@@ -172,10 +179,10 @@ You are an optimization expert. You should solve the optimization problem and on
 Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the analysis of the classical category for the optimization problem:
+Here are the type analysis and sets that have already been defined:
 {{schema_skill_str}}
 
-Here are the sets, parameters, and variables that have already been defined:
+Here are the parameters and variables that have already been defined:
 {{set_param_var_str}}
 
 Here are the objective and constraints that have already been defined:
@@ -183,6 +190,9 @@ Here are the objective and constraints that have already been defined:
 
 Please provide the executable Gurobi Python code needed for this optimization problem within <python>.
 Translate the finalized model faithfully and do not redesign it.
+The required order from this point is:
+1. <thought>
+2. <python>
 
 {CODE_NOTICE}
 """.strip(),
@@ -192,56 +202,52 @@ Translate the finalized model faithfully and do not redesign it.
 DEFAULT_ROLLOUT_TEMPLATES: dict[Stage, str] = {
     Stage.SCHEMA: f"""
 You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
+
 Here is the specific description of the optimization problem:
 {{task_description}}
 
-1. You should first think step by step in <thought> and Carefully analyze the problem to identify decision variables, objective, and constraints.
+1. You should first think step by step in <thought> and carefully analyze the problem structure.
 
-2. Then You should generate the TYPE component for a mathematical optimization formulation within <Type> and </Type>. You are also required to determine which category of classical optimization problem the given instance belongs to.
+2. Then you should generate the TYPE and SETS components first and in order:
+<Type> ... </Type>
+<Sets> ... </Sets>
 
-Inside <Type>, organize the content as:
-### Type Analysis:
-- type: LP / MILP / NLP / MINLP
-- subtype: classical OR family if identifiable, like TSP, SetCover, CVRP and so on.
-
-### Modeling Hints
-
-3. Finally, you should Develop a complete mathematical model step bt step, and  Provide the corresponding Gurobi Python code to implement the model in <python>.
+3. After finishing the current stage, continue the formulation and finally provide the corresponding Gurobi Python code within <python> ... </python>.
 
 The required order from this point is:
 1. <thought>
 2. <Type>
-3. <python>
+3. <Sets>
+4. <python>
+
+{TYPE_SET_NOTICE}
 
 {CODE_NOTICE}
 """.strip(),
-    Stage.SET_PARAM_VAR: f"""You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
+    Stage.SET_PARAM_VAR: f"""
+You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
 
 Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the analysis of the classical category for the optimization problem:
+Here are the type analysis and sets that have already been defined:
 {{schema_skill_str}}
 
-1. You should first think step by step in <thought> and Carefully analyze the problem to identify decision variables, objective, and constraints.
+1. You should first think step by step in <thought> and carefully analyze the parameters and decisions needed by the formulation.
 
-2. Then You should generate the SETS, PARAMETERS and VARIABLES components for a mathematical optimization formulation.
-
-- Return exactly these three blocks first and in order:
-<Sets> ... </Sets>
+2. Then you should generate the PARAMETERS and VARIABLES components first and in order:
 <Parameters> ... </Parameters>
 <Variables> ... </Variables>
 
-3. Finally, you should Develop a complete mathematical model step bt step, and  Provide the corresponding Gurobi Python code to implement the model in <python>.
+3. After finishing the current stage, continue the formulation and finally provide the corresponding Gurobi Python code within <python> ... </python>.
 
 The required order from this point is:
 1. <thought>
-2. <Sets>
-3. <Parameters>
-4. <Variables>
-5. <python>
+2. <Parameters>
+3. <Variables>
+4. <python>
 
-{SET_PARA_VAR_NOTICE}
+{PARA_VAR_NOTICE}
 
 {CODE_NOTICE}
 """.strip(),
@@ -251,22 +257,19 @@ You are a professional optimization problem analyst, proficient in extracting ke
 Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the analysis of the classical category for the optimization problem:
+Here are the type analysis and sets that have already been defined:
 {{schema_skill_str}}
 
-Here are the sets, parameters, and variables that have already been defined:
+Here are the parameters and variables that have already been defined:
 {{set_param_var_str}}
 
-1. You should first think step by step in <thought> and Carefully analyze the problem to identify decision variables, objective, and constraints.
+1. You should first think step by step in <thought> and carefully analyze the mathematical objective and constraints.
 
-2. Then You should generate the Objectives and Constraints components for a mathematical optimization formulation.
-
-- Return exactly these two blocks first and in order:
+2. Then you should generate the Objectives and Constraints components first and in order:
 <Objective> ... </Objective>
 <Constraints> ... </Constraints>
-- Do not stop after the current stage; continue to produce <python>.
 
-3. Finally, you should Develop a complete mathematical model step bt step, and  Provide the corresponding Gurobi Python code to implement the model in <python>.
+3. After finishing the current stage, continue and provide the corresponding Gurobi Python code within <python> ... </python>.
 
 The required order from this point is:
 1. <thought>
@@ -284,10 +287,10 @@ You are an optimization expert. You should solve the optimization problem and on
 Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the analysis of the classical category for the optimization problem:
+Here are the type analysis and sets that have already been defined:
 {{schema_skill_str}}
 
-Here are the sets, parameters, and variables that have already been defined:
+Here are the parameters and variables that have already been defined:
 {{set_param_var_str}}
 
 Here are the objective and constraints that have already been defined:
@@ -303,58 +306,55 @@ Translate the finalized model faithfully and do not redesign it.
 
 DEFAULT_COMPLETION_TEMPLATES: dict[Stage, str] = {
     Stage.SCHEMA: f"""
-You are an optimization expert. You should solve the optimization problem and only Provide the corresponding Gurobi Python code to implement the model within <python> and </python>
+You are an optimization expert. The current stage has already fixed the type analysis and sets for this optimization problem.
 
 Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the analysis of the classical category for the optimization problem:
+Here are the type analysis and sets that have already been fixed:
 {{schema_skill_str}}
 
-please think and Develop a complete mathematical model step by step, explicitly defining: * Sets * Parameters * Decision Variables (and their types) * Objective Function * Constraints 
-Finally, Provide the corresponding Gurobi Python code to implement the model in <python></python>.
+Please complete the remaining formulation by defining parameters, variables, objective, constraints, and finally the executable Gurobi Python code within <python> ... </python>.
 
 {CODE_NOTICE}
 """.strip(),
     Stage.SET_PARAM_VAR: f"""
-You are an optimization expert. You should solve the optimization problem and only Provide the corresponding Gurobi Python code to implement the model within <python> and </python>
+You are an optimization expert. The current stage has already fixed the parameters and variables for this optimization problem.
 
 Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the analysis of the classical category for the optimization problem:
+Here are the type analysis and sets that have already been defined:
 {{schema_skill_str}}
 
-Here are the sets, parameters, and variables that have already been defined:
+Here are the parameters and variables that have already been fixed:
 {{set_param_var_str}}
 
-please think and Develop a complete mathematical model step by step, explicitly defining: * Objective Function * Constraints 
-Finally, Provide the corresponding Gurobi Python code to implement the model in <python></python>.
+Please complete the remaining formulation by defining the objective, constraints, and finally the executable Gurobi Python code within <python> ... </python>.
 
 {CODE_NOTICE}
 """.strip(),
     Stage.OBJ_CONS: f"""
-You are an optimization expert. You should solve the optimization problem and only Provide the corresponding Gurobi Python code to implement the model within <python> and </python>
+You are an optimization expert. The mathematical formulation has already been fixed.
 
 Here is the specific description of the optimization problem:
 {{task_description}}
 
-Here is the analysis of the classical category for the optimization problem:
+Here are the type analysis and sets that have already been defined:
 {{schema_skill_str}}
 
-Here are the sets, parameters, and variables that have already been defined:
+Here are the parameters and variables that have already been defined:
 {{set_param_var_str}}
 
 Here are the objective and constraints that have already been fixed:
 {{obj_cons_str}}
 
-And you should Provide the corresponding Gurobi Python code to implement the model in <python></python>.
+Please provide the corresponding executable Gurobi Python code within <python> ... </python>.
 
 {CODE_NOTICE}
 """.strip(),
     Stage.CODE: "",
 }
-
 
 
 SOLVERLLM_TEMPLATES: dict[Stage, str] = {

@@ -6,8 +6,8 @@ from typing import Any
 
 
 class Stage(str, Enum):
-    SCHEMA = "Stage 1: Schema and Modeling Skill Analysis"
-    SET_PARAM_VAR = "Stage 2: Set, Parameters, and Variables Construction"
+    SCHEMA = "Stage 1: Type and Sets Construction"
+    SET_PARAM_VAR = "Stage 2: Parameters and Variables Construction"
     OBJ_CONS = "Stage 3: Objective and Constraints Modeling"
 
     TYPE_HINT = "Stage 1: Type and Modeling Hint Analysis"
@@ -42,7 +42,7 @@ STAGE_ORDER: tuple[Stage, ...] = DEFAULT_STAGE_ORDER
 
 _STAGE_TAG_MAP: dict[Stage, str] = {
     Stage.SCHEMA: "Type",
-    Stage.SET_PARAM_VAR: "Sets",
+    Stage.SET_PARAM_VAR: "Parameters",
     Stage.OBJ_CONS: "Objective",
     Stage.TYPE_HINT: "Type",
     Stage.SETS: "Sets",
