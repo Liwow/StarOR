@@ -759,9 +759,8 @@ class TTRLRewardCalculator(RewardCalculator):
             return True
 
         return False
-
-    @staticmethod
     def _execution_summary(
+        self,
         execution: ExecutionResult,
         obj_answer: float | None = None,
         effective_success: bool | None = None,
@@ -773,7 +772,7 @@ class TTRLRewardCalculator(RewardCalculator):
         eff = bool(effective_success) if effective_success is not None else bool(execution.success or marker_hit or obj_hit)
         return {
             "success": bool(execution.success),
-            "r2_success": bool(TTRLRewardCalculator._r2_execution_success(execution)),
+            "r2_success": bool(self._r2_execution_success(execution)),
             "effective_success": eff,
             "solver_success_marker_hit": marker_hit,
             "objective_text_marker_hit": bool("optimal value" in lowered or "objective value" in lowered),
