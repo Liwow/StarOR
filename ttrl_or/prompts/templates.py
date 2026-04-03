@@ -223,6 +223,8 @@ The required order from this point is:
 {TYPE_SET_NOTICE}
 
 {CODE_NOTICE}
+
+NOTE: You should think first in <thought>, and then output the problem type in <Type> and the Sets in <Sets>, finally output the complete optimization problem modeling code in <python>.
 """.strip(),
     Stage.SET_PARAM_VAR: f"""
 You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
@@ -250,6 +252,8 @@ The required order from this point is:
 {PARA_VAR_NOTICE}
 
 {CODE_NOTICE}
+
+NOTE: You should think first in <thought>, and then output the problem Parameters in <Parameters> and the problem Variables in <Variables>, finally output the complete optimization problem modeling code in <python>.
 """.strip(),
     Stage.OBJ_CONS: f"""
 You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
@@ -280,6 +284,7 @@ The required order from this point is:
 {OBJ_CON_NOTICE}
 
 {CODE_NOTICE}
+NOTE: You should think first in <thought>, and then output the problem Objective in <Objective> and the problem Constraints in <Variables>, finally output the complete optimization problem modeling code in <python>.
 """.strip(),
     Stage.CODE: f"""
 You are an optimization expert. You should solve the optimization problem and only Provide the corresponding Gurobi Python code to implement the model within <python> and </python>

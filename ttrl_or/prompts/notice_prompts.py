@@ -170,7 +170,7 @@ Make sure:
 4. Names are short, stable, and reusable by the next stage.
 5. No objective, no constraints, and no code appear in this stage.
 
-Put your output within <Parameters></Parameters>, and <Variables></Variables>
+Put the problem Parameters within <Parameters> and </Parameters>, and the problem Variables within <Variables> and </Variables>.
 """
 
 
@@ -293,7 +293,7 @@ Make sure:
 4. Names are short, stable, and reusable by the next stage.
 5. No objective, no constraints, and no code appear in this stage.
 
-Put your output within <Sets></Sets>, <Parameters></Parameters>, and <Variables></Variables>
+Put your output within <Sets></Sets>, <Parameters></Parameters>, and <Variables></Variables>.
 """
 
 OBJ_CON_NOTICE = """
@@ -395,7 +395,7 @@ Make sure:
 5. No code appears in this stage.
 Before finalizing, verify whether the model covers: feasibility, resource balance, demand/service requirements, linking logic, exclusivity/conflict logic, and domain consistency whenever applicable.
 
-Put your output within <Objective></Objective> and <Constraints></Constraints>
+Put problem Objective within <Objective> and </Objective> and problem Constraints within <Constraints> and </Constraints>.
 
 """
 

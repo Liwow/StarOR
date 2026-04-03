@@ -15,7 +15,7 @@ START_SERVER_SCRIPT="scripts/start_vllm_server.sh"
 STOP_SERVER_SCRIPT="scripts/stop_vllm_server.sh"
 
 DATASET_JSONL="data/IndustryOR_fixedV2.jsonl"
-CHUNK_SAMPLES=10
+CHUNK_SAMPLES=8
 TOTAL_LIMIT=0   # 0 = run all samples in dataset
 
 LOG_DIR="logs/run"
