@@ -30,7 +30,8 @@ SERVER_CUDA_VISIBLE_DEVICES="${SERVER_CUDA_VISIBLE_DEVICES:-1}"
 # pass-through run settings
 NPROC_PER_NODE=1
 BACKEND="trl"
-MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
+MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
+# MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
 
 count_jsonl_lines() {
   local f="$1"
@@ -58,7 +59,7 @@ restart_server_if_needed() {
   echo "[server] restarting vLLM server on CUDA_VISIBLE_DEVICES=${SERVER_CUDA_VISIBLE_DEVICES} port=${VLLM_PORT}"
   PORT="${VLLM_PORT}" bash "${STOP_SERVER_SCRIPT}"
   sleep 2
-  CUDA_VISIBLE_DEVICES="${SERVER_CUDA_VISIBLE_DEVICES}" bash "${START_SERVER_SCRIPT}" &
+  CUDA_VISIBLE_DEVICES="${SERVER_CUDA_VISIBLE_DEVICES}" MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH}" bash "${START_SERVER_SCRIPT}" &
   local spid=$!
   disown "${spid}" || true
   sleep 4

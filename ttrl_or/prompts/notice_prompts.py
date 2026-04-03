@@ -1,6 +1,5 @@
 SYSTEM_INSTRUCTION = """
 You are a helpful Assistant with expertise in operations research and the Gurobi solver.
-Before you output, you should think step by step first in <thought> and then follow the instruction to output.
 Note: Output only clean, stage-specific content within each tag, without other explanations, descriptions or thoughts.
 Please think step by step.
 """
@@ -275,6 +274,7 @@ The generated code must:
    when an optimal/feasible objective value is available
 10. include exactly this print statement in the code:
    print(f"Optimal value: {{optimal}}")
+   
 For example:
 <python>
 import gurobipy as gp
@@ -292,6 +292,7 @@ if status == GRB.OPTIMAL:
 else:
     print(f"Model status: {{status}}")
 </python>
+**NOTE**: Do not think inside the <python>. Output only complete, runnable Gurobi modeling and solving code within <python> and </python>, without any other explanations or thoughts.
 """
 
 
