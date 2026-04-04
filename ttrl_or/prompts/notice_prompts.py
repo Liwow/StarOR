@@ -27,6 +27,7 @@ TYPE_SET_NOTICE = """
 2. <Type> should summarize:
 - optimization type: LP / MILP / NLP / MINLP
 - classical OR family when identifiable
+- Explanation: Provide a brief sentence outlining the rationale and key points.
 
 3. <Sets> should define the minimum necessary indexing sets.
 - set_name: description: {elements if explicitly enumerable}

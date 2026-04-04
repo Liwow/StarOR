@@ -1,21 +1,13 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
-# External periodic-restart runner:
-# - split dataset run into chunks
-# - restart TRL vLLM server between chunks
-# - keep logs in the same LOG_DIR as normal run.sh
-# - resume by skipping completed samples
-
-# ==========================
-# Edit Here (internal config only)
-# ==========================
+trap 'PORT="${VLLM_PORT}" bash "${STOP_SERVER_SCRIPT}"' EXIT
 RUN_SCRIPT="scripts/run.sh"
 START_SERVER_SCRIPT="scripts/start_vllm_server.sh"
 STOP_SERVER_SCRIPT="scripts/stop_vllm_server.sh"
 
 DATASET_JSONL="data/IndustryOR_fixedV2.jsonl"
 CHUNK_SAMPLES=8
+offset=0
 TOTAL_LIMIT=0   # 0 = run all samples in dataset
 
 LOG_DIR="logs/run"
@@ -24,8 +16,9 @@ OUT_JSON="outputs/run_$(basename "${DATASET_JSONL}" .jsonl).json"
 USE_VLLM=true
 VLLM_MODE="server"
 VLLM_PORT=8000
-SERVER_STOP_WAIT_SEC=45
-SERVER_READY_WAIT_SEC=90
+VLLM_GPU_MEMORY_UTILIZATION=0.45
+SERVER_STOP_WAIT_SEC=20
+SERVER_READY_WAIT_SEC=120
 TRAIN_CUDA_VISIBLE_DEVICES="${TRAIN_CUDA_VISIBLE_DEVICES:-0}"
 SERVER_CUDA_VISIBLE_DEVICES="${SERVER_CUDA_VISIBLE_DEVICES:-1}"
 
@@ -53,86 +46,73 @@ count_completed_samples() {
   find "$dataset_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '
 }
 
-port_in_use() {
-  local port="$1"
-  if command -v lsof >/dev/null 2>&1; then
-    lsof -ti tcp:"${port}" >/dev/null 2>&1 && return 0
-  fi
-  if command -v ss >/dev/null 2>&1; then
-    ss -ltn "sport = :${port}" 2>/dev/null | tail -n +2 | grep -q . && return 0
-  fi
-  if command -v netstat >/dev/null 2>&1; then
-    netstat -tln 2>/dev/null | awk -v p=":${port}" '$4 ~ p {found=1} END {exit !found}' && return 0
-  fi
-  return 1
-}
-
-wait_for_port_free() {
-  local port="$1"
-  local wait_sec="$2"
-  local deadline=$((SECONDS + wait_sec))
-  while (( SECONDS < deadline )); do
-    if ! port_in_use "${port}"; then
-      return 0
-    fi
-    sleep 1
-  done
-  return 1
-}
-
-wait_for_server_ready() {
-  local host="$1"
-  local port="$2"
-  local wait_sec="$3"
-  local deadline=$((SECONDS + wait_sec))
-  while (( SECONDS < deadline )); do
-    if python - <<PY >/dev/null 2>&1
-import socket
-s = socket.socket()
-s.settimeout(1.0)
-try:
-    s.connect(("${host}", int("${port}")))
-except Exception:
-    raise SystemExit(1)
-else:
-    raise SystemExit(0)
-finally:
-    try:
-        s.close()
-    except Exception:
-        pass
-PY
-    then
-      return 0
-    fi
-    sleep 1
-  done
-  return 1
-}
-
 restart_server_if_needed() {
   if [[ "${USE_VLLM}" != "true" ]] || [[ "${VLLM_MODE}" != "server" ]]; then
     return
   fi
 
-  echo "[server] restarting vLLM server on CUDA_VISIBLE_DEVICES=${SERVER_CUDA_VISIBLE_DEVICES} port=${VLLM_PORT}"
-  PORT="${VLLM_PORT}" WAIT_SEC="${SERVER_STOP_WAIT_SEC}" bash "${STOP_SERVER_SCRIPT}"
+  # 1. 统一变量名，并确保是绝对路径
+  local PORT_NUM="${VLLM_PORT}" # 修正拼写
+  local SESSION_NAME="vllm_run_${PORT_NUM}"
+  local CONDA_ENV="or"
+  local ABS_LOG_DIR=$(mkdir -p "${LOG_DIR}" && realpath "${LOG_DIR}")
+  
+  # 获取 conda 的绝对路径，防止脚本找不到 conda 命令
+  local CONDA_EXE=$(which conda || echo "${CONDA_PREFIX}/bin/conda" || echo "conda")
 
-  if ! wait_for_port_free "${VLLM_PORT}" "${SERVER_STOP_WAIT_SEC}"; then
-    echo "[server][ERROR] port ${VLLM_PORT} still occupied after stop"
-    exit 1
-  fi
+  echo "[server] === Restarting vLLM Server on Port ${PORT_NUM} ==="
 
-  CUDA_VISIBLE_DEVICES="${SERVER_CUDA_VISIBLE_DEVICES}"   MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH}"   VLLM_PORT="${VLLM_PORT}"   CLEAN_START="true"   PORT_WAIT_SEC="${SERVER_STOP_WAIT_SEC}"   bash "${START_SERVER_SCRIPT}" > "${LOG_DIR}/vllm_server.log" 2>&1 &
-  local spid=$!
-  disown "${spid}" || true
+  echo "[server] Cleaning up old processes..."
+  env -u TMUX tmux kill-session -t "${SESSION_NAME}" 2>/dev/null || true
+  fuser -k "${PORT_NUM}/tcp" 2>/dev/null || true
+  pkill -9 -f "trl vllm-serve" || true
+  pkill -9 -f "vllm" || true
+  pkill -9 -f "trl" || true
+  pkill -9 -f "multiprocessing.spawn" || true
+  fuser -k "${PORT_NUM}/tcp" 2>/dev/null || true
+  sleep 10
 
-  if ! wait_for_server_ready "127.0.0.1" "${VLLM_PORT}" "${SERVER_READY_WAIT_SEC}"; then
-    echo "[server][ERROR] vLLM server did not become ready within ${SERVER_READY_WAIT_SEC}s"
-    exit 1
-  fi
-  echo "[server] vLLM ready on 127.0.0.1:${VLLM_PORT} (pid=${spid})"
+  # 3. 核心启动逻辑：完全复刻你的测试命令
+  echo "[server] Starting vLLM in tmux session: ${SESSION_NAME}"
+  
+  # 使用 env -u TMUX 解决嵌套问题
+  env -u TMUX tmux new-session -d -s "${SESSION_NAME}" "${CONDA_EXE} run --no-capture-output -n ${CONDA_ENV} bash -c '
+    export PYTHONUNBUFFERED=1
+    export CUDA_VISIBLE_DEVICES=${SERVER_CUDA_VISIBLE_DEVICES}
+    
+    echo \"Starting vLLM...\"
+    trl vllm-serve \
+        --model ${MODEL_NAME_OR_PATH} \
+        --host 0.0.0.0 \
+        --port ${PORT_NUM} \
+        --tensor-parallel-size 1 \
+        --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION} \
+        --max-model-len 16384 \
+        --enable-prefix-caching True \
+    2>&1 | tee ${ABS_LOG_DIR}/vllm_server.log
+  '"
+
+  # 4. 检查 Ready 状态
+  echo "[server] Waiting for vLLM to initialize..."
+  local start_time=$SECONDS
+  while (( SECONDS - start_time < SERVER_READY_WAIT_SEC )); do
+    if ! env -u TMUX tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
+      echo -e "\n[server][ERROR] Tmux session died. Check log: ${ABS_LOG_DIR}/vllm_server.log"
+      exit 1
+    fi
+    if python3 -c "import socket; s=socket.socket(); s.settimeout(1); exit(0 if s.connect_ex(('127.0.0.1', ${PORT_NUM}))==0 else 1)" 2>/dev/null; then
+      echo -e "\n[server] vLLM is READY!"
+      return 0
+    fi
+    local last_msg=$(tail -n 1 "${ABS_LOG_DIR}/vllm_server.log" 2>/dev/null || echo "Starting...")
+    echo -ne "[server] Loading... ${SECONDS}s | ${last_msg: -60}\r"
+    sleep 2
+  done
+
+  echo -e "\n[server][ERROR] vLLM timed out after ${SERVER_READY_WAIT_SEC}s"
+  exit 1
 }
+
 
 mkdir -p "${LOG_DIR}" "$(dirname "${OUT_JSON}")"
 
@@ -154,8 +134,7 @@ echo "[server] TRAIN_CUDA_VISIBLE_DEVICES=${TRAIN_CUDA_VISIBLE_DEVICES} SERVER_C
 
 restart_server_if_needed
 
-offset=0
-chunk_id=0
+chunk_id=$(( offset / CHUNK_SAMPLES ))
 while (( offset < TARGET_TOTAL )); do
   remain=$(( TARGET_TOTAL - offset ))
   chunk_size="${CHUNK_SAMPLES}"
