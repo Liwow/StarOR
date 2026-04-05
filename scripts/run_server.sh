@@ -26,6 +26,7 @@ SERVER_CUDA_VISIBLE_DEVICES="${SERVER_CUDA_VISIBLE_DEVICES:-1}"
 NPROC_PER_NODE=1
 BACKEND="trl"
 MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
+STRUCTURE_GATE_MIN="${STRUCTURE_GATE_MIN:-0.2}"
 # MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen2.5-7B-Instruct"
 
 count_jsonl_lines() {
@@ -155,6 +156,7 @@ while (( offset < TARGET_TOTAL )); do
   NPROC_PER_NODE="${NPROC_PER_NODE}" \
   BACKEND="${BACKEND}" \
   MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH}" \
+  STRUCTURE_GATE_MIN="${STRUCTURE_GATE_MIN}" \
   bash "${RUN_SCRIPT}"
 
   offset=$(( offset + chunk_size ))

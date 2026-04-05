@@ -237,12 +237,12 @@ Useful knobs:
 
 - MCTS: `--max-iterations`, `--c-puct`, `--mcts-stop-on-reward-one`
   - Compare mode: `--solverllm-compare-mode` enables the SolverLLM-like 7-layer decomposition (`type+hint -> sets -> parameters -> variables -> objective -> constraints -> code`) and uses split simulation completion (first generate current-layer content, then a second completion pass to finish the remaining formulation/code).
-- Reward: `--global-consensus-rel-tol`, `--reward-cluster-scope`, `--robustness-cases`, `--code-timeout-sec`, `--enable-r3-reward`, `--disable-r3-reward`
+- Reward: `--global-consensus-rel-tol`, `--reward-cluster-scope`, `--robustness-cases`, `--code-timeout-sec`, `--enable-r3-reward`, `--disable-r3-reward`, `--structure-gate-min`
   - `r3` perturbation now uses backend pre-extracted mapping (`focus_keys` + value map).
 - Dataset loader: `--dataset-start-index`, `--dataset-limit`, `--dataset-resume-skip-completed`, `--no-dataset-resume-skip-completed`, `--dataset-max-numeric-features`, `--dataset-key-param-top-k`
   - Mapping extractor plugin: `--mapping-extractor rule|llm`
   - LLM extractor knobs: `--mapping-llm-max-new-tokens`, `--mapping-llm-temperature`, `--mapping-llm-top-p`
-- GRPO: `--grpo-lr`, `--grpo-kl`, `--grpo-train-epochs`, `--grpo-clip-epsilon`, `--grpo-clip-epsilon-high`, `--grpo-batch-size`, `--grpo-grad-accum`, `--grpo-num-generations`, `--grpo-generation-batch-size`, `--grpo-max-completion-len`, `--grpo-use-vllm`, `--grpo-vllm-mode`, `--grpo-vllm-gpu-memory-utilization`, `--grpo-vllm-tensor-parallel-size`, `--grpo-vllm-max-model-len`, `--grpo-vllm-max-num-batched-tokens`, `--grpo-vllm-enable-sleep-mode`, `--grpo-vllm-no-reset-prefix-cache-after-update`, `--grpo-vllm-no-close-communicator-after-update`
+- GRPO: `--grpo-lr`, `--grpo-group-size`, `--grpo-kl`, `--grpo-sync-ref-model`, `--grpo-ref-model-sync-steps`, `--grpo-ref-model-mixup-alpha`, `--grpo-train-epochs`, `--grpo-clip-epsilon`, `--grpo-clip-epsilon-high`, `--grpo-batch-size`, `--grpo-grad-accum`, `--grpo-num-generations`, `--grpo-generation-batch-size`, `--grpo-max-completion-len`, `--grpo-use-vllm`, `--grpo-vllm-mode`, `--grpo-vllm-gpu-memory-utilization`, `--grpo-vllm-tensor-parallel-size`, `--grpo-vllm-max-model-len`, `--grpo-vllm-max-num-batched-tokens`, `--grpo-vllm-enable-sleep-mode`, `--grpo-vllm-no-reset-prefix-cache-after-update`, `--grpo-vllm-no-close-communicator-after-update`
 - Logging: `--log-dir` and `--no-save-logs`
 - Backend/model: `--backend`, `--model-name`, `--model-path`, `--seed`, `--torch-dtype`, `--trust-remote-code`, `--lora-r`, `--lora-alpha`, `--lora-dropout`, `--lora-bias`, `--lora-target-modules`
 - Generation: `--temperature`, `--top-p`, `--max-new-tokens`
@@ -273,6 +273,9 @@ All defaults are defined in `ttrl_or/config.py`.
 - `enable_r3_reward` (Key): switch to enable/disable `r3` robustness testing.
   - `True`: run key-parameter perturbation tests for robustness reward.
   - `False`: skip perturbation tests and treat `r3` as passed (`1.0`).
+- `structure_gate_min` (Key): minimum multiplier applied to the final reward when LP structure is incomplete (`objective` missing, or `num_vars == 0`, or `num_constrs == 0`).
+  - `1.0`: disable the penalty.
+  - `0.2` (recommended default): strong penalty without fully zeroing potentially promising samples.
 
 ### GRPOConfig
 

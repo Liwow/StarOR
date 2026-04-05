@@ -1006,9 +1006,24 @@ class TRLPolicyBackend(PolicyBackend):
             "save_strategy": "no",
             "logging_steps": 1,
         }
+        init_sig = inspect.signature(trl.GRPOConfig.__init__)
         if config.clip_epsilon_high is not None:
             kwargs["epsilon_high"] = float(config.clip_epsilon_high)
-        init_sig = inspect.signature(trl.GRPOConfig.__init__)
+        if bool(getattr(config, "sync_ref_model", False)):
+            if "sync_ref_model" in init_sig.parameters:
+                kwargs["sync_ref_model"] = True
+            sync_steps = int(getattr(config, "ref_model_sync_steps", 0) or 0)
+            if sync_steps > 0:
+                for key in ("ref_model_sync_steps",):
+                    if key in init_sig.parameters:
+                        kwargs[key] = sync_steps
+                        break
+            mixup_alpha = float(getattr(config, "ref_model_mixup_alpha", 0.0) or 0.0)
+            if mixup_alpha > 0.0:
+                for key in ("ref_model_mixup_alpha",):
+                    if key in init_sig.parameters:
+                        kwargs[key] = mixup_alpha
+                        break
         if effective_use_vllm and "vllm_max_num_batched_tokens" in init_sig.parameters:
             kwargs["vllm_max_num_batched_tokens"] = int(effective_vllm_max_num_batched_tokens)
         elif effective_use_vllm and "max_num_batched_tokens" in init_sig.parameters:

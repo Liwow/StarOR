@@ -351,6 +351,7 @@ class FourStageMCTS:
             reward_one_payload: dict[str, Any] = {}
             rollout_summaries: list[dict[str, Any]] = []
             processed_group_rollouts: list[dict[str, Any]] = []
+            pending_record_inputs: list[dict[str, Any]] = []
             backprop_total_sec = 0.0
 
             for ridx, rollout in enumerate(group_rollouts):
@@ -368,87 +369,31 @@ class FourStageMCTS:
 
                 backprop_t0 = time.perf_counter()
                 selected.add_child(child)
-                self._backpropagate(child, reward_total)
-                backprop_sec = float(time.perf_counter() - backprop_t0)
-                backprop_total_sec += backprop_sec
+                child.update(reward_total)
+                child_backprop_sec = float(time.perf_counter() - backprop_t0)
+                backprop_total_sec += child_backprop_sec
 
                 rollout_timing = dict(rollout.get("timing", {}))
-                rollout_timing["backprop_sec"] = backprop_sec
-                completed.metadata["iter"] = int(iter_idx)
-                completed.metadata["stage"] = next_stage.value
-                completed.metadata["group_id"] = group_id
-                completed.metadata["parent_node"] = {
-                    "node_id": selected.node_id,
-                    "stage": (selected.stage.value if selected.stage else "<ROOT>"),
-                    "value_before_group": float(selected_q_before_group),
-                    "visits_before_group": int(selected_visits_before_group),
-                    "value_after_current_rollout": float(selected.q_value),
-                    "visits_after_current_rollout": int(selected.visits),
-                    "content": selected.text,
-                }
-
-                rollout_detail = {
-                    "rollout_index": ridx,
-                    "trajectory_id": completed.trajectory_id,
-                    "reward": {
-                        "r1": reward_obj.r1,
-                        "r2": reward_obj.r2,
-                        "r3": reward_obj.r3,
-                        "r4": reward_obj.r4,
-                        "total": reward_obj.total,
-                        "consensus_signature": reward_obj.consensus_signature,
-                        "execution_success": reward_obj.execution_success,
-                        "robustness_success": reward_obj.robustness_success,
-                    },
-                    "timing": rollout_timing,
-                    "priors": {s.value: p for s, p in completed.priors.items()},
-                    "prior_source": str(rollout.get("prior_source", "fallback_generation")),
-                }
+                rollout_timing["child_backprop_sec"] = child_backprop_sec
+                rollout["timing"] = rollout_timing
 
                 current_hit_reward_one = bool(self.config.stop_on_reward_one and reward_total >= 1.0)
 
-                records.append(
-                    StageExpansionRecord(
-                        stage=next_stage,
-                        node_id=child.node_id,
-                        parent_id=selected.node_id,
-                        prompt=prompt,
-                        completion=child.text,
-                        reward=reward_total,
-                        trajectory=completed,
-                        prior=child.prior,
-                        was_expanded=True,
-                        hit_reward_one=current_hit_reward_one,
-                        child_q_before=child_q_before,
-                        child_visits_before=child_visits_before,
-                        child_q_after=child.q_value,
-                        child_visits_after=child.visits,
-                        parent_q_before=parent_q_before,
-                        parent_visits_before=parent_visits_before,
-                        parent_q_after=selected.q_value,
-                        parent_visits_after=selected.visits,
-                        rollout_details=[rollout_detail],
-                        simulation_index=iter_idx,
-                        rollout_index=ridx,
-                        group_id=group_id,
-                        grpo_report=dict(grpo_report),
-                        iteration=iter_idx,
-                    )
+                pending_record_inputs.append(
+                    {
+                        "rollout_index": ridx,
+                        "rollout": rollout,
+                        "child": child,
+                        "trajectory": completed,
+                        "reward_obj": reward_obj,
+                        "reward_total": reward_total,
+                        "parent_q_before": parent_q_before,
+                        "parent_visits_before": parent_visits_before,
+                        "child_q_before": child_q_before,
+                        "child_visits_before": child_visits_before,
+                        "hit_reward_one": current_hit_reward_one,
+                    }
                 )
-
-                rollout["timing"] = rollout_timing
-                rollout["update"] = {
-                    "prior": float(child.prior),
-                    "child_q_before": float(child_q_before),
-                    "child_q_after": float(child.q_value),
-                    "child_visits_before": int(child_visits_before),
-                    "child_visits_after": int(child.visits),
-                    "parent_q_before": float(parent_q_before),
-                    "parent_q_after": float(selected.q_value),
-                    "parent_visits_before": int(parent_visits_before),
-                    "parent_visits_after": int(selected.visits),
-                    "backprop_sec": float(backprop_sec),
-                }
 
                 rollout_summaries.append(
                     {
@@ -488,6 +433,107 @@ class FourStageMCTS:
             if not processed_group_rollouts:
                 continue
 
+            group_reward_mean = float(
+                sum(float(rollout.get("reward_total", 0.0)) for rollout in processed_group_rollouts)
+                / max(1, len(processed_group_rollouts))
+            )
+            group_backprop_t0 = time.perf_counter()
+            self._backpropagate(selected, group_reward_mean)
+            group_backprop_sec = float(time.perf_counter() - group_backprop_t0)
+            backprop_total_sec += group_backprop_sec
+            shared_group_backprop_sec = group_backprop_sec / max(1, len(processed_group_rollouts))
+
+            for pending in pending_record_inputs:
+                ridx = int(pending["rollout_index"])
+                rollout = pending["rollout"]
+                child = pending["child"]
+                completed = pending["trajectory"]
+                reward_obj = pending["reward_obj"]
+                reward_total = float(pending["reward_total"])
+                rollout_timing = dict(rollout.get("timing", {}))
+                rollout_timing["group_backprop_sec"] = float(shared_group_backprop_sec)
+                rollout_timing["group_reward_mean"] = float(group_reward_mean)
+                rollout["timing"] = rollout_timing
+                completed.metadata["iter"] = int(iter_idx)
+                completed.metadata["stage"] = next_stage.value
+                completed.metadata["group_id"] = group_id
+                completed.metadata["parent_node"] = {
+                    "node_id": selected.node_id,
+                    "stage": (selected.stage.value if selected.stage else "<ROOT>"),
+                    "value_before_group": float(selected_q_before_group),
+                    "visits_before_group": int(selected_visits_before_group),
+                    "value_after_group": float(selected.q_value),
+                    "visits_after_group": int(selected.visits),
+                    "group_reward_mean": float(group_reward_mean),
+                    "content": selected.text,
+                }
+
+                rollout_detail = {
+                    "rollout_index": ridx,
+                    "trajectory_id": completed.trajectory_id,
+                    "reward": {
+                        "r1": reward_obj.r1,
+                        "r2": reward_obj.r2,
+                        "r3": reward_obj.r3,
+                        "r4": reward_obj.r4,
+                        "total": reward_obj.total,
+                        "consensus_signature": reward_obj.consensus_signature,
+                        "execution_success": reward_obj.execution_success,
+                        "robustness_success": reward_obj.robustness_success,
+                    },
+                    "timing": rollout_timing,
+                    "priors": {s.value: p for s, p in completed.priors.items()},
+                    "prior_source": str(rollout.get("prior_source", "fallback_generation")),
+                }
+
+                records.append(
+                    StageExpansionRecord(
+                        stage=next_stage,
+                        node_id=child.node_id,
+                        parent_id=selected.node_id,
+                        prompt=prompt,
+                        completion=child.text,
+                        reward=reward_total,
+                        trajectory=completed,
+                        prior=child.prior,
+                        was_expanded=True,
+                        hit_reward_one=bool(pending["hit_reward_one"]),
+                        child_q_before=float(pending["child_q_before"]),
+                        child_visits_before=int(pending["child_visits_before"]),
+                        child_q_after=child.q_value,
+                        child_visits_after=child.visits,
+                        parent_q_before=float(pending["parent_q_before"]),
+                        parent_visits_before=int(pending["parent_visits_before"]),
+                        parent_q_after=selected.q_value,
+                        parent_visits_after=selected.visits,
+                        rollout_details=[rollout_detail],
+                        simulation_index=iter_idx,
+                        rollout_index=ridx,
+                        group_id=group_id,
+                        grpo_report=dict(grpo_report),
+                        iteration=iter_idx,
+                    )
+                )
+
+                rollout["update"] = {
+                    "prior": float(child.prior),
+                    "child_q_before": float(pending["child_q_before"]),
+                    "child_q_after": float(child.q_value),
+                    "child_visits_before": int(pending["child_visits_before"]),
+                    "child_visits_after": int(child.visits),
+                    "parent_q_before": float(pending["parent_q_before"]),
+                    "parent_q_after": float(selected.q_value),
+                    "parent_visits_before": int(pending["parent_visits_before"]),
+                    "parent_visits_after": int(selected.visits),
+                    "child_backprop_sec": float(rollout_timing.get("child_backprop_sec", 0.0)),
+                    "group_backprop_sec": float(shared_group_backprop_sec),
+                    "group_reward_mean": float(group_reward_mean),
+                }
+                if 0 <= ridx < len(rollout_summaries):
+                    rollout_summaries[ridx]["timing"] = rollout_timing
+                    rollout_summaries[ridx]["group_reward_mean"] = float(group_reward_mean)
+                    rollout_summaries[ridx]["parent_visits_after_group"] = int(selected.visits)
+                    rollout_summaries[ridx]["parent_value_after_group"] = float(selected.q_value)
             best_rollout = max(processed_group_rollouts, key=lambda x: float(x.get("reward_total", float("-inf"))))
             best_rollout_obj = best_rollout["reward_obj"]
             best_rollout_child = best_rollout["child"]

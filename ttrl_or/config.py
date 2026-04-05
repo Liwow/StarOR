@@ -35,12 +35,17 @@ class RewardConfig:
     # ─── Final reward weights ───
     r3_weight: float = 0.1  # Weight for r3 in final reward
     r4_weight: float = 0.2  # Weight for r4 in final reward
+    structure_gate_min: float = 0.2  # Minimum multiplier when LP structure is incomplete
 
 
 @dataclass(slots=True)
 class GRPOConfig:
     learning_rate: float = 5e-5
-    kl_coef: float = 0.0
+    group_size: int = 3  # Alias of num_generations in GRPO literature.
+    kl_coef: float = 0.01  # KL penalty coefficient beta.
+    sync_ref_model: bool = False  # Whether to periodically refresh the KL reference policy.
+    ref_model_sync_steps: int = 10  # Refresh frequency for the KL reference policy.
+    ref_model_mixup_alpha: float = 0.6  # Mixup factor when syncing the reference policy.
     train_epochs: float = 1.0
     clip_epsilon: float = 0.2
     clip_epsilon_high: float | None = None

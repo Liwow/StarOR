@@ -5,6 +5,86 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 from ttrl_or.reward.perturbation import build_perturbation_map, generate_perturbed_instances_from_map
+
+
+R3_PLANNER_FEWSHOT = """Example A (inline numeric description, transportation minimization)
+Task sketch:
+- Boat capacity 10, canoe capacity 8
+- Boat time 20, canoe time 40
+- At most 12 boat trips
+- At least 60% of trips by canoe
+- At least 300 ducks must be transported
+Expected style:
+<analysis>
+Objective is total transport time, so the objective should be positive and definitely not 0.
+Because the target demand is 300 ducks and each trip carries at most around 10 ducks, the optimal objective is likely in the order of 10^3 minutes, not 10^-3 and not 10^9.
+Stress tests should change capacity or demand in realistic directions.
+</analysis>
+<base_scale>
+{
+  "kind": "interval",
+  "lower": 600,
+  "upper": 3000,
+  "sign_relation": "positive",
+  "magnitude": {"min_order": 2, "max_order": 4, "use_abs": true},
+  "reject_exact": [0]
+}
+</base_scale>
+<tests>
+[
+  {
+    "case_id": "demand_up",
+    "patches": [{"fid": "F05", "new_value": 360}],
+    "obj_scale": {
+      "kind": "interval",
+      "lower": 700,
+      "upper": 3800,
+      "sign_relation": "positive",
+      "magnitude": {"min_order": 2, "max_order": 4, "use_abs": true},
+      "reject_exact": [0]
+    },
+    "rationale": "Higher demand should increase total time but keep the same sign and magnitude family."
+  }
+]
+</tests>
+
+Example B (table-driven production planning)
+Task sketch:
+- Weekly demand table for two products across 8 weeks
+- Training, overtime, wages, and delay penalties
+Expected style:
+<analysis>
+Total cost must be positive. Because wages and penalties accumulate over 8 weeks, the optimal objective is likely in the order of 10^5 to 10^6, not near zero.
+Useful tests should perturb demand entries or wage-like quantities while preserving realism.
+</analysis>
+<base_scale>
+{
+  "kind": "interval",
+  "lower": 100000,
+  "upper": 600000,
+  "sign_relation": "positive",
+  "magnitude": {"min_order": 5, "max_order": 6, "use_abs": true},
+  "reject_exact": [0]
+}
+</base_scale>
+<tests>
+[
+  {
+    "case_id": "late_demand_up",
+    "patches": [{"fid": "F12", "op": "scale", "value": 1.1}],
+    "obj_scale": {
+      "kind": "interval",
+      "lower": 110000,
+      "upper": 700000,
+      "sign_relation": "positive",
+      "magnitude": {"min_order": 5, "max_order": 6, "use_abs": true},
+      "reject_exact": [0]
+    },
+    "rationale": "Increasing late-stage demand should keep the same sign and magnitude band while usually increasing cost."
+  }
+]
+</tests>
+"""
 @dataclass(slots=True)
 class R3SamplePlan:
     sample_id: str
@@ -33,6 +113,23 @@ def build_r3_planner_prompt(
         "<analysis>...text...</analysis>\n"
         "<base_scale>{...JSON...}</base_scale>\n"
         "<tests>[...JSON list...]</tests>\n\n"
+        "Your goal is to produce filtering information that is useful for runtime filter(obj, scale).\n"
+        "For BOTH base_scale and every obj_scale, describe the objective from THREE aspects whenever possible:\n"
+        "1. numeric range bounds\n"
+        "2. relation to zero\n"
+        "3. order-of-magnitude range\n\n"
+        "Required JSON schema hints:\n"
+        "- kind: interval | point | union\n"
+        "- sign_relation: positive | nonnegative | negative | nonpositive | nonzero | any\n"
+        "- magnitude: {min_order:int|null, max_order:int|null, use_abs:true}\n"
+        "- reject_exact: list of obviously impossible exact values such as 0 when appropriate\n\n"
+        "When uncertain, still provide a reasonable sign_relation and magnitude band.\n"
+        "Keep scales informative: not too loose, but broad enough to tolerate modeling variation.\n"
+        "Each test item must contain: case_id, patches, obj_scale, rationale.\n"
+        "patches should usually be short and use existing fid values only.\n"
+        "Use realistic stress cases that preserve semantic meaning.\n\n"
+        "Few-shot style reference:\n"
+        f"{R3_PLANNER_FEWSHOT}\n\n"
         f"sample_id: {sample_id}\n\n"
         "Task description:\n"
         f"{description}\n\n"
@@ -41,22 +138,9 @@ def build_r3_planner_prompt(
         "Feature catalog (use fid only when proposing changes):\n"
         f"{json.dumps(feature_catalog, ensure_ascii=False, indent=2)}\n\n"
         "Rule-built output skeleton reference:\n"
-        f"{json.dumps(skeleton, ensure_ascii=False, indent=2)}\n\n"
-        "Scale rules:\n"
-        "- base_scale / obj_scale must be easy for filter(obj, scale) to use.\n"
-        "- Prefer one of these JSON forms:\n"
-        '  {"kind":"interval","lower":number|null,"upper":number|null,"reject_exact":[...]}\n'
-        '  {"kind":"point","point":number,"tol_abs":number,"reject_exact":[...]}\n'
-        '  {"kind":"union","intervals":[{"lower":...,"upper":...}, ...],"reject_exact":[...]}\n'
-        "- Keep the scale meaningful: not too loose, but broad enough to allow modeling variation.\n"
-        "- Explicitly reject absurd objectives such as 0 when it is clearly impossible.\n\n"
-        "Test-case rules:\n"
-        "- Each test item should contain case_id, patches, obj_scale, rationale.\n"
-        "- patches should usually be a short list of {fid, new_value}.\n"
-        "- If needed you may also use {fid, op, value} with op in [replace, scale, shift].\n"
-        "- Choose stress cases that are realistic and useful for robustness testing.\n"
-        "- Each proposed fid must exist in the feature catalog.\n"
+        f"{json.dumps(skeleton, ensure_ascii=False, indent=2)}\n"
     )
+
 def build_sample_r3_plan(
     *,
     sample_id: str,
@@ -322,13 +406,27 @@ def _plan_skeleton(*, num_tests: int, feature_catalog: list[dict[str, Any]]) -> 
             {
                 "case_id": f"case_{idx + 1}",
                 "patches": [{"fid": fid, "new_value": 0}],
-                "obj_scale": {"kind": "interval", "lower": None, "upper": None, "reject_exact": []},
+                "obj_scale": {
+                    "kind": "interval",
+                    "lower": None,
+                    "upper": None,
+                    "sign_relation": "any",
+                    "magnitude": {"min_order": None, "max_order": None, "use_abs": True},
+                    "reject_exact": [],
+                },
                 "rationale": "",
             }
         )
     return {
         "analysis": "",
-        "base_scale": {"kind": "interval", "lower": None, "upper": None, "reject_exact": []},
+        "base_scale": {
+            "kind": "interval",
+            "lower": None,
+            "upper": None,
+            "sign_relation": "any",
+            "magnitude": {"min_order": None, "max_order": None, "use_abs": True},
+            "reject_exact": [],
+        },
         "tests": tests,
     }
 def _normalize_patch(item: Any, feature_map: dict[str, dict[str, Any]], target_instance: dict[str, Any]) -> dict[str, Any] | None:
@@ -412,36 +510,56 @@ def _extract_tag_text(text: str, tag: str, min_len: int = 2) -> str:
 def _default_scale_from_reference(reference_answer: str) -> dict[str, Any]:
     gt = _to_number(reference_answer)
     if gt is None or not math.isfinite(gt):
-        return {"kind": "interval", "lower": None, "upper": None, "reject_exact": []}
+        return {
+            "kind": "interval",
+            "lower": None,
+            "upper": None,
+            "sign_relation": "any",
+            "magnitude": {"min_order": None, "max_order": None, "use_abs": True},
+            "reject_exact": [],
+        }
     span = max(abs(gt), 1.0)
     lower = gt - 1.0 * span
     upper = gt + 1.0 * span
     reject_exact: list[float] = []
+    sign_relation = "any"
     if gt > 0:
         lower = max(lower, 0.1 * gt)
         reject_exact = [0.0]
+        sign_relation = "positive"
     elif gt < 0:
         upper = min(upper, 0.1 * gt)
         reject_exact = [0.0]
+        sign_relation = "negative"
+    magnitude = _default_magnitude_from_value(gt)
     return {
         "kind": "interval",
         "lower": float(lower),
         "upper": float(upper),
+        "sign_relation": sign_relation,
+        "magnitude": magnitude,
         "reject_exact": reject_exact,
     }
 def _expand_scale(scale: dict[str, Any], factor: float = 1.2) -> dict[str, Any]:
     normalized = _coerce_scale(scale)
+    sign_relation = str(normalized.get("sign_relation") or "any")
+    magnitude = _expand_magnitude(dict(normalized.get("magnitude") or {}), step=1)
+    reject_exact = list(normalized.get("reject_exact", [])) if isinstance(normalized.get("reject_exact"), list) else []
     kind = str(normalized.get("kind", "interval"))
     if kind == "point":
         point = _to_number(normalized.get("point"))
         tol_abs = _to_number(normalized.get("tol_abs"))
+        tol_rel = _to_number(normalized.get("tol_rel"))
         if point is not None:
             tol_abs = max(abs(point) * 0.2, tol_abs or 1.0) * float(factor)
             return {
                 "kind": "point",
                 "point": float(point),
                 "tol_abs": float(tol_abs),
-                "reject_exact": list(normalized.get("reject_exact", [])) if isinstance(normalized.get("reject_exact"), list) else [],
+                "tol_rel": (float(tol_rel) if tol_rel is not None and math.isfinite(tol_rel) else None),
+                "sign_relation": sign_relation,
+                "magnitude": magnitude,
+                "reject_exact": reject_exact,
             }
     if kind == "union":
         intervals = []
@@ -462,7 +580,9 @@ def _expand_scale(scale: dict[str, Any], factor: float = 1.2) -> dict[str, Any]:
         return {
             "kind": "union",
             "intervals": intervals,
-            "reject_exact": list(normalized.get("reject_exact", [])) if isinstance(normalized.get("reject_exact"), list) else [],
+            "sign_relation": sign_relation,
+            "magnitude": magnitude,
+            "reject_exact": reject_exact,
         }
     lo = _to_number(normalized.get("lower"))
     hi = _to_number(normalized.get("upper"))
@@ -475,8 +595,31 @@ def _expand_scale(scale: dict[str, Any], factor: float = 1.2) -> dict[str, Any]:
         "kind": "interval",
         "lower": lo,
         "upper": hi,
-        "reject_exact": list(normalized.get("reject_exact", [])) if isinstance(normalized.get("reject_exact"), list) else [],
+        "sign_relation": sign_relation,
+        "magnitude": magnitude,
+        "reject_exact": reject_exact,
     }
+
+def _default_magnitude_from_value(value: float | None) -> dict[str, Any]:
+    if value is None or not math.isfinite(value) or abs(value) < 1e-12:
+        return {"min_order": None, "max_order": None, "use_abs": True}
+    order = int(math.floor(math.log10(abs(float(value)))))
+    return {"min_order": order - 1, "max_order": order + 1, "use_abs": True}
+
+def _expand_magnitude(magnitude: dict[str, Any], step: int = 1) -> dict[str, Any]:
+    min_order = magnitude.get("min_order") if isinstance(magnitude.get("min_order"), int) else _to_number(magnitude.get("min_order"))
+    max_order = magnitude.get("max_order") if isinstance(magnitude.get("max_order"), int) else _to_number(magnitude.get("max_order"))
+    use_abs = bool(magnitude.get("use_abs", True))
+    min_order = int(min_order) if min_order is not None and math.isfinite(float(min_order)) else None
+    max_order = int(max_order) if max_order is not None and math.isfinite(float(max_order)) else None
+    if min_order is not None:
+        min_order -= int(step)
+    if max_order is not None:
+        max_order += int(step)
+    if min_order is not None and max_order is not None and min_order > max_order:
+        min_order, max_order = max_order, min_order
+    return {"min_order": min_order, "max_order": max_order, "use_abs": use_abs}
+
 def _compact_instance(instance: dict[str, Any], max_items: int = 160) -> dict[str, Any]:
     compact: dict[str, Any] = {}
     count = 0
@@ -520,6 +663,48 @@ def _parse_json_object(text: str | None) -> Any:
             pass
     return None
 def _coerce_scale(value: Any) -> dict[str, Any]:
+    def _normalize_sign_relation(raw: Any) -> str:
+        text = str(raw or "any").strip().lower()
+        aliases = {
+            "gt0": "positive",
+            ">0": "positive",
+            "positive": "positive",
+            "ge0": "nonnegative",
+            ">=0": "nonnegative",
+            "nonnegative": "nonnegative",
+            "lt0": "negative",
+            "<0": "negative",
+            "negative": "negative",
+            "le0": "nonpositive",
+            "<=0": "nonpositive",
+            "nonpositive": "nonpositive",
+            "ne0": "nonzero",
+            "!=0": "nonzero",
+            "nonzero": "nonzero",
+            "any": "any",
+        }
+        return aliases.get(text, "any")
+
+    def _normalize_magnitude(raw: Any) -> dict[str, Any]:
+        if not isinstance(raw, dict):
+            raw = {}
+        min_order = _to_number(raw.get("min_order"))
+        if min_order is None:
+            min_order = _to_number(raw.get("order_min"))
+        if min_order is None:
+            min_order = _to_number(raw.get("lower_order"))
+        max_order = _to_number(raw.get("max_order"))
+        if max_order is None:
+            max_order = _to_number(raw.get("order_max"))
+        if max_order is None:
+            max_order = _to_number(raw.get("upper_order"))
+        use_abs = bool(raw.get("use_abs", True))
+        min_order_i = int(min_order) if min_order is not None and math.isfinite(min_order) else None
+        max_order_i = int(max_order) if max_order is not None and math.isfinite(max_order) else None
+        if min_order_i is not None and max_order_i is not None and min_order_i > max_order_i:
+            min_order_i, max_order_i = max_order_i, min_order_i
+        return {"min_order": min_order_i, "max_order": max_order_i, "use_abs": use_abs}
+
     if isinstance(value, dict):
         kind = str(value.get("kind") or "interval").strip().lower()
         reject_exact = []
@@ -529,6 +714,15 @@ def _coerce_scale(value: Any) -> dict[str, Any]:
                 num = _to_number(item)
                 if num is not None and math.isfinite(num):
                     reject_exact.append(float(num))
+        sign_relation = _normalize_sign_relation(
+            value.get("sign_relation")
+            or value.get("zero_relation")
+            or value.get("relation_to_zero")
+            or value.get("sign")
+        )
+        magnitude = _normalize_magnitude(value.get("magnitude"))
+        if magnitude["min_order"] is None and magnitude["max_order"] is None:
+            magnitude = _normalize_magnitude(value)
         if kind == "point":
             point = _to_number(value.get("point"))
             tol_abs = _to_number(value.get("tol_abs"))
@@ -538,6 +732,8 @@ def _coerce_scale(value: Any) -> dict[str, Any]:
                 "point": (float(point) if point is not None and math.isfinite(point) else None),
                 "tol_abs": (float(tol_abs) if tol_abs is not None and math.isfinite(tol_abs) else None),
                 "tol_rel": (float(tol_rel) if tol_rel is not None and math.isfinite(tol_rel) else None),
+                "sign_relation": sign_relation,
+                "magnitude": magnitude,
                 "reject_exact": reject_exact,
             }
         if kind == "union":
@@ -557,7 +753,7 @@ def _coerce_scale(value: Any) -> dict[str, Any]:
                         "lower": (float(lo) if lo is not None and math.isfinite(lo) else None),
                         "upper": (float(hi) if hi is not None and math.isfinite(hi) else None),
                     })
-            return {"kind": "union", "intervals": intervals, "reject_exact": reject_exact}
+            return {"kind": "union", "intervals": intervals, "sign_relation": sign_relation, "magnitude": magnitude, "reject_exact": reject_exact}
         lower = _to_number(value.get("lower"))
         upper = _to_number(value.get("upper"))
         if lower is not None and upper is not None and lower > upper:
@@ -566,17 +762,35 @@ def _coerce_scale(value: Any) -> dict[str, Any]:
             "kind": "interval",
             "lower": (float(lower) if lower is not None and math.isfinite(lower) else None),
             "upper": (float(upper) if upper is not None and math.isfinite(upper) else None),
+            "sign_relation": sign_relation,
+            "magnitude": magnitude,
             "reject_exact": reject_exact,
         }
-    return {"kind": "interval", "lower": None, "upper": None, "reject_exact": []}
+    return {
+        "kind": "interval",
+        "lower": None,
+        "upper": None,
+        "sign_relation": "any",
+        "magnitude": {"min_order": None, "max_order": None, "use_abs": True},
+        "reject_exact": [],
+    }
+
 def _has_valid_scale(scale: dict[str, Any]) -> bool:
     kind = str(scale.get("kind") or "interval")
-    if kind == "point":
-        return isinstance(scale.get("point"), (int, float))
+    if kind == "point" and isinstance(scale.get("point"), (int, float)):
+        return True
     if kind == "union":
         intervals = scale.get("intervals")
-        return isinstance(intervals, list) and len(intervals) > 0
-    return isinstance(scale.get("lower"), (int, float)) or isinstance(scale.get("upper"), (int, float))
+        if isinstance(intervals, list) and len(intervals) > 0:
+            return True
+    if isinstance(scale.get("lower"), (int, float)) or isinstance(scale.get("upper"), (int, float)):
+        return True
+    sign_relation = str(scale.get("sign_relation") or "any")
+    if sign_relation != "any":
+        return True
+    magnitude = scale.get("magnitude") if isinstance(scale.get("magnitude"), dict) else {}
+    return isinstance(magnitude.get("min_order"), int) or isinstance(magnitude.get("max_order"), int)
+
 def _to_number(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
@@ -591,6 +805,63 @@ def _to_number(value: Any) -> float | None:
         except Exception:
             return None
     return None
+def summarize_scale(scale: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(scale, dict):
+        return {"kind": "interval", "range": "unbounded", "sign_relation": "any", "magnitude": "unspecified", "reject_exact": []}
+    kind = str(scale.get("kind") or "interval")
+    sign_relation = str(scale.get("sign_relation") or "any")
+    reject_exact = list(scale.get("reject_exact", [])) if isinstance(scale.get("reject_exact"), list) else []
+    magnitude = scale.get("magnitude") if isinstance(scale.get("magnitude"), dict) else {}
+    min_order = magnitude.get("min_order") if isinstance(magnitude.get("min_order"), int) else None
+    max_order = magnitude.get("max_order") if isinstance(magnitude.get("max_order"), int) else None
+    mag_text = "unspecified"
+    if min_order is not None or max_order is not None:
+        mag_text = f"10^[{min_order if min_order is not None else '-inf'}, {max_order if max_order is not None else '+inf'}]"
+    if kind == "point":
+        point = scale.get("point")
+        tol_abs = scale.get("tol_abs")
+        tol_rel = scale.get("tol_rel")
+        range_text = f"point={point}, tol_abs={tol_abs}, tol_rel={tol_rel}"
+    elif kind == "union":
+        intervals = scale.get("intervals") if isinstance(scale.get("intervals"), list) else []
+        parts = []
+        for item in intervals:
+            if isinstance(item, dict):
+                parts.append(f"[{item.get('lower')}, {item.get('upper')}]")
+        range_text = " union ".join(parts) if parts else "unbounded"
+    else:
+        range_text = f"[{scale.get('lower')}, {scale.get('upper')}]"
+    return {
+        "kind": kind,
+        "range": range_text,
+        "sign_relation": sign_relation,
+        "magnitude": mag_text,
+        "reject_exact": reject_exact,
+    }
+
+
+def summarize_test_case(case: dict[str, Any]) -> dict[str, Any]:
+    patches = list(case.get("patches", [])) if isinstance(case.get("patches"), list) else []
+    patch_summary = [
+        {
+            "fid": patch.get("fid"),
+            "key": patch.get("key"),
+            "op": patch.get("op", "replace"),
+            "old": patch.get("old"),
+            "new": patch.get("new"),
+        }
+        for patch in patches[:8]
+        if isinstance(patch, dict)
+    ]
+    return {
+        "case_id": case.get("case_id", ""),
+        "rationale": str(case.get("rationale", "")).strip(),
+        "num_patches": len(patches),
+        "patches": patch_summary,
+        "obj_scale_summary": summarize_scale(case.get("obj_scale") or case.get("obj_bounds")),
+    }
+
+
 def _preview(text: str | None, max_len: int = 320) -> str:
     raw = str(text or "").strip().replace("\n", " ")
     if len(raw) <= max_len:

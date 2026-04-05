@@ -13,7 +13,7 @@ from ttrl_or.config import PipelineConfig
 from ttrl_or.dataset import build_instance_from_question, load_jsonl_dataset
 from ttrl_or.model import MockPolicyBackend, TRLPolicyBackend, TRL_IMPORT_ERROR
 from ttrl_or.pipeline import TTRLORRunner
-from ttrl_or.reward.r3_batch_planner import attach_r3_plan_to_instance, build_r3_planner_prompt, build_sample_r3_plan
+from ttrl_or.reward.r3_batch_planner import attach_r3_plan_to_instance, build_r3_planner_prompt, build_sample_r3_plan, summarize_scale, summarize_test_case
 
 
 def _safe_path_component(name: str) -> str:
@@ -227,6 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--global-consensus-rel-tol", type=float, default=defaults.reward.global_consensus_rel_tol)
     parser.add_argument("--reward-cluster-scope", type=str, choices=["global", "local"], default=defaults.reward.cluster_scope)
+    parser.add_argument("--structure-gate-min", type=float, default=defaults.reward.structure_gate_min)
 
     r3_group = parser.add_mutually_exclusive_group()
     r3_group.add_argument("--enable-r3-reward", dest="enable_r3_reward", action="store_true")
@@ -234,13 +235,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.set_defaults(enable_r3_reward=defaults.reward.enable_r3_reward)
 
     parser.add_argument("--grpo-lr", type=float, default=defaults.grpo.learning_rate)
+    parser.add_argument("--grpo-group-size", type=int, default=defaults.grpo.group_size)
     parser.add_argument("--grpo-kl", type=float, default=defaults.grpo.kl_coef)
+    parser.add_argument("--grpo-sync-ref-model", action="store_true", default=defaults.grpo.sync_ref_model)
+    parser.add_argument("--grpo-ref-model-sync-steps", type=int, default=defaults.grpo.ref_model_sync_steps)
+    parser.add_argument("--grpo-ref-model-mixup-alpha", type=float, default=defaults.grpo.ref_model_mixup_alpha)
     parser.add_argument("--grpo-train-epochs", type=float, default=defaults.grpo.train_epochs)
     parser.add_argument("--grpo-clip-epsilon", type=float, default=defaults.grpo.clip_epsilon)
     parser.add_argument("--grpo-clip-epsilon-high", type=float, default=(defaults.grpo.clip_epsilon_high if defaults.grpo.clip_epsilon_high is not None else -1.0))
     parser.add_argument("--grpo-batch-size", type=int, default=defaults.grpo.per_device_train_batch_size)
     parser.add_argument("--grpo-grad-accum", type=int, default=defaults.grpo.gradient_accumulation_steps)
-    parser.add_argument("--grpo-num-generations", type=int, default=defaults.grpo.num_generations)
+    parser.add_argument("--grpo-num-generations", type=int, default=None)
     parser.add_argument("--grpo-generation-batch-size", type=int, default=defaults.grpo.generation_batch_size)
     parser.add_argument("--grpo-max-prompt-len", type=int, default=defaults.grpo.max_prompt_length)
     parser.add_argument("--grpo-max-completion-len", type=int, default=defaults.grpo.max_completion_length)
@@ -298,16 +303,22 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.reward.code_executor_mode = args.code_executor_mode
     config.reward.global_consensus_rel_tol = args.global_consensus_rel_tol
     config.reward.cluster_scope = args.reward_cluster_scope
+    config.reward.structure_gate_min = args.structure_gate_min
     config.reward.enable_r3_reward = args.enable_r3_reward
 
+    resolved_group_size = int(args.grpo_num_generations if args.grpo_num_generations is not None else args.grpo_group_size)
     config.grpo.learning_rate = args.grpo_lr
+    config.grpo.group_size = resolved_group_size
+    config.grpo.num_generations = resolved_group_size
     config.grpo.kl_coef = args.grpo_kl
+    config.grpo.sync_ref_model = args.grpo_sync_ref_model
+    config.grpo.ref_model_sync_steps = args.grpo_ref_model_sync_steps
+    config.grpo.ref_model_mixup_alpha = args.grpo_ref_model_mixup_alpha
     config.grpo.train_epochs = args.grpo_train_epochs
     config.grpo.clip_epsilon = args.grpo_clip_epsilon
     config.grpo.clip_epsilon_high = None if args.grpo_clip_epsilon_high < 0 else args.grpo_clip_epsilon_high
     config.grpo.per_device_train_batch_size = args.grpo_batch_size
     config.grpo.gradient_accumulation_steps = args.grpo_grad_accum
-    config.grpo.num_generations = args.grpo_num_generations
     config.grpo.generation_batch_size = args.grpo_generation_batch_size
     config.grpo.max_prompt_length = args.grpo_max_prompt_len
     config.grpo.max_completion_length = args.grpo_max_completion_len
@@ -537,6 +548,7 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
                 "num_tests": len(plan.test_cases),
                 "mapping": plan.mapping,
                 "tests": plan.test_cases,
+                "tests_summary": [summarize_test_case(case) for case in plan.test_cases],
                 "llm_raw_preview": plan.llm_raw_preview,
                 "used_vllm_priority": use_vllm,
                 "vllm_mode": vllm_mode,

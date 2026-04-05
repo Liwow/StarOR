@@ -124,7 +124,7 @@ def eval_dataset_dir(dataset_dir: Path, tol: float, log_root: Path, limit: int =
 
         obj, gt = _extract_obj_gt(item)
         rel = _rel_error(obj, gt) if obj is not None and gt is not None else None
-        ok = bool(rel is not None and rel <= tol)
+        ok = bool(gt is not None and obj is not None and rel is not None and rel <= tol)
         rows.append(
             SampleEval(
                 sample_id=item.name,
@@ -136,7 +136,7 @@ def eval_dataset_dir(dataset_dir: Path, tol: float, log_root: Path, limit: int =
         )
 
     total = len(rows)
-    numeric = sum(1 for r in rows if r.rel_error is not None)
+    numeric = sum(1 for r in rows if r.gold_answer is not None)
     hits = sum(1 for r in rows if r.within_tol)
 
     return {
@@ -144,6 +144,7 @@ def eval_dataset_dir(dataset_dir: Path, tol: float, log_root: Path, limit: int =
         "model_root": _infer_model_root(dataset_dir, log_root),
         "dataset_dir": str(dataset_dir.resolve()),
         "tol": tol,
+        "limit": int(limit),
         "num_samples": total,
         "num_numeric_pairs": numeric,
         "num_within_tol": hits,
@@ -259,6 +260,8 @@ def _print_table(summaries: list[dict[str, Any]]) -> None:
     headers = [
         "model_root",
         "dataset",
+        "tol",
+        "limit",
         "num_samples",
         "num_numeric_pairs",
         "num_within_tol",
@@ -272,6 +275,8 @@ def _print_table(summaries: list[dict[str, Any]]) -> None:
                 [
                     str(s.get("model_root", "")),
                     str(s["dataset"]),
+                    str(s.get("tol", "")),
+                    str(s.get("limit", "")),
                     str(s["num_samples"]),
                     str(s["num_numeric_pairs"]),
                     str(s["num_within_tol"]),
@@ -354,7 +359,11 @@ def main() -> int:
     }
 
     _print_table(summaries)
-    print("overall\t{num_samples}\t{num_numeric_pairs}\t{num_within_tol}\t{accuracy_over_all:.4f}\t{accuracy_over_numeric:.4f}".format(**overall))
+    print(
+        "overall\t-\t{tol}\t{limit}\t{num_samples}\t{num_numeric_pairs}\t{num_within_tol}\t{accuracy_over_all:.4f}\t{accuracy_over_numeric:.4f}".format(
+            **overall
+        )
+    )
 
     out_path = Path(args.out) if args.out else (log_root / "accuracy_summary.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)

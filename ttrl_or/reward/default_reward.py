@@ -151,16 +151,22 @@ class TTRLRewardCalculator(RewardCalculator):
                 r1_debug.update(r1_cluster_debug)
 
             r4 = 0.0
-            r4_debug: dict[str, Any] = {"enabled": bool(self.config.enable_r4_reward), "cluster_scope": self.config.cluster_scope}
+            reward_gate, structure_gate_debug = self._structure_gate(model_info)
+            r4_debug: dict[str, Any] = {
+                "enabled": bool(self.config.enable_r4_reward),
+                "cluster_scope": self.config.cluster_scope,
+                "structure_gate": reward_gate,
+                "structure_gate_debug": structure_gate_debug,
+            }
             if self.config.enable_r4_reward and feature_tuple is not None:
                 if local_scope:
-                    r4, r4_debug = self._compute_local_r4(
+                    r4, local_r4_debug = self._compute_local_r4(
                         feature_tuple=feature_tuple,
                         group_feature_counts=structural_group_counts,
                         group_total_count=structural_group_total,
                     )
                 else:
-                    r4, r4_debug = self._structural_cluster.preview_r4(
+                    r4, local_r4_debug = self._structural_cluster.preview_r4(
                         feature_tuple=feature_tuple,
                         current_iteration=current_iter,
                         alpha=self.config.r4_alpha,
@@ -168,10 +174,7 @@ class TTRLRewardCalculator(RewardCalculator):
                         group_feature_counts=structural_group_counts,
                         group_total_count=structural_group_total,
                     )
-                r4_multiplier, lp_debug = self._r4_lp_completeness_multiplier(model_info)
-                r4 *= r4_multiplier
-                r4_debug["lp_completeness_multiplier"] = r4_multiplier
-                r4_debug["lp_completeness"] = lp_debug
+                r4_debug.update(local_r4_debug)
 
             r3 = 0.0
             r3_meta: dict[str, Any] = {"triggered": False}
@@ -184,6 +187,7 @@ class TTRLRewardCalculator(RewardCalculator):
                 r2=r2,
                 r3=r3,
                 r4=r4,
+                reward_gate=reward_gate,
                 r3_weight=self.config.r3_weight,
                 r4_weight=self.config.r4_weight,
             )
@@ -192,6 +196,8 @@ class TTRLRewardCalculator(RewardCalculator):
                 "reward_cluster_scope": self.config.cluster_scope,
                 "r1_debug": r1_debug,
                 "r4_debug": r4_debug,
+                "reward_gate": reward_gate,
+                "structure_gate": structure_gate_debug,
                 "r3": r3_meta,
                 "iteration": current_iter,
                 "iteration_committed": bool(commit),
@@ -322,10 +328,12 @@ class TTRLRewardCalculator(RewardCalculator):
         r2: float,
         r3: float,
         r4: float,
+        reward_gate: float = 1.0,
         r3_weight: float = 0.3,
         r4_weight: float = 0.2,
     ) -> float:
         total = r1 + r3_weight * r3 * r2 + r4_weight * r4
+        total *= float(reward_gate)
         return max(0.0, total)
 
     def _use_local_cluster_scope(self) -> bool:
@@ -504,25 +512,26 @@ class TTRLRewardCalculator(RewardCalculator):
                 details = list(pool.map(_run_case, list(enumerate(normalized_cases))))
             details.sort(key=lambda x: int(x.get("case_index", 0)))
 
+        passed_cases = 0
         failed_case_index = None
         for detail in details:
-            if (not bool(detail.get("effective_success"))) or (not bool(detail.get("obj_in_bounds"))):
+            passed = bool(detail.get("effective_success")) and bool(detail.get("obj_in_bounds"))
+            detail["passed"] = passed
+            if passed:
+                passed_cases += 1
+            elif failed_case_index is None:
                 failed_case_index = int(detail.get("case_index", -1))
-                break
 
-        if failed_case_index is not None:
-            return 0.0, {
-                "enabled": True,
-                "source": source,
-                "num_cases": len(tests),
-                "failed_case_index": failed_case_index,
-                "cases": details,
-            }
+        num_cases = len(details)
+        r3_score = (float(passed_cases) / float(num_cases)) if num_cases > 0 else 0.0
 
-        return 1.0, {
+        return r3_score, {
             "enabled": True,
             "source": source,
             "num_cases": len(tests),
+            "passed_cases": passed_cases,
+            "failed_case_index": failed_case_index,
+            "pass_ratio": r3_score,
             "cases": details,
         }
 
@@ -605,7 +614,7 @@ class TTRLRewardCalculator(RewardCalculator):
             if maybe is not None:
                 return self._normalize_scale_spec(maybe)
 
-        return {"kind": "interval", "lower": None, "upper": None, "reject_exact": []}
+        return {"kind": "interval", "lower": None, "upper": None, "sign_relation": "any", "magnitude": {"min_order": None, "max_order": None, "use_abs": True}, "reject_exact": []}
 
     @staticmethod
     def _normalize_scale_spec(value: Any) -> dict[str, Any]:
@@ -626,8 +635,50 @@ class TTRLRewardCalculator(RewardCalculator):
                     return None
             return None
 
+        def _normalize_sign_relation(raw: Any) -> str:
+            text = str(raw or "any").strip().lower()
+            aliases = {
+                "gt0": "positive",
+                ">0": "positive",
+                "positive": "positive",
+                "ge0": "nonnegative",
+                ">=0": "nonnegative",
+                "nonnegative": "nonnegative",
+                "lt0": "negative",
+                "<0": "negative",
+                "negative": "negative",
+                "le0": "nonpositive",
+                "<=0": "nonpositive",
+                "nonpositive": "nonpositive",
+                "ne0": "nonzero",
+                "!=0": "nonzero",
+                "nonzero": "nonzero",
+                "any": "any",
+            }
+            return aliases.get(text, "any")
+
+        def _normalize_magnitude(raw: Any) -> dict[str, Any]:
+            if not isinstance(raw, dict):
+                raw = {}
+            min_order = _num(raw.get("min_order"))
+            if min_order is None:
+                min_order = _num(raw.get("order_min"))
+            if min_order is None:
+                min_order = _num(raw.get("lower_order"))
+            max_order = _num(raw.get("max_order"))
+            if max_order is None:
+                max_order = _num(raw.get("order_max"))
+            if max_order is None:
+                max_order = _num(raw.get("upper_order"))
+            use_abs = bool(raw.get("use_abs", True))
+            min_order_i = int(min_order) if min_order is not None and math.isfinite(min_order) else None
+            max_order_i = int(max_order) if max_order is not None and math.isfinite(max_order) else None
+            if min_order_i is not None and max_order_i is not None and min_order_i > max_order_i:
+                min_order_i, max_order_i = max_order_i, min_order_i
+            return {"min_order": min_order_i, "max_order": max_order_i, "use_abs": use_abs}
+
         if not isinstance(value, dict):
-            return {"kind": "interval", "lower": None, "upper": None, "reject_exact": []}
+            return {"kind": "interval", "lower": None, "upper": None, "sign_relation": "any", "magnitude": {"min_order": None, "max_order": None, "use_abs": True}, "reject_exact": []}
 
         kind = str(value.get("kind") or "interval").strip().lower()
         reject_exact: list[float] = []
@@ -636,6 +687,15 @@ class TTRLRewardCalculator(RewardCalculator):
                 num = _num(item)
                 if num is not None:
                     reject_exact.append(float(num))
+        sign_relation = _normalize_sign_relation(
+            value.get("sign_relation")
+            or value.get("zero_relation")
+            or value.get("relation_to_zero")
+            or value.get("sign")
+        )
+        magnitude = _normalize_magnitude(value.get("magnitude"))
+        if magnitude["min_order"] is None and magnitude["max_order"] is None:
+            magnitude = _normalize_magnitude(value)
 
         if kind == "point":
             point = _num(value.get("point"))
@@ -646,6 +706,8 @@ class TTRLRewardCalculator(RewardCalculator):
                 "point": point,
                 "tol_abs": tol_abs,
                 "tol_rel": tol_rel,
+                "sign_relation": sign_relation,
+                "magnitude": magnitude,
                 "reject_exact": reject_exact,
             }
 
@@ -662,13 +724,13 @@ class TTRLRewardCalculator(RewardCalculator):
                     if lo is None and hi is None:
                         continue
                     intervals.append({"lower": lo, "upper": hi})
-            return {"kind": "union", "intervals": intervals, "reject_exact": reject_exact}
+            return {"kind": "union", "intervals": intervals, "sign_relation": sign_relation, "magnitude": magnitude, "reject_exact": reject_exact}
 
         lo = _num(value.get("lower"))
         hi = _num(value.get("upper"))
         if lo is not None and hi is not None and lo > hi:
             lo, hi = hi, lo
-        return {"kind": "interval", "lower": lo, "upper": hi, "reject_exact": reject_exact}
+        return {"kind": "interval", "lower": lo, "upper": hi, "sign_relation": sign_relation, "magnitude": magnitude, "reject_exact": reject_exact}
 
     def _objective_matches_scale(self, obj_answer: float | None, scale: dict[str, Any] | None) -> bool:
         if not self._is_valid_objective(obj_answer):
@@ -678,10 +740,37 @@ class TTRLRewardCalculator(RewardCalculator):
             return True
 
         val = float(obj_answer)
+        abs_val = abs(val)
         eps = 1e-9
         reject_exact = scale.get("reject_exact") if isinstance(scale.get("reject_exact"), list) else []
         for item in reject_exact:
             if isinstance(item, (int, float)) and abs(val - float(item)) <= eps:
+                return False
+
+        sign_relation = str(scale.get("sign_relation") or "any").strip().lower()
+        if sign_relation == "positive" and not (val > 0.0):
+            return False
+        if sign_relation == "nonnegative" and not (val >= 0.0):
+            return False
+        if sign_relation == "negative" and not (val < 0.0):
+            return False
+        if sign_relation == "nonpositive" and not (val <= 0.0):
+            return False
+        if sign_relation == "nonzero" and abs(val) <= eps:
+            return False
+
+        magnitude = scale.get("magnitude") if isinstance(scale.get("magnitude"), dict) else {}
+        min_order = magnitude.get("min_order") if isinstance(magnitude.get("min_order"), int) else None
+        max_order = magnitude.get("max_order") if isinstance(magnitude.get("max_order"), int) else None
+        use_abs = bool(magnitude.get("use_abs", True))
+        magnitude_val = abs_val if use_abs else val
+        if min_order is not None or max_order is not None:
+            if magnitude_val <= eps:
+                return False
+            order = math.log10(magnitude_val)
+            if min_order is not None and order < float(min_order) - eps:
+                return False
+            if max_order is not None and order > float(max_order) + eps:
                 return False
 
         kind = str(scale.get("kind") or "interval").strip().lower()
@@ -886,25 +975,29 @@ class TTRLRewardCalculator(RewardCalculator):
         except Exception:
             return repr(value)
 
-    @staticmethod
-    def _r4_lp_completeness_multiplier(model_info: Any) -> tuple[float, dict[str, Any]]:
+    def _structure_gate(self, model_info: Any) -> tuple[float, dict[str, Any]]:
+        gate_min = float(max(0.0, min(1.0, getattr(self.config, 'structure_gate_min', 0.2))))
         if model_info is None or not bool(getattr(model_info, 'extracted', False)):
-            return 0.5, {
+            return gate_min, {
+                'name': 'structure_gate',
+                'gate_min': gate_min,
                 'extracted': False,
                 'has_objective': False,
-                'has_constraints': False,
-                'has_variables': False,
-                'complete': False,
+                'num_constrs': 0,
+                'num_vars': 0,
+                'passes': False,
             }
         has_objective = bool(getattr(model_info, 'has_objective', False))
-        has_constraints = bool(getattr(model_info, 'has_constraints', False))
-        has_variables = bool(getattr(model_info, 'has_variables', False))
-        complete = bool(has_objective and has_constraints and has_variables)
-        return (1.0 if complete else 0.5), {
+        num_constrs = int(getattr(model_info, 'num_constrs', 0) or 0)
+        num_vars = int(getattr(model_info, 'num_vars', 0) or 0)
+        passes = bool(has_objective and num_constrs > 0 and num_vars > 0)
+        return (1.0 if passes else gate_min), {
+            'name': 'structure_gate',
+            'gate_min': gate_min,
             'extracted': True,
             'has_objective': has_objective,
-            'has_constraints': has_constraints,
-            'has_variables': has_variables,
-            'complete': complete,
+            'num_constrs': num_constrs,
+            'num_vars': num_vars,
+            'passes': passes,
         }
 
