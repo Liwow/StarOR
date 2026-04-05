@@ -7,7 +7,7 @@ from typing import Any
 from ttrl_or.reward.perturbation import build_perturbation_map, generate_perturbed_instances_from_map
 
 
-R3_PLANNER_FEWSHOT = """Example A (inline numeric description, transportation minimization)
+R3_BASE_SCALE_FEWSHOT = """Example A (inline numeric description, transportation minimization)
 Task sketch:
 - Boat capacity 10, canoe capacity 8
 - Boat time 20, canoe time 40
@@ -16,9 +16,9 @@ Task sketch:
 - At least 300 ducks must be transported
 Expected style:
 <analysis>
-Objective is total transport time, so the objective should be positive and definitely not 0.
-Because the target demand is 300 ducks and each trip carries at most around 10 ducks, the optimal objective is likely in the order of 10^3 minutes, not 10^-3 and not 10^9.
-Stress tests should change capacity or demand in realistic directions.
+Objective is total transport time, so the objective must be positive and should never be 0.
+Because the demand is 300 and each trip carries roughly 8 to 10 ducks, the objective should be in the order of 10^3 minutes.
+A tight but still tolerant filter can use a positive interval roughly from hundreds to a few thousands.
 </analysis>
 <base_scale>
 {
@@ -30,6 +30,44 @@ Stress tests should change capacity or demand in realistic directions.
   "reject_exact": [0]
 }
 </base_scale>
+
+Example B (table-driven production planning)
+Task sketch:
+- Weekly demand table for two products across 8 weeks
+- Training, overtime, wages, and delay penalties
+Expected style:
+<analysis>
+Total cost must be positive. Since wages and penalties accumulate over many weeks, the optimal objective should be around 10^5 to 10^6 rather than near zero.
+A good filter should combine a positive sign, a realistic interval, and a magnitude band.
+</analysis>
+<base_scale>
+{
+  "kind": "interval",
+  "lower": 100000,
+  "upper": 600000,
+  "sign_relation": "positive",
+  "magnitude": {"min_order": 5, "max_order": 6, "use_abs": true},
+  "reject_exact": [0]
+}
+</base_scale>
+"""
+
+
+R3_TESTS_FEWSHOT = """Example A (inline numeric description, transportation minimization)
+Task sketch:
+- Boat capacity 10, canoe capacity 8
+- Boat time 20, canoe time 40
+- At most 12 boat trips
+- At least 60% of trips by canoe
+- At least 300 ducks must be transported
+Feature catalog snippet:
+- F03: boat capacity = 10
+- F05: demand = 300
+Expected style:
+<analysis>
+Useful stress cases should modify demand or capacity in realistic directions.
+Each case must keep the same problem semantics and must still provide obj_scale from range, sign, and magnitude.
+</analysis>
 <tests>
 [
   {
@@ -43,7 +81,20 @@ Stress tests should change capacity or demand in realistic directions.
       "magnitude": {"min_order": 2, "max_order": 4, "use_abs": true},
       "reject_exact": [0]
     },
-    "rationale": "Higher demand should increase total time but keep the same sign and magnitude family."
+    "rationale": "Higher demand should usually increase total time while keeping the same sign and magnitude family."
+  },
+  {
+    "case_id": "boat_capacity_up",
+    "patches": [{"fid": "F03", "new_value": 12}],
+    "obj_scale": {
+      "kind": "interval",
+      "lower": 500,
+      "upper": 2600,
+      "sign_relation": "positive",
+      "magnitude": {"min_order": 2, "max_order": 4, "use_abs": true},
+      "reject_exact": [0]
+    },
+    "rationale": "Higher boat capacity should not change the sign and should keep the objective in the same rough magnitude."
   }
 ]
 </tests>
@@ -52,21 +103,14 @@ Example B (table-driven production planning)
 Task sketch:
 - Weekly demand table for two products across 8 weeks
 - Training, overtime, wages, and delay penalties
+Feature catalog snippet:
+- F12: one late-week demand entry
+- F18: overtime wage
 Expected style:
 <analysis>
-Total cost must be positive. Because wages and penalties accumulate over 8 weeks, the optimal objective is likely in the order of 10^5 to 10^6, not near zero.
-Useful tests should perturb demand entries or wage-like quantities while preserving realism.
+Good robustness tests should perturb demand-like or wage-like quantities while preserving realism.
+The resulting obj_scale should remain positive and remain in the same order of magnitude unless the perturbation is extreme.
 </analysis>
-<base_scale>
-{
-  "kind": "interval",
-  "lower": 100000,
-  "upper": 600000,
-  "sign_relation": "positive",
-  "magnitude": {"min_order": 5, "max_order": 6, "use_abs": true},
-  "reject_exact": [0]
-}
-</base_scale>
 <tests>
 [
   {
@@ -80,11 +124,13 @@ Useful tests should perturb demand entries or wage-like quantities while preserv
       "magnitude": {"min_order": 5, "max_order": 6, "use_abs": true},
       "reject_exact": [0]
     },
-    "rationale": "Increasing late-stage demand should keep the same sign and magnitude band while usually increasing cost."
+    "rationale": "Increasing late-stage demand should usually increase cost while staying positive and in the same magnitude band."
   }
 ]
 </tests>
 """
+
+
 @dataclass(slots=True)
 class R3SamplePlan:
     sample_id: str
@@ -95,26 +141,27 @@ class R3SamplePlan:
     mapping: list[dict[str, Any]]
     feature_catalog: list[dict[str, Any]]
     llm_raw_preview: str = ""
-def build_r3_planner_prompt(
+    llm_base_preview: str = ""
+    llm_tests_preview: str = ""
+
+
+def build_r3_base_scale_prompt(
     *,
     sample_id: str,
     description: str,
     instance: dict[str, Any],
-    num_tests: int,
 ) -> str:
     feature_catalog = _compact_feature_catalog(_feature_catalog_from_instance(instance))
     instance_view = _compact_instance(instance)
-    skeleton = _plan_skeleton(num_tests=num_tests, feature_catalog=feature_catalog)
+    skeleton = _base_scale_skeleton()
     return (
-        "You are an OR robustness planner.\n"
-        "Focus on analysis quality. We already have a rule-built JSON skeleton and runtime mapping.\n"
-        "Do NOT invent internal keys such as num_3 or tbl_0_r2_cost. Use feature ids only.\n"
-        "Output exactly three tagged blocks and nothing else:\n"
+        "You are an OR objective-scale analyst.\n"
+        "Analyze the task carefully and produce filtering information only for the ORIGINAL sample.\n"
+        "Output exactly two tagged blocks and nothing else:\n"
         "<analysis>...text...</analysis>\n"
-        "<base_scale>{...JSON...}</base_scale>\n"
-        "<tests>[...JSON list...]</tests>\n\n"
-        "Your goal is to produce filtering information that is useful for runtime filter(obj, scale).\n"
-        "For BOTH base_scale and every obj_scale, describe the objective from THREE aspects whenever possible:\n"
+        "<base_scale>{...JSON...}</base_scale>\n\n"
+        "The scale must be useful for runtime filter(obj, scale).\n"
+        "Describe the objective from THREE aspects whenever possible:\n"
         "1. numeric range bounds\n"
         "2. relation to zero\n"
         "3. order-of-magnitude range\n\n"
@@ -123,13 +170,48 @@ def build_r3_planner_prompt(
         "- sign_relation: positive | nonnegative | negative | nonpositive | nonzero | any\n"
         "- magnitude: {min_order:int|null, max_order:int|null, use_abs:true}\n"
         "- reject_exact: list of obviously impossible exact values such as 0 when appropriate\n\n"
-        "When uncertain, still provide a reasonable sign_relation and magnitude band.\n"
-        "Keep scales informative: not too loose, but broad enough to tolerate modeling variation.\n"
-        "Each test item must contain: case_id, patches, obj_scale, rationale.\n"
-        "patches should usually be short and use existing fid values only.\n"
-        "Use realistic stress cases that preserve semantic meaning.\n\n"
+        "Your analysis should explain WHY the scale is reasonable.\n"
+        "Keep the scale informative: not too loose, but broad enough to tolerate modeling variation.\n\n"
         "Few-shot style reference:\n"
-        f"{R3_PLANNER_FEWSHOT}\n\n"
+        f"{R3_BASE_SCALE_FEWSHOT}\n\n"
+        f"sample_id: {sample_id}\n\n"
+        "Task description:\n"
+        f"{description}\n\n"
+        "Parsed numeric data snapshot (for context only):\n"
+        f"{json.dumps(instance_view, ensure_ascii=False, indent=2)}\n\n"
+        "Feature catalog (for understanding only; no patches are needed in this prompt):\n"
+        f"{json.dumps(feature_catalog, ensure_ascii=False, indent=2)}\n\n"
+        "Rule-built output skeleton reference:\n"
+        f"{json.dumps(skeleton, ensure_ascii=False, indent=2)}\n"
+    )
+
+
+def build_r3_tests_prompt(
+    *,
+    sample_id: str,
+    description: str,
+    instance: dict[str, Any],
+    num_tests: int,
+) -> str:
+    feature_catalog = _compact_feature_catalog(_feature_catalog_from_instance(instance))
+    instance_view = _compact_instance(instance)
+    skeleton = _tests_skeleton(num_tests=num_tests, feature_catalog=feature_catalog)
+    return (
+        "You are an OR robustness test designer.\n"
+        "Analyze the task carefully and design realistic TEST CASES only.\n"
+        "Output exactly two tagged blocks and nothing else:\n"
+        "<analysis>...text...</analysis>\n"
+        "<tests>[...JSON list...]</tests>\n\n"
+        "Each test must contain: case_id, patches, obj_scale, rationale.\n"
+        "Use feature ids only in patches. Do NOT invent internal keys.\n"
+        "For every obj_scale, describe the objective from THREE aspects whenever possible:\n"
+        "1. numeric range bounds\n"
+        "2. relation to zero\n"
+        "3. order-of-magnitude range\n\n"
+        "Your analysis should explain why these tests are realistic and useful.\n"
+        "Prefer small, semantically meaningful perturbations.\n\n"
+        "Few-shot style reference:\n"
+        f"{R3_TESTS_FEWSHOT}\n\n"
         f"sample_id: {sample_id}\n\n"
         "Task description:\n"
         f"{description}\n\n"
@@ -141,6 +223,22 @@ def build_r3_planner_prompt(
         f"{json.dumps(skeleton, ensure_ascii=False, indent=2)}\n"
     )
 
+
+def build_r3_planner_prompt(
+    *,
+    sample_id: str,
+    description: str,
+    instance: dict[str, Any],
+    num_tests: int,
+) -> str:
+    return build_r3_tests_prompt(
+        sample_id=sample_id,
+        description=description,
+        instance=instance,
+        num_tests=num_tests,
+    )
+
+
 def build_sample_r3_plan(
     *,
     sample_id: str,
@@ -148,11 +246,37 @@ def build_sample_r3_plan(
     instance: dict[str, Any],
     reference_answer: str,
     robustness_cases: int,
-    llm_text: str | None,
+    llm_base_text: str | None = None,
+    llm_tests_text: str | None = None,
+    llm_text: str | None = None,
     allow_heuristic_fallback: bool = True,
 ) -> R3SamplePlan:
     feature_catalog = _feature_catalog_from_instance(instance)
-    parsed = _parse_tagged_plan(llm_text) if llm_text else None
+    parsed: dict[str, Any] | None = None
+    source = "disabled"
+
+    base_parsed = _parse_tagged_base_scale_plan(llm_base_text) if llm_base_text else None
+    tests_parsed = _parse_tagged_tests_plan(llm_tests_text) if llm_tests_text else None
+    if isinstance(base_parsed, dict) or isinstance(tests_parsed, dict):
+        parsed = {}
+        analyses = []
+        if isinstance(base_parsed, dict):
+            if isinstance(base_parsed.get("base_scale"), dict):
+                parsed["base_scale"] = base_parsed["base_scale"]
+            if str(base_parsed.get("analysis", "")).strip():
+                analyses.append(f"[base_scale] {str(base_parsed.get('analysis', '')).strip()}")
+        if isinstance(tests_parsed, dict):
+            if isinstance(tests_parsed.get("tests"), list):
+                parsed["tests"] = tests_parsed["tests"]
+            if str(tests_parsed.get("analysis", "")).strip():
+                analyses.append(f"[tests] {str(tests_parsed.get('analysis', '')).strip()}")
+        parsed["analysis"] = "\n\n".join(analyses).strip()
+        source = "llm_split"
+    elif llm_text:
+        parsed = _parse_tagged_plan(llm_text)
+        if isinstance(parsed, dict):
+            source = "llm"
+
     if isinstance(parsed, dict):
         plan = _normalize_llm_plan(
             sample_id=sample_id,
@@ -161,9 +285,12 @@ def build_sample_r3_plan(
             feature_catalog=feature_catalog,
             robustness_cases=robustness_cases,
             reference_answer=reference_answer,
-            raw_preview=_preview(llm_text),
+            raw_preview=_compose_raw_preview(llm_base_text, llm_tests_text, llm_text),
         )
         if plan is not None:
+            plan.source = source or plan.source
+            plan.llm_base_preview = _preview(llm_base_text)
+            plan.llm_tests_preview = _preview(llm_tests_text)
             return plan
     if allow_heuristic_fallback:
         return _heuristic_plan(
@@ -172,7 +299,7 @@ def build_sample_r3_plan(
             feature_catalog=feature_catalog,
             robustness_cases=robustness_cases,
             reference_answer=reference_answer,
-            raw_preview=_preview(llm_text),
+            raw_preview=_compose_raw_preview(llm_base_text, llm_tests_text, llm_text),
         )
     return R3SamplePlan(
         sample_id=sample_id,
@@ -182,8 +309,12 @@ def build_sample_r3_plan(
         test_cases=[],
         mapping=[],
         feature_catalog=feature_catalog,
-        llm_raw_preview=_preview(llm_text),
+        llm_raw_preview=_compose_raw_preview(llm_base_text, llm_tests_text, llm_text),
+        llm_base_preview=_preview(llm_base_text),
+        llm_tests_preview=_preview(llm_tests_text),
     )
+
+
 def attach_r3_plan_to_instance(instance: dict[str, Any], plan: R3SamplePlan) -> dict[str, Any]:
     out = dict(instance)
     out["__r3_source__"] = plan.source
@@ -194,10 +325,14 @@ def attach_r3_plan_to_instance(instance: dict[str, Any], plan: R3SamplePlan) -> 
     out["__r3_mapping__"] = plan.mapping
     out["__r3_feature_catalog__"] = plan.feature_catalog
     out["__r3_llm_raw_preview__"] = plan.llm_raw_preview
+    out["__r3_llm_base_preview__"] = plan.llm_base_preview
+    out["__r3_llm_tests_preview__"] = plan.llm_tests_preview
     out["__r3_precompute_required__"] = True
     out["__r3_precompute_ok__"] = bool(plan.source != "disabled" and len(plan.test_cases) > 0)
     out["__r3_disable__"] = not bool(plan.source != "disabled" and len(plan.test_cases) > 0)
     return out
+
+
 def _normalize_llm_plan(
     *,
     sample_id: str,
@@ -274,6 +409,7 @@ def _normalize_llm_plan(
         feature_catalog=feature_catalog,
         llm_raw_preview=raw_preview,
     )
+
 def _heuristic_plan(
     *,
     sample_id: str,
@@ -397,7 +533,21 @@ def _key_to_fid_map(feature_catalog: list[dict[str, Any]]) -> dict[str, str]:
         if fid and key:
             out[key] = fid
     return out
-def _plan_skeleton(*, num_tests: int, feature_catalog: list[dict[str, Any]]) -> dict[str, Any]:
+def _base_scale_skeleton() -> dict[str, Any]:
+    return {
+        "analysis": "",
+        "base_scale": {
+            "kind": "interval",
+            "lower": None,
+            "upper": None,
+            "sign_relation": "any",
+            "magnitude": {"min_order": None, "max_order": None, "use_abs": True},
+            "reject_exact": [],
+        },
+    }
+
+
+def _tests_skeleton(*, num_tests: int, feature_catalog: list[dict[str, Any]]) -> dict[str, Any]:
     sample_fids = [str(row.get("fid", "")) for row in feature_catalog[:2] if isinstance(row, dict) and row.get("fid")]
     tests = []
     for idx in range(max(1, int(num_tests))):
@@ -417,18 +567,13 @@ def _plan_skeleton(*, num_tests: int, feature_catalog: list[dict[str, Any]]) -> 
                 "rationale": "",
             }
         )
-    return {
-        "analysis": "",
-        "base_scale": {
-            "kind": "interval",
-            "lower": None,
-            "upper": None,
-            "sign_relation": "any",
-            "magnitude": {"min_order": None, "max_order": None, "use_abs": True},
-            "reject_exact": [],
-        },
-        "tests": tests,
-    }
+    return {"analysis": "", "tests": tests}
+
+
+def _plan_skeleton(*, num_tests: int, feature_catalog: list[dict[str, Any]]) -> dict[str, Any]:
+    out = _base_scale_skeleton()
+    out["tests"] = _tests_skeleton(num_tests=num_tests, feature_catalog=feature_catalog)["tests"]
+    return out
 def _normalize_patch(item: Any, feature_map: dict[str, dict[str, Any]], target_instance: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(item, dict):
         return None
@@ -474,6 +619,32 @@ def _normalize_patch(item: Any, feature_map: dict[str, dict[str, Any]], target_i
         "source": str(feature.get("source", "")),
         "snippet": str(feature.get("snippet", "")).strip(),
     }
+def _parse_tagged_base_scale_plan(text: str | None) -> dict[str, Any] | None:
+    raw = str(text or "")
+    if not raw.strip():
+        return None
+    analysis = _extract_tag_text(raw, "analysis")
+    base_scale = _parse_json_object(_extract_tag_text(raw, "base_scale"))
+    parsed: dict[str, Any] = {"analysis": analysis or ""}
+    if isinstance(base_scale, dict):
+        parsed["base_scale"] = base_scale
+    return parsed if (analysis or "base_scale" in parsed) else None
+
+
+def _parse_tagged_tests_plan(text: str | None) -> dict[str, Any] | None:
+    raw = str(text or "")
+    if not raw.strip():
+        return None
+    analysis = _extract_tag_text(raw, "analysis")
+    tests = _parse_json_object(_extract_tag_text(raw, "tests"))
+    parsed: dict[str, Any] = {"analysis": analysis or ""}
+    if isinstance(tests, list):
+        parsed["tests"] = tests
+    elif isinstance(tests, dict) and isinstance(tests.get("tests"), list):
+        parsed["tests"] = tests.get("tests")
+    return parsed if (analysis or "tests" in parsed) else None
+
+
 def _parse_tagged_plan(text: str | None) -> dict[str, Any] | None:
     raw = str(text or "")
     if not raw.strip():

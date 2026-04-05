@@ -437,24 +437,46 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
     dataset_dir = Path(cfg.log_dir)
 
     base_instances: list[dict[str, Any]] = []
-    prompts: list[str] = []
-    for sample in samples:
+    base_prompts: list[str] = []
+    tests_prompts: list[str] = []
+    prompt_jobs: list[dict[str, Any]] = []
+    for sample_idx, sample in enumerate(samples):
         base_instance = _build_base_instance_for_sample(sample, cfg)
         base_instances.append(base_instance)
-        prompts.append(
-            build_r3_planner_prompt(
-                sample_id=sample.sample_id,
-                description=sample.question,
-                instance=base_instance,
-                num_tests=max(1, int(cfg.reward.robustness_cases)),
-            )
+        base_prompt = build_r3_base_scale_prompt(
+            sample_id=sample.sample_id,
+            description=sample.question,
+            instance=base_instance,
         )
+        tests_prompt = build_r3_tests_prompt(
+            sample_id=sample.sample_id,
+            description=sample.question,
+            instance=base_instance,
+            num_tests=max(1, int(cfg.reward.robustness_cases)),
+        )
+        base_prompts.append(base_prompt)
+        tests_prompts.append(tests_prompt)
+        prompt_jobs.append({"sample_idx": sample_idx, "sample_id": sample.sample_id, "kind": "base", "prompt": base_prompt})
+        prompt_jobs.append({"sample_idx": sample_idx, "sample_id": sample.sample_id, "kind": "tests", "prompt": tests_prompt})
 
-    llm_texts: list[str | None] = [None for _ in samples]
-    if can_llm_batch and prompts:
-        batch_size = min(16, max(1, len(prompts)))
-        for start_idx in range(0, len(prompts), batch_size):
-            batch_prompts = prompts[start_idx:start_idx + batch_size]
+    llm_base_texts: list[str | None] = [None for _ in samples]
+    llm_tests_texts: list[str | None] = [None for _ in samples]
+
+    def _assign_prompt_output(job: dict[str, Any], value: str | None) -> None:
+        sample_idx = int(job.get("sample_idx", -1))
+        if not (0 <= sample_idx < len(samples)):
+            return
+        kind = str(job.get("kind", ""))
+        if kind == "base":
+            llm_base_texts[sample_idx] = value
+        elif kind == "tests":
+            llm_tests_texts[sample_idx] = value
+
+    if can_llm_batch and prompt_jobs:
+        batch_size = min(32, max(1, len(prompt_jobs)))
+        for start_idx in range(0, len(prompt_jobs), batch_size):
+            batch_jobs = prompt_jobs[start_idx:start_idx + batch_size]
+            batch_prompts = [str(job.get("prompt", "")) for job in batch_jobs]
             try:
                 batch_outputs = list(
                     aux_gen_batch(
@@ -467,17 +489,19 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
                     )
                 )
             except Exception as exc:  # noqa: BLE001
-                batch_outputs = [None for _ in batch_prompts]
-                print(f"[r3-batch][WARN] planner batch generation failed at chunk={start_idx}: {type(exc).__name__}: {exc}")
-            for local_idx, value in enumerate(batch_outputs):
-                abs_idx = start_idx + local_idx
-                if abs_idx < len(llm_texts):
-                    llm_texts[abs_idx] = value
-    elif can_llm and prompts:
-        for idx_prompt, prompt in enumerate(prompts):
+                batch_outputs = [None for _ in batch_jobs]
+                print(f"[r3-batch][WARN] combined planner batch generation failed at chunk={start_idx}: {type(exc).__name__}: {exc}")
+            for local_idx, job in enumerate(batch_jobs):
+                value = batch_outputs[local_idx] if local_idx < len(batch_outputs) else None
+                _assign_prompt_output(job, value)
+    elif can_llm and prompt_jobs:
+        for job in prompt_jobs:
+            sample_idx = int(job.get("sample_idx", -1))
+            sample_id = samples[sample_idx].sample_id if 0 <= sample_idx < len(samples) else ""
+            kind = str(job.get("kind", "planner"))
             try:
-                llm_texts[idx_prompt] = aux_gen(
-                    prompt,
+                value = aux_gen(
+                    str(job.get("prompt", "")),
                     max_new_tokens=int(cfg.dataset.r3_plan_max_new_tokens),
                     temperature=float(cfg.dataset.r3_plan_temperature),
                     top_p=float(cfg.dataset.r3_plan_top_p),
@@ -485,12 +509,14 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
                     vllm_mode=vllm_mode,
                 )
             except Exception as exc:  # noqa: BLE001
-                llm_texts[idx_prompt] = None
-                print(f"[r3-batch][WARN] sample={samples[idx_prompt].sample_id} planner generation failed: {type(exc).__name__}: {exc}")
+                value = None
+                print(f"[r3-batch][WARN] sample={sample_id} {kind} generation failed: {type(exc).__name__}: {exc}")
+            _assign_prompt_output(job, value)
 
     for idx, sample in enumerate(samples, start=1):
         base_instance = base_instances[idx - 1]
-        llm_text = llm_texts[idx - 1]
+        llm_base_text = llm_base_texts[idx - 1]
+        llm_tests_text = llm_tests_texts[idx - 1]
         precompute_status = "disabled"
 
         plan = build_sample_r3_plan(
@@ -499,7 +525,8 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
             instance=base_instance,
             reference_answer=sample.answer,
             robustness_cases=max(1, int(cfg.reward.robustness_cases)),
-            llm_text=llm_text,
+            llm_base_text=llm_base_text,
+            llm_tests_text=llm_tests_text,
             allow_heuristic_fallback=False,
         )
 
@@ -522,6 +549,8 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
             "mapping": plan.mapping,
             "analysis": plan.analysis,
             "llm_raw_preview": plan.llm_raw_preview,
+            "llm_base_preview": plan.llm_base_preview,
+            "llm_tests_preview": plan.llm_tests_preview,
             "used_vllm_priority": use_vllm,
             "vllm_mode": vllm_mode,
         }
@@ -543,13 +572,20 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
                 "source": plan.source,
                 "analysis": plan.analysis,
                 "base_obj_scale": plan.base_obj_bounds,
-            "base_obj_bounds": plan.base_obj_bounds,
-            "feature_catalog": plan.feature_catalog,
+                "base_obj_bounds": plan.base_obj_bounds,
+                "base_scale_summary": summarize_scale(plan.base_obj_bounds),
+                "feature_catalog": plan.feature_catalog,
                 "num_tests": len(plan.test_cases),
                 "mapping": plan.mapping,
                 "tests": plan.test_cases,
                 "tests_summary": [summarize_test_case(case) for case in plan.test_cases],
                 "llm_raw_preview": plan.llm_raw_preview,
+                "llm_base_preview": plan.llm_base_preview,
+                "llm_tests_preview": plan.llm_tests_preview,
+                "planner_prompt_preview": {
+                    "base_scale": base_prompts[idx - 1][:1200],
+                    "tests": tests_prompts[idx - 1][:1200],
+                },
                 "used_vllm_priority": use_vllm,
                 "vllm_mode": vllm_mode,
             }
@@ -577,10 +613,13 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
                     "source": item.get("source"),
                     "base_obj_scale": item.get("base_obj_scale", item.get("base_obj_bounds")),
                     "base_obj_bounds": item.get("base_obj_bounds"),
+                    "base_scale_summary": summarize_scale(item.get("base_obj_scale", item.get("base_obj_bounds"))),
                     "num_tests": item.get("num_tests"),
                     "mapping": item.get("mapping"),
                     "analysis": item.get("analysis"),
                     "llm_raw_preview": item.get("llm_raw_preview", ""),
+                    "llm_base_preview": item.get("llm_base_preview", ""),
+                    "llm_tests_preview": item.get("llm_tests_preview", ""),
                     "used_vllm_priority": item.get("used_vllm_priority", False),
                     "vllm_mode": item.get("vllm_mode", ""),
                 }
