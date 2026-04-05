@@ -42,12 +42,12 @@ class RewardConfig:
 class GRPOConfig:
     learning_rate: float = 5e-5
     group_size: int = 3  # Alias of num_generations in GRPO literature.
-    kl_coef: float = 0.01  # KL penalty coefficient beta.
-    sync_ref_model: bool = True  # Whether to periodically refresh the KL reference policy.
+    kl_coef: float = 0.005  # KL penalty coefficient beta.
+    sync_ref_model: bool = False  # Whether to periodically refresh the KL reference policy.
     ref_model_sync_steps: int = 5  # Refresh frequency for the KL reference policy.
     ref_model_mixup_alpha: float = 0.6  # Mixup factor when syncing the reference policy.
     train_epochs: float = 1.0
-    clip_epsilon: float = 0.2
+    clip_epsilon: float = 0.3
     clip_epsilon_high: float | None = None
     per_device_train_batch_size: int = 1
     gradient_accumulation_steps: int = 1

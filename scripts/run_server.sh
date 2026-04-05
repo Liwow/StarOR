@@ -5,9 +5,10 @@ RUN_SCRIPT="scripts/run.sh"
 START_SERVER_SCRIPT="scripts/start_vllm_server.sh"
 STOP_SERVER_SCRIPT="scripts/stop_vllm_server.sh"
 
-DATASET_JSONL="data/IndustryOR_fixedV2.jsonl"
+# "data/IndustryOR_fixedV2.jsonl"
+DATASET_JSONL="data/OptMATH_Bench_166.jsonl"
 CHUNK_SAMPLES=8
-offset=0
+offset=133
 TOTAL_LIMIT=0   # 0 = run all samples in dataset
 
 LOG_DIR="logs/run"
@@ -16,7 +17,7 @@ OUT_JSON="outputs/run_$(basename "${DATASET_JSONL}" .jsonl).json"
 USE_VLLM=true
 VLLM_MODE="server"
 VLLM_PORT=8000
-VLLM_GPU_MEMORY_UTILIZATION=0.45
+VLLM_GPU_MEMORY_UTILIZATION=0.4
 SERVER_STOP_WAIT_SEC=20
 SERVER_READY_WAIT_SEC=120
 TRAIN_CUDA_VISIBLE_DEVICES="${TRAIN_CUDA_VISIBLE_DEVICES:-0}"

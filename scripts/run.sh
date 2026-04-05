@@ -48,15 +48,9 @@ STRUCTURE_GATE_MIN="${STRUCTURE_GATE_MIN:-0.2}"
 # GRPO (common)
 GRPO_LR="1e-4"
 GRPO_GROUP_SIZE=8
-GRPO_KL="0.0"
-GRPO_SYNC_REF_MODEL=true
-GRPO_REF_MODEL_SYNC_STEPS=5
-GRPO_REF_MODEL_MIXUP_ALPHA=0.6
-GRPO_TRAIN_EPOCHS=1
-GRPO_CLIP_EPSILON=0.3
-GRPO_CLIP_EPSILON_HIGH=-1   # -1 means disabled
+GRPO_CLIP_EPSILON=0.25
+GRPO_CLIP_EPSILON_HIGH=0.3
 GRPO_NUM_GENERATIONS=8
-GRPO_GENERATION_BATCH_SIZE=0  # 0 = auto align to num_generations
 GRPO_MAX_COMPLETION_LEN=4096
 
 # Generation (common)
@@ -117,14 +111,9 @@ BASE_CMD=(-m ttrl_or
   --structure-gate-min "${STRUCTURE_GATE_MIN}"
   --grpo-lr "${GRPO_LR}"
   --grpo-group-size "${GRPO_GROUP_SIZE}"
-  --grpo-kl "${GRPO_KL}"
-  --grpo-ref-model-sync-steps "${GRPO_REF_MODEL_SYNC_STEPS}"
-  --grpo-ref-model-mixup-alpha "${GRPO_REF_MODEL_MIXUP_ALPHA}"
-  --grpo-train-epochs "${GRPO_TRAIN_EPOCHS}"
   --grpo-clip-epsilon "${GRPO_CLIP_EPSILON}"
   --grpo-clip-epsilon-high "${GRPO_CLIP_EPSILON_HIGH}"
   --grpo-num-generations "${GRPO_NUM_GENERATIONS}"
-  --grpo-generation-batch-size "${GRPO_GENERATION_BATCH_SIZE}"
   --grpo-max-completion-len "${GRPO_MAX_COMPLETION_LEN}"
   --temperature "${TEMPERATURE}"
   --top-p "${TOP_P}"
@@ -158,10 +147,6 @@ fi
 
 if ! is_true "${ENABLE_R3_REWARD}"; then
   BASE_CMD+=(--disable-r3-reward)
-fi
-
-if is_true "${GRPO_SYNC_REF_MODEL}"; then
-  BASE_CMD+=(--grpo-sync-ref-model)
 fi
 
 if is_true "${RESUME_SKIP_COMPLETED}"; then
