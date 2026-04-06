@@ -60,9 +60,14 @@ class TRLPolicyBackend(PolicyBackend):
         self._grpo_call_index = 0
         self._warned_vllm_unsupported = False
         self._force_disable_vllm_for_episode = False
+        self._force_disable_vllm_for_run = False
+        self._warned_vllm_disabled_for_run = False
         self._warned_lora_persist_across_tasks = False
         self._warned_vllm_len_clamp = False
         self._warned_strict_group_override = False
+        if self._active_trainer_for_aux is not None:
+            self._cleanup_trainer_vllm(self._active_trainer_for_aux)
+            self._active_trainer_for_aux = None
         if self._model is None or self._tokenizer is None:
             self._load_fresh_episode_model()
         elif self.reset_lora_on_begin_episode:
@@ -76,6 +81,11 @@ class TRLPolicyBackend(PolicyBackend):
         self._grpo_call_index = 0
         self._warned_vllm_unsupported = False
         self._force_disable_vllm_for_episode = False
+        self._force_disable_vllm_for_run = False
+        self._warned_vllm_disabled_for_run = False
+        if self._active_trainer_for_aux is not None:
+            self._cleanup_trainer_vllm(self._active_trainer_for_aux)
+            self._active_trainer_for_aux = None
         if not self.reuse_base_model_across_tasks:
             self._unload_model()
             return
@@ -794,13 +804,20 @@ class TRLPolicyBackend(PolicyBackend):
             if rank == 0:
                 print(
                     "[GRPO][WARN] vLLM communication failed; fallback to use_vllm=False for this episode. "
-                    f"stage={stage.value} reason={type(exc).__name__}: {exc}"
+                    f"stage={stage.value} reason={type(exc).__name__}: {exc}. "
+                    "This fallback will use local HF generation on the trainer GPU and may be much slower / use more memory."
                 )
             if callable(on_fallback_reset):
                 on_fallback_reset()
             self._force_disable_vllm_for_episode = True
             self._force_disable_vllm_for_run = True
             self._warned_vllm_disabled_for_run = False
+            # Release the failed trainer before instantiating the local fallback trainer.
+            # Otherwise the partially initialized vLLM/TRL trainer may still hold GPU memory,
+            # and the subsequent HF fallback trainer can easily OOM on the training device.
+            self._active_trainer_for_aux = None
+            self._cleanup_trainer_vllm(trainer)
+            trainer = None
             trl_args = self._build_trl_grpo_args(
                 config,
                 output_dir,
@@ -1437,3 +1454,7 @@ def _looks_like_vllm_comm_error(exc: Exception) -> bool:
         "close_communicator first",
     )
     return any(k in text for k in keys)
+
+
+
+

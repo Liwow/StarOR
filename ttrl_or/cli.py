@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -276,6 +276,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--grpo-vllm-fallback-disable-on-error",
         action="store_true",
+        dest="grpo_vllm_fallback_disable_on_error",
+        default=defaults.grpo.vllm_fallback_disable_on_error,
+    )
+    parser.add_argument(
+        "--grpo-vllm-no-fallback-disable-on-error",
+        action="store_false",
+        dest="grpo_vllm_fallback_disable_on_error",
         default=defaults.grpo.vllm_fallback_disable_on_error,
     )
 
@@ -794,3 +801,4 @@ def main() -> int:
         print(json.dumps(output, ensure_ascii=False, indent=2))
 
     return 0
+

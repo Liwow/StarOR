@@ -66,6 +66,7 @@ VLLM_TENSOR_PARALLEL_SIZE=1
 VLLM_MAX_MODEL_LEN=16384
 VLLM_MAX_NUM_BATCHED_TOKENS=32768
 GRPO_VLLM_ENABLE_SLEEP_MODE=false
+GRPO_VLLM_FALLBACK_DISABLE_ON_ERROR="${GRPO_VLLM_FALLBACK_DISABLE_ON_ERROR:-false}"
 
 
 # LoRA
@@ -160,6 +161,12 @@ fi
 
 if is_true "${GRPO_VLLM_ENABLE_SLEEP_MODE}"; then
   BASE_CMD+=(--grpo-vllm-enable-sleep-mode)
+fi
+
+if is_true "${GRPO_VLLM_FALLBACK_DISABLE_ON_ERROR}"; then
+  BASE_CMD+=(--grpo-vllm-fallback-disable-on-error)
+else
+  BASE_CMD+=(--grpo-vllm-no-fallback-disable-on-error)
 fi
 
 if is_true "${TRUST_REMOTE_CODE}"; then
