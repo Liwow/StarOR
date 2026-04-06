@@ -1,6 +1,6 @@
 set -x
 model_name='${HOME}/model/Qwen/Qwen2.5-7B-Instruct'
-python3 -m verl.trainer.main_ppo \
+python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     algorithm.ttrl_or.enable=True \
     algorithm.ttrl_or.log_dir=outputs/ttrl_or_logs \

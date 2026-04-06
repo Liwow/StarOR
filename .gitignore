@@ -2,8 +2,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
-.data
+.datas
 logs/
 outputs/
 *.pdf
 *.log
+*.egg-info
