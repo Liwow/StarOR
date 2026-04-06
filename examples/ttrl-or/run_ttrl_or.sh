@@ -1,6 +1,9 @@
 set -x
+export CUDA_VISIBLE_DEVICES=0,1
+
 model_name='Qwen/Qwen2.5-7B-Instruct'
-MODEL_NAME_OR_PATH='${HOME}/model/${model_name}'
+MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
+DATA_PATH="${HOME}/code/TTRL-OR/data"
 python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     algorithm.ttrl_or.enable=True \
@@ -15,8 +18,8 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.reward.cluster_scope=local \
     algorithm.ttrl_or.reward.structure_gate_min=0.2 \
     algorithm.ttrl_or.backend.reset_lora_on_begin_episode=True \
-    data.train_files=$HOME/data/or/IndustryOR_fixedV2.jsonl \
-    data.val_files=$HOME/data/or/IndustryOR_fixedV2.jsonl \
+    data.train_files=$DATA_PATH/IndustryOR_fixedV2.jsonl \
+    data.val_files=$DATA_PATH/IndustryOR_fixedV2.jsonl \
     data.custom_cls.path='pkg://verl.utils.dataset.ttrl_or_dataset' \
     data.custom_cls.name=TTRLORDataset \
     data.ttrl_or_max_numeric_features=256 \
@@ -60,7 +63,7 @@ python -m verl.trainer.main_ppo \
     trainer.use_legacy_worker_impl=disable \
     trainer.logger='["console","wandb"]' \
     trainer.project_name='verl_ttrl_or' \
-    trainer.experiment_name='${model_name}_verl_ttrl_or' \
+    trainer.experiment_name="${model_name}_verl_ttrl_or" \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.total_epochs=1 "$@"
