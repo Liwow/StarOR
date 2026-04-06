@@ -20,19 +20,19 @@ class RewardConfig:
     code_executor_mode: str = "sandbox"  # sandbox or subprocess
     cluster_scope: str = "local"  # global or local
 
-    # ©¤©¤©¤ r1 (semantic cluster) settings ©¤©¤©¤
+    # ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ r1 (semantic cluster) settings ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
     r1_alpha: float = 0.6  # Smoothing parameter for r1
     r1_min_clusters: int = 3  # Minimum K value for r1 denominator
 
     enable_r3_reward: bool = False
         
-    # ©¤©¤©¤ r4 (structural cluster) settings ©¤©¤©¤
+    # ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ r4 (structural cluster) settings ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
     enable_r4_reward: bool = True  # Whether to enable r4
     r4_alpha: float = 0.4  # Smoothing parameter for r4
     r4_k: int = 3  # K value for r4 normalization
     r4_decay: float = 0.95  # Decay factor for historical structural counts
 
-    # ©¤©¤©¤ Final reward weights ©¤©¤©¤
+    # ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ Final reward weights ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
     r3_weight: float = 0.1  # Weight for r3 in final reward
     r4_weight: float = 0.2  # Weight for r4 in final reward
     structure_gate_min: float = 0.2  # Minimum multiplier when LP structure is incomplete
@@ -42,7 +42,7 @@ class RewardConfig:
 class GRPOConfig:
     learning_rate: float = 5e-5
     group_size: int = 3  # Alias of num_generations in GRPO literature.
-    kl_coef: float = 0.005  # KL penalty coefficient beta.
+    kl_coef: float = 0.0  # KL penalty coefficient beta.
     sync_ref_model: bool = False  # Whether to periodically refresh the KL reference policy.
     ref_model_sync_steps: int = 5  # Refresh frequency for the KL reference policy.
     ref_model_mixup_alpha: float = 0.6  # Mixup factor when syncing the reference policy.
