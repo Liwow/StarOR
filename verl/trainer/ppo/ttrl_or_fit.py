@@ -5,6 +5,7 @@ import os
 import re
 import uuid
 from copy import deepcopy
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,46 @@ def _safe_path_component(name: str) -> str:
     safe = re.sub(r'[\\/:*?"<>|]+', "_", raw)
     safe = safe.strip(" .")
     return safe or "task"
+
+
+def _model_mode_label(config: PipelineConfig) -> str:
+    return "solverllm" if bool(config.mcts.solverllm_compare_mode) else "default"
+
+
+def _model_identifier(config: PipelineConfig) -> str:
+    raw = str(config.backend.model_name_or_path or "").strip()
+    if not raw:
+        return "model"
+    maybe_path = Path(raw)
+    candidate = maybe_path.name or raw.rstrip("/\\").split("/")[-1].split("\\")[-1]
+    return _safe_path_component(candidate) or "model"
+
+
+def _verl_model_log_root(config: PipelineConfig) -> Path:
+    base = Path(config.log_dir)
+    folder = f"verl_model_{_model_mode_label(config)}_{_model_identifier(config)}"
+    return base / folder
+
+
+def _write_run_config(config: PipelineConfig, model_root: Path) -> Path:
+    model_root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "log_root": str(model_root.resolve()),
+        "mode": _model_mode_label(config),
+        "model_id": _model_identifier(config),
+        "config": {
+            "mcts": asdict(config.mcts),
+            "reward": asdict(config.reward),
+            "grpo": asdict(config.grpo),
+            "dataset": asdict(config.dataset),
+            "backend": asdict(config.backend),
+            "save_logs": config.save_logs,
+            "log_dir": config.log_dir,
+        },
+    }
+    out_path = model_root / "run_config.json"
+    out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return out_path
 
 
 def _prompt_to_messages(prompt: Any) -> list[dict[str, str]]:
@@ -192,8 +233,7 @@ class VerlRayPolicyBackend:
         gen_batch.meta_info["do_sample"] = True
         gen_batch.meta_info["global_steps"] = current_step
         gen_batch.meta_info["max_new_tokens"] = int(config.max_completion_length)
-        gen_output = self.trainer.async_rollout_manager.generate_sequences(gen_batch)
-        self.trainer.checkpoint_manager.sleep_replicas()
+        gen_output = self._rollout_generate(gen_batch)
 
         batch = batch.union(gen_output)
         if "response_mask" not in batch.batch.keys():
@@ -325,6 +365,12 @@ class VerlRayPolicyBackend:
             max_new_tokens=int(max_new_tokens),
         )
 
+    def _rollout_generate(self, gen_batch: DataProto) -> DataProto:
+        # Standard verl fit uses async_rollout_manager, which layers agent-loop/reward-loop
+        # behavior on top of rollout generation. TTRL-OR owns MCTS and reward itself, so we
+        # intentionally use the lower-level colocated rollout worker path here, consistent with
+        # examples/split_placement/split_monkey_patch.py.
+        return self.trainer.actor_rollout_wg.generate_sequences(gen_batch)
     def _generate_messages(
         self,
         messages_batch: list[list[dict[str, str]]],
@@ -347,7 +393,7 @@ class VerlRayPolicyBackend:
         gen_batch.meta_info["do_sample"] = bool(do_sample)
         gen_batch.meta_info["global_steps"] = self.trainer.global_steps
         gen_batch.meta_info["max_new_tokens"] = int(max_new_tokens)
-        gen_output = self.trainer.async_rollout_manager.generate_sequences(gen_batch)
+        gen_output = self._rollout_generate(gen_batch)
         prompt_batch = prompt_batch.union(gen_output)
         return self._decode_responses(prompt_batch)
 
@@ -631,12 +677,22 @@ def run_ttrl_or_fit(trainer, logger) -> None:
     trainer.checkpoint_manager.update_weights(trainer.global_steps)
 
     pipeline_config = build_pipeline_config_from_verl_config(trainer.config)
+    model_log_root = _verl_model_log_root(pipeline_config)
+    _write_run_config(pipeline_config, model_log_root)
     raw_samples = _resolve_raw_samples(trainer, pipeline_config)
+    dataset_name = Path(pipeline_config.dataset.jsonl_path).stem if str(pipeline_config.dataset.jsonl_path or "").strip() else "dataset"
+    dataset_log_dir = model_log_root / _safe_path_component(dataset_name)
+    pipeline_config.log_dir = str(dataset_log_dir)
     backend = VerlRayPolicyBackend(trainer, pipeline_config)
     runner = TTRLORRunner(backend=backend, config=pipeline_config)
 
     rank = int(os.environ.get("RANK", "0"))
     world_size = max(1, int(os.environ.get("WORLD_SIZE", "1")))
+    print(
+        f"[verl-or][dataset] rank={rank}/{world_size} num_samples={len(raw_samples)} "
+        f"dataset={Path(pipeline_config.dataset.jsonl_path).resolve() if str(pipeline_config.dataset.jsonl_path or '').strip() else 'n/a'} "
+        f"log_root={dataset_log_dir.resolve()}"
+    )
     _prepare_r3_for_samples(raw_samples, runner, rank, world_size)
 
     max_iterations = int(max(1, pipeline_config.mcts.max_iterations))
@@ -688,4 +744,8 @@ def run_ttrl_or_fit(trainer, logger) -> None:
         logger.log(data=metrics, step=max(0, trainer.global_steps))
 
     progress_bar.close()
+
+
+
+
 
