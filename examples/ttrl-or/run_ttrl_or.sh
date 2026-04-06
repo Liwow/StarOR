@@ -61,7 +61,7 @@ python -m verl.trainer.main_ppo \
     trainer.val_before_train=False \
     trainer.critic_warmup=0 \
     trainer.use_legacy_worker_impl=disable \
-    trainer.logger='["console","wandb"]' \
+    trainer.logger='["console"]' \
     trainer.project_name='verl_ttrl_or' \
     trainer.experiment_name="${model_name}_verl_ttrl_or" \
     trainer.n_gpus_per_node=2 \
