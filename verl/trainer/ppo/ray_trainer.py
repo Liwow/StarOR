@@ -64,7 +64,7 @@ from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path, shou
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.debug import marked_timer
 from verl.utils.import_utils import load_class_from_fqn
-from verl.utils.metric import reduce_metrics
+from verl.utils.metric import Metric, reduce_metrics
 from verl.utils.py_functional import rename_dict
 from verl.utils.rollout_skip import RolloutSkip
 from verl.utils.seqlen_balancing import calculate_workload, get_seqlen_balanced_partitions, log_seqlen_unbalance
@@ -230,6 +230,30 @@ def compute_advantage(
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
     return data
+
+
+def _metric_to_float(value: Any) -> float:
+    """Best-effort reduction for optional scalar-ish metrics like MFU."""
+    if value is None:
+        return 0.0
+    if isinstance(value, Metric):
+        return float(value.aggregate())
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 0:
+            return 0.0
+        return float(value.detach().float().mean().item())
+    if isinstance(value, np.ndarray):
+        if value.size == 0:
+            return 0.0
+        return float(np.mean(value))
+    if isinstance(value, (list, tuple)):
+        if len(value) == 0:
+            return 0.0
+        return float(np.mean([_metric_to_float(v) for v in value]))
+    try:
+        return float(value)
+    except Exception:
+        return 0.0
 
 
 class RayPPOTrainer:
@@ -1195,10 +1219,10 @@ class RayPPOTrainer:
             if metrics is None:
                 old_log_prob_mfu = 0.0
             elif isinstance(metrics, dict):
-                old_log_prob_mfu = float(metrics.get("mfu", 0.0) or 0.0)
+                old_log_prob_mfu = _metric_to_float(metrics.get("mfu", 0.0))
             else:
                 try:
-                    old_log_prob_mfu = float(metrics["mfu"])
+                    old_log_prob_mfu = _metric_to_float(metrics["mfu"])
                 except Exception:
                     old_log_prob_mfu = 0.0
             # step 4. No padding to padding
@@ -1255,7 +1279,7 @@ class RayPPOTrainer:
                 actor_metrics = {}
             actor_output = rename_dict(actor_metrics, "actor/")
             # modify key name
-            actor_output["perf/mfu/actor"] = float(actor_output.pop("actor/mfu", 0.0) or 0.0)
+            actor_output["perf/mfu/actor"] = _metric_to_float(actor_output.pop("actor/mfu", 0.0))
             actor_output = DataProto.from_single_dict(data={}, meta_info={"metrics": actor_output})
         else:
             actor_output = self.actor_rollout_wg.update_actor(batch)
@@ -1288,7 +1312,7 @@ class RayPPOTrainer:
                 output = {}
             output = rename_dict(output, "critic/")
             # modify key name
-            output["perf/mfu/critic"] = float(output.pop("critic/mfu", 0.0) or 0.0)
+            output["perf/mfu/critic"] = _metric_to_float(output.pop("critic/mfu", 0.0))
             critic_output = DataProto.from_single_dict(data={}, meta_info={"metrics": output})
         else:
             critic_output = self.critic_wg.update_critic(batch)
