@@ -1,10 +1,11 @@
 set -x
-model_name='${HOME}/model/Qwen/Qwen2.5-7B-Instruct'
+model_name='Qwen/Qwen2.5-7B-Instruct'
+MODEL_NAME_OR_PATH='${HOME}/model/${model_name}'
 python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     algorithm.ttrl_or.enable=True \
     algorithm.ttrl_or.log_dir=outputs/ttrl_or_logs \
-    algorithm.ttrl_or.mcts.max_iterations=20 \
+    algorithm.ttrl_or.mcts.max_iterations=16 \
     algorithm.ttrl_or.mcts.c_puct=1.414 \
     algorithm.ttrl_or.mcts.enable_prior=True \
     algorithm.ttrl_or.mcts.solverllm_compare_mode=False \
@@ -26,10 +27,10 @@ python -m verl.trainer.main_ppo \
     data.filter_overlong_prompts=False \
     data.truncation='error' \
     data.shuffle=False \
-    actor_rollout_ref.model.path=${model_name} \
+    actor_rollout_ref.model.path=${MODEL_NAME_OR_PATH} \
     actor_rollout_ref.model.use_shm=True \
     actor_rollout_ref.model.target_modules=all-linear \
-    actor_rollout_ref.model.lora_rank=8 \
+    actor_rollout_ref.model.lora_rank=16 \
     actor_rollout_ref.model.lora_alpha=32 \
     actor_rollout_ref.actor.optim.lr=1e-4 \
     actor_rollout_ref.model.use_remove_padding=True \
@@ -59,9 +60,7 @@ python -m verl.trainer.main_ppo \
     trainer.use_legacy_worker_impl=disable \
     trainer.logger='["console","wandb"]' \
     trainer.project_name='verl_ttrl_or' \
-    trainer.experiment_name='qwen2.5_7b_ttrl_or_vllm_lora' \
+    trainer.experiment_name='${model_name}_verl_ttrl_or' \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
-    trainer.save_freq=20 \
-    trainer.test_freq=-1 \
     trainer.total_epochs=1 "$@"
