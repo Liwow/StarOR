@@ -189,6 +189,7 @@ class VerlRayPolicyBackend:
         try:
             messages = _prompt_to_messages(prompt)
             batch, response_mask = self._build_teacher_forcing_batch(messages, candidates)
+            batch.meta_info["temperature"] = float(self.trainer.config.actor_rollout_ref.rollout.temperature)
             old_log_prob, _ = self.trainer._compute_old_log_prob(batch)
             log_probs = old_log_prob.batch["old_log_probs"]
             curr_scores = self._masked_mean(log_probs, response_mask)
@@ -217,6 +218,7 @@ class VerlRayPolicyBackend:
     def grpo_rollout_group(self, stage: Stage, prompt: Any, config, reward_callback):
         messages = _prompt_to_messages(prompt)
         k = max(1, int(config.num_generations))
+        rollout_temperature = float(self.trainer.config.actor_rollout_ref.rollout.temperature)
         current_step = int(self.trainer.global_steps) + 1
         self.trainer.global_steps = current_step
         prompt_batch = self._make_prompt_batch(
@@ -224,17 +226,20 @@ class VerlRayPolicyBackend:
             ground_truth="",
             extra_infos=[{"task_id": self._current_task_id, "stage": stage.value}],
         )
+        prompt_batch.meta_info["temperature"] = rollout_temperature
         prompt_batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4())], dtype=object)
-        batch = prompt_batch.repeat(repeat_times=k, interleave=True)
 
-        gen_batch = self.trainer._get_gen_batch(batch)
-        gen_batch.meta_info["temperature"] = float(self.trainer.config.actor_rollout_ref.rollout.temperature)
+        gen_batch = self.trainer._get_gen_batch(prompt_batch)
+        gen_batch.meta_info["temperature"] = rollout_temperature
         gen_batch.meta_info["top_p"] = float(self.trainer.config.actor_rollout_ref.rollout.get("top_p", 1.0))
         gen_batch.meta_info["do_sample"] = True
         gen_batch.meta_info["global_steps"] = current_step
         gen_batch.meta_info["max_new_tokens"] = int(config.max_completion_length)
-        gen_output = self._rollout_generate(gen_batch)
+        gen_batch_output = gen_batch.repeat(repeat_times=k, interleave=True)
+        gen_output = self._rollout_generate(gen_batch_output)
 
+        batch = prompt_batch.repeat(repeat_times=k, interleave=True)
+        batch.meta_info["temperature"] = rollout_temperature
         batch = batch.union(gen_output)
         if "response_mask" not in batch.batch.keys():
             from verl.trainer.ppo.ray_trainer import compute_response_mask
