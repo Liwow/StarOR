@@ -146,25 +146,34 @@ class VerlRayPolicyBackend:
         self._current_task_id = ""
         self._prior_temperature = 0.5
 
-    def begin_episode(self, task: OptimizationTask) -> None:
-        self._current_task_id = task.task_id
-        if not bool(self.pipeline_config.backend.reset_lora_on_begin_episode):
-            return
+    def _sample_reset_enabled(self) -> bool:
+        return bool(self.pipeline_config.backend.reset_lora_on_begin_episode)
+
+    def _has_episode_lora(self) -> bool:
         model_cfg = self.trainer.config.actor_rollout_ref.model
         lora_rank = int(model_cfg.get("lora_rank", 0) or 0)
         has_adapter_path = model_cfg.get("lora_adapter_path") is not None
-        if lora_rank <= 0 and not has_adapter_path:
+        return lora_rank > 0 or has_adapter_path
+
+    def _reset_actor_episode_state(self) -> None:
+        if not self._sample_reset_enabled():
+            return
+        if not self._has_episode_lora():
             return
         if getattr(self.trainer, "use_legacy_worker_impl", "disable") != "disable":
             print("[verl-or][WARN] sample-level LoRA reset is only implemented for the new worker path; skipping reset.")
             return
-        try:
-            self.trainer.actor_rollout_wg.reset_actor_for_episode()
-            self.trainer.checkpoint_manager.update_weights(int(self.trainer.global_steps))
-        except Exception as exc:  # noqa: BLE001
-            print(f"[verl-or][WARN] actor LoRA sample reset failed: {type(exc).__name__}: {exc}")
+        self.trainer.actor_rollout_wg.reset_actor_for_episode()
+        self.trainer.checkpoint_manager.update_weights(int(self.trainer.global_steps))
+
+    def begin_episode(self, task: OptimizationTask) -> None:
+        self._current_task_id = task.task_id
 
     def end_episode(self) -> None:
+        try:
+            self._reset_actor_episode_state()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[verl-or][WARN] actor LoRA sample reset failed: {type(exc).__name__}: {exc}")
         self._current_task_id = ""
 
     def generate(self, stage: Stage, prompt: Any, n: int) -> list[Generation]:
@@ -706,6 +715,7 @@ def run_ttrl_or_fit(trainer, logger) -> None:
         f"dataset={Path(pipeline_config.dataset.jsonl_path).resolve() if str(pipeline_config.dataset.jsonl_path or '').strip() else 'n/a'} "
         f"log_root={dataset_log_dir.resolve()}"
     )
+
     _prepare_r3_for_samples(raw_samples, runner, rank, world_size)
 
     max_iterations = int(max(1, pipeline_config.mcts.max_iterations))
