@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 import contextlib
 import gc
 import json
@@ -56,8 +56,6 @@ class TRLPolicyBackend(PolicyBackend):
     _warned_vllm_len_clamp: bool = field(init=False, default=False, repr=False)
     _warned_strict_group_override: bool = field(init=False, default=False, repr=False)
     _active_trainer_for_aux: Any = field(init=False, default=None, repr=False)
-    _episode_grpo_trainer: Any = field(init=False, default=None, repr=False)
-    _episode_grpo_trainer_signature: tuple[Any, ...] | None = field(init=False, default=None, repr=False)
     def begin_episode(self, task: OptimizationTask) -> None:
         self._episode_key = task.task_id
         self._grpo_call_index = 0
@@ -68,7 +66,10 @@ class TRLPolicyBackend(PolicyBackend):
         self._warned_lora_persist_across_tasks = False
         self._warned_vllm_len_clamp = False
         self._warned_strict_group_override = False
-        self._reset_episode_grpo_trainer()
+        trainer = self._active_trainer_for_aux
+        self._active_trainer_for_aux = None
+        if trainer is not None:
+            self._cleanup_trainer_vllm(trainer)
         if self._model is None or self._tokenizer is None:
             self._load_fresh_episode_model()
         elif self.reset_lora_on_begin_episode:
@@ -76,6 +77,7 @@ class TRLPolicyBackend(PolicyBackend):
         if self._model is not None:
             self._assert_single_lora_adapter()
             self._model.train()
+
     def end_episode(self) -> None:
         rank = _env_int("RANK", 0)
         self._episode_key = ""
@@ -84,7 +86,10 @@ class TRLPolicyBackend(PolicyBackend):
         self._force_disable_vllm_for_episode = False
         self._force_disable_vllm_for_run = False
         self._warned_vllm_disabled_for_run = False
-        self._reset_episode_grpo_trainer()
+        trainer = self._active_trainer_for_aux
+        self._active_trainer_for_aux = None
+        if trainer is not None:
+            self._cleanup_trainer_vllm(trainer)
         if not self.reuse_base_model_across_tasks:
             self._unload_model()
             return
@@ -97,100 +102,6 @@ class TRLPolicyBackend(PolicyBackend):
             elif rank == 0 and not self._warned_lora_persist_across_tasks:
                 print("[LoRA][WARN] reset_lora_on_begin_episode=False, LoRA state may persist across samples.")
                 self._warned_lora_persist_across_tasks = True
-    def _reset_episode_grpo_trainer(self) -> None:
-        trainer = self._episode_grpo_trainer
-        self._episode_grpo_trainer = None
-        self._episode_grpo_trainer_signature = None
-        self._active_trainer_for_aux = None
-        if trainer is not None:
-            self._cleanup_trainer_vllm(trainer)
-
-    @staticmethod
-    def _trainer_reuse_signature(trl_args: Any) -> tuple[Any, ...]:
-        return (
-            bool(getattr(trl_args, "use_vllm", False)),
-            str(getattr(trl_args, "vllm_mode", "") or ""),
-            int(getattr(trl_args, "num_generations", 0) or 0),
-            int(getattr(trl_args, "generation_batch_size", 0) or 0),
-            int(getattr(trl_args, "max_prompt_length", 0) or 0),
-            int(getattr(trl_args, "max_completion_length", 0) or 0),
-            int(getattr(trl_args, "per_device_train_batch_size", 1) or 1),
-            int(getattr(trl_args, "gradient_accumulation_steps", 1) or 1),
-            float(getattr(trl_args, "learning_rate", 0.0) or 0.0),
-            float(getattr(trl_args, "beta", 0.0) or 0.0),
-        )
-
-    def _rebind_cached_grpo_trainer(
-        self,
-        trainer: Any,
-        *,
-        trl_args: Any,
-        reward_func: Any,
-        train_dataset: Any,
-    ) -> None:
-        trainer.train_dataset = train_dataset
-        if hasattr(trainer, "reward_funcs"):
-            trainer.reward_funcs = reward_func
-        elif hasattr(trainer, "reward_func"):
-            trainer.reward_func = reward_func
-        args = getattr(trainer, "args", None)
-        if args is not None:
-            for attr in (
-                "output_dir",
-                "max_steps",
-                "num_generations",
-                "generation_batch_size",
-                "max_prompt_length",
-                "max_completion_length",
-                "learning_rate",
-                "beta",
-                "use_vllm",
-                "vllm_mode",
-            ):
-                if hasattr(args, attr) and hasattr(trl_args, attr):
-                    setattr(args, attr, getattr(trl_args, attr))
-        if hasattr(trainer, "optimizer"):
-            trainer.optimizer = None
-        if hasattr(trainer, "lr_scheduler"):
-            trainer.lr_scheduler = None
-        if hasattr(trainer, "_created_lr_scheduler"):
-            trainer._created_lr_scheduler = False
-        recreate_accelerator = getattr(trainer, "create_accelerator_and_postprocess", None)
-        if callable(recreate_accelerator):
-            recreate_accelerator()
-
-    def _get_or_create_episode_grpo_trainer(
-        self,
-        *,
-        trl,
-        trainer_kwargs: dict[str, Any],
-        trl_args: Any,
-        config: GRPOConfig,
-    ) -> tuple[Any, bool]:
-        signature = self._trainer_reuse_signature(trl_args)
-        trainer = self._episode_grpo_trainer
-        if trainer is not None and self._episode_grpo_trainer_signature == signature:
-            self._rebind_cached_grpo_trainer(
-                trainer,
-                trl_args=trl_args,
-                reward_func=trainer_kwargs.get("reward_funcs"),
-                train_dataset=trainer_kwargs.get("train_dataset"),
-            )
-            self._active_trainer_for_aux = trainer
-            if _env_int("RANK", 0) == 0:
-                print("[GRPO] reusing sample-local trainer; skipping communicator re-init.")
-            return trainer, True
-
-        self._reset_episode_grpo_trainer()
-        if bool(getattr(trl_args, "use_vllm", False)):
-            self._vllm_server_maintenance(config=config, before_train=True, after_train=False)
-        if _env_int("RANK", 0) == 0:
-            print("[GRPO] creating sample-local trainer.")
-        trainer = trl.GRPOTrainer(**trainer_kwargs)
-        self._episode_grpo_trainer = trainer
-        self._episode_grpo_trainer_signature = signature
-        self._active_trainer_for_aux = trainer
-        return trainer, False
 
     def _is_message_list(self, prompt: Any) -> bool:
         return isinstance(prompt, list) and all(isinstance(item, dict) and "role" in item for item in prompt)
@@ -496,7 +407,7 @@ class TRLPolicyBackend(PolicyBackend):
         trainer_kwargs: dict[str, Any] = {
             "model": self._model,
             "args": trl_args,
-            "reward_funcs": reward_func,
+            "reward_funcs": [reward_func],
             "train_dataset": train_dataset,
         }
         trainer_sig = inspect.signature(trl.GRPOTrainer.__init__)
@@ -833,12 +744,12 @@ class TRLPolicyBackend(PolicyBackend):
         trainer = None
         trl_args = trainer_kwargs["args"]
         try:
-            trainer, _ = self._get_or_create_episode_grpo_trainer(
-                trl=trl,
-                trainer_kwargs=trainer_kwargs,
-                trl_args=trl_args,
-                config=config,
-            )
+            if bool(getattr(trl_args, "use_vllm", False)):
+                self._vllm_server_maintenance(config=config, before_train=True, after_train=False)
+            if rank == 0:
+                print("[GRPO] creating fresh trainer for this iteration.")
+            trainer = trl.GRPOTrainer(**trainer_kwargs)
+            self._active_trainer_for_aux = trainer
             train_result = trainer.train()
             return train_result, False
         except Exception as exc:
@@ -848,8 +759,6 @@ class TRLPolicyBackend(PolicyBackend):
                 and _looks_like_vllm_comm_error(exc)
             )
             if not should_fallback:
-                if trainer is self._episode_grpo_trainer:
-                    self._reset_episode_grpo_trainer()
                 raise
             if rank == 0:
                 print(
@@ -862,7 +771,10 @@ class TRLPolicyBackend(PolicyBackend):
             self._force_disable_vllm_for_episode = True
             self._force_disable_vllm_for_run = True
             self._warned_vllm_disabled_for_run = False
-            self._reset_episode_grpo_trainer()
+            self._active_trainer_for_aux = None
+            if trainer is not None:
+                self._cleanup_trainer_vllm(trainer)
+                trainer = None
             fallback_args = self._build_trl_grpo_args(
                 config,
                 output_dir,
@@ -872,19 +784,16 @@ class TRLPolicyBackend(PolicyBackend):
             )
             fallback_kwargs = dict(trainer_kwargs)
             fallback_kwargs["args"] = fallback_args
-            try:
-                trainer, _ = self._get_or_create_episode_grpo_trainer(
-                    trl=trl,
-                    trainer_kwargs=fallback_kwargs,
-                    trl_args=fallback_args,
-                    config=config,
-                )
-                train_result = trainer.train()
-                return train_result, True
-            except Exception:
-                self._reset_episode_grpo_trainer()
-                raise
-    @staticmethod
+            if rank == 0:
+                print("[GRPO] creating fresh fallback trainer with use_vllm=False.")
+            trainer = trl.GRPOTrainer(**fallback_kwargs)
+            self._active_trainer_for_aux = trainer
+            train_result = trainer.train()
+            return train_result, True
+        finally:
+            self._active_trainer_for_aux = None
+            if trainer is not None:
+                self._cleanup_trainer_vllm(trainer)    @staticmethod
     def _cleanup_trainer_vllm(trainer: Any) -> None:
         if trainer is None:
             return
@@ -1505,6 +1414,10 @@ def _looks_like_vllm_comm_error(exc: Exception) -> bool:
         "close_communicator first",
     )
     return any(k in text for k in keys)
+
+
+
+
 
 
 
