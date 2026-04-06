@@ -39,7 +39,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.entropy_coeff=0 \
-    actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    actor_rollout_ref.model.enable_gradient_checkpointing=False \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
@@ -50,7 +50,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.temperature=1.0 \
     actor_rollout_ref.rollout.top_p=0.95 \
     actor_rollout_ref.rollout.load_format=safetensors \
-    actor_rollout_ref.rollout.layered_summon=True \
+    actor_rollout_ref.rollout.layered_summon=False \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.use_kl_in_reward=False \

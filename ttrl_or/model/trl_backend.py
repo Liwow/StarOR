@@ -155,6 +155,9 @@ class TRLPolicyBackend(PolicyBackend):
             trainer.lr_scheduler = None
         if hasattr(trainer, "_created_lr_scheduler"):
             trainer._created_lr_scheduler = False
+        recreate_accelerator = getattr(trainer, "create_accelerator_and_postprocess", None)
+        if callable(recreate_accelerator):
+            recreate_accelerator()
 
     def _get_or_create_episode_grpo_trainer(
         self,
@@ -1502,6 +1505,7 @@ def _looks_like_vllm_comm_error(exc: Exception) -> bool:
         "close_communicator first",
     )
     return any(k in text for k in keys)
+
 
 
 
