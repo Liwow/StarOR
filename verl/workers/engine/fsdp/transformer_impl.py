@@ -17,6 +17,7 @@ The concrete Engine implementation using PyTorch FullyShardedDataParallel (FSDP)
 
 import gc
 import logging
+import math
 import os
 import warnings
 from contextlib import nullcontext
@@ -822,6 +823,53 @@ class FSDPEngine(BaseEngine):
 
     def disable_adapter(self) -> ContextManager:
         return self.module.disable_adapter()
+
+    @torch.no_grad()
+    def reset_lora_adapter_only(self) -> bool:
+        """Reset LoRA adapter params without rebuilding the base model."""
+        if not self._is_lora:
+            return False
+
+        peft_model = getattr(self.module, "_fsdp_wrapped_module", self.module)
+        reset_a = 0
+        reset_b = 0
+
+        for name, param in peft_model.named_parameters():
+            if not param.requires_grad:
+                continue
+            lname = str(name).lower()
+            if "lora_a" in lname:
+                if param.ndim >= 2:
+                    torch.nn.init.kaiming_uniform_(param, a=math.sqrt(5))
+                else:
+                    fan_in = max(1, int(param.numel()))
+                    bound = 1.0 / math.sqrt(fan_in)
+                    torch.nn.init.uniform_(param, -bound, bound)
+                reset_a += 1
+            elif "lora_b" in lname:
+                torch.nn.init.zeros_(param)
+                reset_b += 1
+
+        if reset_a == 0 and reset_b == 0:
+            logger.warning("reset_lora_adapter_only found no trainable LoRA params to reset.")
+            return False
+
+        if self.optimizer is not None:
+            old_optimizer = self.optimizer
+            old_lr_scheduler = self.lr_scheduler
+            self.optimizer = self._build_optimizer(self.module)
+            self.lr_scheduler = self._build_lr_scheduler(self.optimizer)
+            if self._is_offload_optimizer:
+                offload_fsdp_optimizer(self.optimizer)
+            old_optimizer = None
+            old_lr_scheduler = None
+            gc.collect()
+
+        if hasattr(self, "checkpoint_manager") and self.checkpoint_manager is not None:
+            self.checkpoint_manager.optimizer = self.optimizer
+            self.checkpoint_manager.lr_scheduler = self.lr_scheduler
+
+        return True
 
 
 class EngineEvalModeCtx(BaseEngineCtx):

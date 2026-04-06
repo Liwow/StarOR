@@ -647,7 +647,13 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
     def reset_actor_for_episode(self):
         if self.actor is None:
             return
-        self.actor.reset()
+        reset_adapter_only = getattr(self.actor.engine, "reset_lora_adapter_only", None)
+        if callable(reset_adapter_only):
+            did_reset = bool(reset_adapter_only())
+            if not did_reset:
+                self.actor.reset()
+        else:
+            self.actor.reset()
         if self.loss_fn is not None:
             self.actor.set_loss_fn(self.loss_fn)
         aggressive_empty_cache(force_sync=True)

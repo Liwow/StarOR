@@ -1191,7 +1191,16 @@ class RayPPOTrainer:
             log_probs = tu.get(output, "log_probs")
             routed_experts = tu.get(output, "routed_experts")
 
-            old_log_prob_mfu = tu.get(output, "metrics")["mfu"]
+            metrics = tu.get(output, "metrics")
+            if metrics is None:
+                old_log_prob_mfu = 0.0
+            elif isinstance(metrics, dict):
+                old_log_prob_mfu = float(metrics.get("mfu", 0.0) or 0.0)
+            else:
+                try:
+                    old_log_prob_mfu = float(metrics["mfu"])
+                except Exception:
+                    old_log_prob_mfu = 0.0
             # step 4. No padding to padding
             entropy = no_padding_2_padding(entropy, batch_td)
             log_probs = no_padding_2_padding(log_probs, batch_td)
