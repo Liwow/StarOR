@@ -366,11 +366,19 @@ class VerlRayPolicyBackend:
         )
 
     def _rollout_generate(self, gen_batch: DataProto) -> DataProto:
-        # Standard verl fit uses async_rollout_manager, which layers agent-loop/reward-loop
-        # behavior on top of rollout generation. TTRL-OR owns MCTS and reward itself, so we
-        # intentionally use the lower-level colocated rollout worker path here, consistent with
-        # examples/split_placement/split_monkey_patch.py.
-        return self.trainer.actor_rollout_wg.generate_sequences(gen_batch)
+        rollout_name = str(self.trainer.config.actor_rollout_ref.rollout.name or "").strip().lower()
+        if rollout_name == "vllm":
+            # In the new worker path, vLLM rollout is served by the async server interface.
+            # ServerAdapter explicitly does not support synchronous worker-group generation.
+            return self.trainer.async_rollout_manager.generate_sequences(gen_batch)
+
+        if hasattr(self.trainer.actor_rollout_wg, "generate_sequences"):
+            return self.trainer.actor_rollout_wg.generate_sequences(gen_batch)
+
+        if hasattr(self.trainer, "async_rollout_manager"):
+            return self.trainer.async_rollout_manager.generate_sequences(gen_batch)
+
+        raise AttributeError("No available generate_sequences path found for the current verl rollout backend.")
     def _generate_messages(
         self,
         messages_batch: list[list[dict[str, str]]],
