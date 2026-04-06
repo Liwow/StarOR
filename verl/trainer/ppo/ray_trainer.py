@@ -1250,10 +1250,12 @@ class RayPPOTrainer:
                 compute_loss=True,
             )
             actor_output = self.actor_rollout_wg.update_actor(batch_td)
-            actor_output = tu.get(actor_output, "metrics")
-            actor_output = rename_dict(actor_output, "actor/")
+            actor_metrics = tu.get(actor_output, "metrics")
+            if actor_metrics is None:
+                actor_metrics = {}
+            actor_output = rename_dict(actor_metrics, "actor/")
             # modify key name
-            actor_output["perf/mfu/actor"] = actor_output.pop("actor/mfu")
+            actor_output["perf/mfu/actor"] = float(actor_output.pop("actor/mfu", 0.0) or 0.0)
             actor_output = DataProto.from_single_dict(data={}, meta_info={"metrics": actor_output})
         else:
             actor_output = self.actor_rollout_wg.update_actor(batch)
@@ -1282,9 +1284,11 @@ class RayPPOTrainer:
             output = self.critic_wg.train_mini_batch(batch_td)
             output = output.get()
             output = tu.get(output, "metrics")
+            if output is None:
+                output = {}
             output = rename_dict(output, "critic/")
             # modify key name
-            output["perf/mfu/critic"] = output.pop("critic/mfu")
+            output["perf/mfu/critic"] = float(output.pop("critic/mfu", 0.0) or 0.0)
             critic_output = DataProto.from_single_dict(data={}, meta_info={"metrics": output})
         else:
             critic_output = self.critic_wg.update_critic(batch)
@@ -1392,7 +1396,9 @@ class RayPPOTrainer:
                         if curr_step_profile:
                             self.async_rollout_manager.stop_profile()
 
-                        timing_raw.update(gen_batch_output.meta_info["timing"])
+                        timing_info = gen_batch_output.meta_info.get("timing", {}) or {}
+                        if isinstance(timing_info, dict):
+                            timing_raw.update(timing_info)
                         gen_batch_output.meta_info.pop("timing", None)
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
@@ -1570,7 +1576,8 @@ class RayPPOTrainer:
                     if self.use_critic:
                         with marked_timer("update_critic", timing_raw, color="pink"):
                             critic_output = self._update_critic(batch)
-                        critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
+                        critic_metrics_raw = dict(critic_output.meta_info.get("metrics", {}) or {})
+                        critic_output_metrics = reduce_metrics(critic_metrics_raw) if critic_metrics_raw else {}
                         metrics.update(critic_output_metrics)
 
                     # implement critic warmup
@@ -1608,7 +1615,8 @@ class RayPPOTrainer:
                         with marked_timer("update_weights", timing_raw, color="red"):
                             self.checkpoint_manager.update_weights(self.global_steps)
 
-                        actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
+                        actor_metrics_raw = dict(actor_output.meta_info.get("metrics", {}) or {})
+                        actor_output_metrics = reduce_metrics(actor_metrics_raw) if actor_metrics_raw else {}
                         metrics.update(actor_output_metrics)
 
                     # Log rollout generations if enabled

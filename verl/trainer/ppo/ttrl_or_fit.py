@@ -55,7 +55,7 @@ def _model_identifier(config: PipelineConfig) -> str:
 
 def _verl_model_log_root(config: PipelineConfig) -> Path:
     base = Path(config.log_dir)
-    folder = f"verl_model_{_model_mode_label(config)}_{_model_identifier(config)}"
+    folder = f"model_{_model_mode_label(config)}_{_model_identifier(config)}"
     return base / folder
 
 
@@ -298,7 +298,8 @@ class VerlRayPolicyBackend:
         )
 
         actor_output = self.trainer._update_actor(batch)
-        actor_metrics = reduce_metrics(actor_output.meta_info["metrics"])
+        actor_metrics_raw = dict(actor_output.meta_info.get("metrics", {}) or {})
+        actor_metrics = reduce_metrics(actor_metrics_raw) if actor_metrics_raw else {}
         actor_metrics["perf/mfu/actor_infer"] = old_log_prob_mfu
 
         self.trainer.checkpoint_manager.update_weights(current_step)
