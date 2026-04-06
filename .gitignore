@@ -8,3 +8,4 @@ outputs/
 *.pdf
 *.log
 *.egg-info
+wandb/
