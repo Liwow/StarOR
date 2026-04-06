@@ -1,11 +1,14 @@
 ﻿set -x
 export CUDA_VISIBLE_DEVICES=0,1
 export RAY_DEBUG_POST_MORTEM=1
+DATA_ROOT="${HOME}/code/TTRL-OR/data"
 
 model_name='Qwen/Qwen2.5-7B-Instruct'
 MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
-DATA_PATH="${HOME}/code/TTRL-OR/data"
+dataset="OptMATH_Bench_166.jsonl"
+# dataset="IndustryOR_fixedV2.jsonl"
 
+DATA_PATH="$DATA_ROOT/$dataset"
 
 python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
@@ -21,8 +24,8 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.reward.cluster_scope=local \
     algorithm.ttrl_or.reward.structure_gate_min=0.2 \
     algorithm.ttrl_or.backend.reset_lora_on_begin_episode=True \
-    data.train_files=$DATA_PATH/IndustryOR_fixedV2.jsonl \
-    data.val_files=$DATA_PATH/IndustryOR_fixedV2.jsonl \
+    data.train_files=$DATA_PATH \
+    data.val_files=$DATA_PATH \
     data.custom_cls.path='pkg://verl.utils.dataset.ttrl_or_dataset' \
     data.custom_cls.name=TTRLORDataset \
     data.ttrl_or_max_numeric_features=256 \
@@ -52,7 +55,7 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.3 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
     actor_rollout_ref.rollout.free_cache_engine=False \
     actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.rollout.temperature=1.0 \
