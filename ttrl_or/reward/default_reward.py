@@ -6,6 +6,7 @@ import math
 import os
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
@@ -67,6 +68,7 @@ class TTRLRewardCalculator(RewardCalculator):
         if not trajectories:
             return []
 
+        group_t0 = time.perf_counter()
         current_iter = self._current_iteration + 1
         if commit:
             self._current_iteration = current_iter
@@ -74,7 +76,9 @@ class TTRLRewardCalculator(RewardCalculator):
         base_obj_scale = self._base_obj_scale()
         local_scope = self._use_local_cluster_scope()
 
+        exec_group_t0 = time.perf_counter()
         execution_pairs = self._execute_group(trajectories)
+        execution_group_sec = float(time.perf_counter() - exec_group_t0)
 
         evals: list[dict[str, Any]] = []
         for traj, (execution, exec_cache_hit) in zip(trajectories, execution_pairs, strict=False):
@@ -107,11 +111,17 @@ class TTRLRewardCalculator(RewardCalculator):
                 }
             )
 
+        semantic_t0 = time.perf_counter()
         semantic_group_counts, semantic_group_total = self._prepare_semantic_group(evals, local_scope=local_scope)
+        semantic_prepare_sec = float(time.perf_counter() - semantic_t0)
+        structural_t0 = time.perf_counter()
         structural_group_counts = self._prepare_structural_group(evals)
+        structural_prepare_sec = float(time.perf_counter() - structural_t0)
         structural_group_total = len(evals)
 
         rewards: list[RewardBreakdown] = []
+        reward_loop_t0 = time.perf_counter()
+        r3_total_sec = 0.0
         for e in evals:
             traj = e["trajectory"]
             execution = e["execution"]
@@ -179,7 +189,9 @@ class TTRLRewardCalculator(RewardCalculator):
             r3 = 0.0
             r3_meta: dict[str, Any] = {"triggered": False}
             if r2 == 1.0:
+                r3_t0 = time.perf_counter()
                 r3, r3_meta = self._compute_r3_with_details(traj)
+                r3_total_sec += float(time.perf_counter() - r3_t0)
                 r3_meta["triggered"] = True
 
             total = self.combine_rewards(
@@ -242,6 +254,8 @@ class TTRLRewardCalculator(RewardCalculator):
                 )
             )
 
+        reward_loop_sec = float(time.perf_counter() - reward_loop_t0)
+        commit_t0 = time.perf_counter()
         if commit and (not local_scope):
             for e in evals:
                 if bool(e["r1_eligible"]) and isinstance(e["obj_answer"], (int, float)) and isinstance(e.get("semantic_leader"), (int, float)):
@@ -256,6 +270,21 @@ class TTRLRewardCalculator(RewardCalculator):
                     feature_tuple=e["feature_tuple"],
                     iteration=current_iter,
                 )
+        commit_sec = float(time.perf_counter() - commit_t0)
+        reward_group_timing = {
+            "execution_group_sec": execution_group_sec,
+            "semantic_prepare_sec": semantic_prepare_sec,
+            "structural_prepare_sec": structural_prepare_sec,
+            "reward_loop_sec": reward_loop_sec,
+            "r3_total_sec": r3_total_sec,
+            "commit_sec": commit_sec,
+            "total_sec": float(time.perf_counter() - group_t0),
+            "num_trajectories": len(trajectories),
+        }
+        for reward in rewards:
+            if reward.metadata is None:
+                reward.metadata = {}
+            reward.metadata["reward_timing"] = dict(reward_group_timing)
 
         return rewards
 
@@ -458,6 +487,7 @@ class TTRLRewardCalculator(RewardCalculator):
         }
 
     def _compute_r3_with_details(self, trajectory: Trajectory) -> tuple[float, dict]:
+        r3_t0 = time.perf_counter()
         r3_enabled = bool(self.config.enable_r3_reward)
         if not r3_enabled:
             return 1.0, {
@@ -483,7 +513,9 @@ class TTRLRewardCalculator(RewardCalculator):
                 "num_cases": 0,
             }
 
+        normalize_t0 = time.perf_counter()
         normalized_cases = [self._normalize_r3_case(raw_case) for raw_case in tests]
+        normalize_cases_sec = float(time.perf_counter() - normalize_t0)
 
         def _run_case(args: tuple[int, tuple[dict[str, Any], dict[str, float | None], dict[str, Any]]]) -> dict[str, Any]:
             idx, (case_instance, case_bounds, case_meta) = args
@@ -504,6 +536,7 @@ class TTRLRewardCalculator(RewardCalculator):
                 "case_id": str(case_meta.get("case_id", f"case_{idx}")) if isinstance(case_meta, dict) else f"case_{idx}",
             }
 
+        exec_t0 = time.perf_counter()
         max_workers = min(len(normalized_cases), max(1, min(8, os.cpu_count() or 1)))
         if len(normalized_cases) <= 1:
             details = [_run_case((0, normalized_cases[0]))] if normalized_cases else []
@@ -511,6 +544,7 @@ class TTRLRewardCalculator(RewardCalculator):
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 details = list(pool.map(_run_case, list(enumerate(normalized_cases))))
             details.sort(key=lambda x: int(x.get("case_index", 0)))
+        case_exec_wall_sec = float(time.perf_counter() - exec_t0)
 
         passed_cases = 0
         failed_case_index = None
@@ -533,6 +567,14 @@ class TTRLRewardCalculator(RewardCalculator):
             "failed_case_index": failed_case_index,
             "pass_ratio": r3_score,
             "cases": details,
+            "timing": {
+                "normalize_cases_sec": normalize_cases_sec,
+                "case_exec_wall_sec": case_exec_wall_sec,
+                "case_exec_elapsed_sum_sec": float(sum(float(d.get("elapsed_sec", 0.0) or 0.0) for d in details)),
+                "num_cases": len(details),
+                "max_workers": max_workers,
+                "total_sec": float(time.perf_counter() - r3_t0),
+            },
         }
 
     def _execute_group(self, trajectories: list[Trajectory]) -> list[tuple[ExecutionResult, bool]]:
@@ -1000,4 +1042,11 @@ class TTRLRewardCalculator(RewardCalculator):
             'num_vars': num_vars,
             'passes': passes,
         }
+
+
+
+
+
+
+
 

@@ -1,3 +1,6 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
 [project]
 name = "ttrl-or"
 version = "0.1.0"
@@ -19,3 +22,9 @@ dev = ["pytest>=8.0.0"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+[tool.setuptools.packages.find]
+include = ["ttrl_or", "ttrl_or.*", "verl", "verl.*"]
+
+[tool.setuptools.package-data]
+verl = ["**/*.yaml", "**/*.yml", "**/*.json", "**/*.txt", "**/*.md"]
+ttrl_or = ["**/*.yaml", "**/*.yml", "**/*.json", "**/*.txt", "**/*.md"]

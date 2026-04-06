@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 import contextlib
 import gc
 import json
@@ -246,7 +246,7 @@ class TRLPolicyBackend(PolicyBackend):
             reward_func=reward_func,
             train_dataset=train_dataset,
         )
-        train_result, used_fallback = self._train_with_optional_vllm_fallback(
+        train_result, used_fallback, train_timing = self._train_with_optional_vllm_fallback(
             trainer_kwargs=trainer_kwargs,
             config=config,
             stage=stage,
@@ -296,6 +296,7 @@ class TRLPolicyBackend(PolicyBackend):
             "cuda_mem_after": mem_after,
             "strict_single_group": True,
             "training_schedule": schedule_info,
+            "timing": dict(train_timing or {}),
         }
         if "train_loss" in metrics:
             report["train_loss"] = float(metrics["train_loss"])
@@ -359,7 +360,7 @@ class TRLPolicyBackend(PolicyBackend):
             reward_func=reward_func,
             train_dataset=train_dataset,
         )
-        train_result, used_fallback = self._train_with_optional_vllm_fallback(
+        train_result, used_fallback, train_timing = self._train_with_optional_vllm_fallback(
             trainer_kwargs=trainer_kwargs,
             config=config,
             stage=stage,
@@ -388,6 +389,7 @@ class TRLPolicyBackend(PolicyBackend):
             "group_mode": "manual_reward_binding",
             "strict_single_group": True,
             "training_schedule": schedule_info,
+            "timing": dict(train_timing or {}),
         }
         if "train_loss" in metrics:
             report["train_loss"] = float(metrics["train_loss"])
@@ -738,20 +740,41 @@ class TRLPolicyBackend(PolicyBackend):
         num_generations: int,
         on_fallback_reset,
         strict_single_group: bool = False,
-    ) -> tuple[Any, bool]:
+    ) -> tuple[Any, bool, dict[str, Any]]:
         trl = _import_trl()
         rank = _env_int("RANK", 0)
         trainer = None
         trl_args = trainer_kwargs["args"]
+        timing: dict[str, Any] = {
+            "use_vllm_requested": bool(config.use_vllm),
+            "use_vllm_effective": bool(getattr(trl_args, "use_vllm", False)),
+            "fallback_used": False,
+            "before_train_maintenance_sec": 0.0,
+            "trainer_init_sec": 0.0,
+            "trainer_train_sec": 0.0,
+            "trainer_cleanup_sec": 0.0,
+            "fallback_trainer_init_sec": 0.0,
+            "fallback_trainer_train_sec": 0.0,
+            "fallback_trainer_cleanup_sec": 0.0,
+            "total_sec": 0.0,
+        }
+        total_t0 = time.perf_counter()
         try:
             if bool(getattr(trl_args, "use_vllm", False)):
+                maint_t0 = time.perf_counter()
                 self._vllm_server_maintenance(config=config, before_train=True, after_train=False)
+                timing["before_train_maintenance_sec"] = float(time.perf_counter() - maint_t0)
             if rank == 0:
                 print("[GRPO] creating fresh trainer for this iteration.")
+            init_t0 = time.perf_counter()
             trainer = trl.GRPOTrainer(**trainer_kwargs)
+            timing["trainer_init_sec"] = float(time.perf_counter() - init_t0)
             self._active_trainer_for_aux = trainer
+            train_t0 = time.perf_counter()
             train_result = trainer.train()
-            return train_result, False
+            timing["trainer_train_sec"] = float(time.perf_counter() - train_t0)
+            timing["total_sec"] = float(time.perf_counter() - total_t0)
+            return train_result, False, timing
         except Exception as exc:
             should_fallback = (
                 bool(config.use_vllm)
@@ -759,6 +782,7 @@ class TRLPolicyBackend(PolicyBackend):
                 and _looks_like_vllm_comm_error(exc)
             )
             if not should_fallback:
+                timing["total_sec"] = float(time.perf_counter() - total_t0)
                 raise
             if rank == 0:
                 print(
@@ -768,12 +792,16 @@ class TRLPolicyBackend(PolicyBackend):
                 )
             if callable(on_fallback_reset):
                 on_fallback_reset()
+            timing["fallback_used"] = True
+            timing["fallback_reason"] = f"{type(exc).__name__}: {exc}"
             self._force_disable_vllm_for_episode = True
             self._force_disable_vllm_for_run = True
             self._warned_vllm_disabled_for_run = False
             self._active_trainer_for_aux = None
             if trainer is not None:
+                cleanup_t0 = time.perf_counter()
                 self._cleanup_trainer_vllm(trainer)
+                timing["trainer_cleanup_sec"] += float(time.perf_counter() - cleanup_t0)
                 trainer = None
             fallback_args = self._build_trl_grpo_args(
                 config,
@@ -786,14 +814,27 @@ class TRLPolicyBackend(PolicyBackend):
             fallback_kwargs["args"] = fallback_args
             if rank == 0:
                 print("[GRPO] creating fresh fallback trainer with use_vllm=False.")
+            init_t0 = time.perf_counter()
             trainer = trl.GRPOTrainer(**fallback_kwargs)
+            timing["fallback_trainer_init_sec"] = float(time.perf_counter() - init_t0)
             self._active_trainer_for_aux = trainer
+            train_t0 = time.perf_counter()
             train_result = trainer.train()
-            return train_result, True
+            timing["fallback_trainer_train_sec"] = float(time.perf_counter() - train_t0)
+            timing["total_sec"] = float(time.perf_counter() - total_t0)
+            return train_result, True, timing
         finally:
             self._active_trainer_for_aux = None
             if trainer is not None:
-                self._cleanup_trainer_vllm(trainer)    @staticmethod
+                cleanup_t0 = time.perf_counter()
+                self._cleanup_trainer_vllm(trainer)
+                if bool(timing.get("fallback_used", False)):
+                    timing["fallback_trainer_cleanup_sec"] += float(time.perf_counter() - cleanup_t0)
+                else:
+                    timing["trainer_cleanup_sec"] += float(time.perf_counter() - cleanup_t0)
+                timing["total_sec"] = float(time.perf_counter() - total_t0)
+
+    @staticmethod
     def _cleanup_trainer_vllm(trainer: Any) -> None:
         if trainer is None:
             return
@@ -1414,6 +1455,13 @@ def _looks_like_vllm_comm_error(exc: Exception) -> bool:
         "close_communicator first",
     )
     return any(k in text for k in keys)
+
+
+
+
+
+
+
 
 
 

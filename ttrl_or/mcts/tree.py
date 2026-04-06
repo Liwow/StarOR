@@ -407,8 +407,10 @@ class FourStageMCTS:
                             "total": reward_obj.total,
                         },
                         "obj_answer": (reward_obj.metadata or {}).get("obj_answer"),
-                        "effective_success": bool(((reward_obj.metadata or {}).get("execution", {}) or {}).get("effective_success", False)),
+                        "effective_success": bool((((reward_obj.metadata or {}).get("execution", {}) or {}).get("effective_success", False))),
                         "timing": rollout_timing,
+                        "reward_timing": dict(((reward_obj.metadata or {}).get("reward_timing", {}) or {})),
+                        "r3_timing": dict((((reward_obj.metadata or {}).get("r3", {}) or {}).get("timing", {}) or {})),
                         "prior": child.prior,
                         "completion_preview": child.text[:240],
                     }
@@ -482,6 +484,8 @@ class FourStageMCTS:
                         "robustness_success": reward_obj.robustness_success,
                     },
                     "timing": rollout_timing,
+                    "reward_timing": dict(((reward_obj.metadata or {}).get("reward_timing", {}) or {})),
+                    "r3_meta": dict(((reward_obj.metadata or {}).get("r3", {}) or {})),
                     "priors": {s.value: p for s, p in completed.priors.items()},
                     "prior_source": str(rollout.get("prior_source", "fallback_generation")),
                 }
@@ -620,6 +624,8 @@ class FourStageMCTS:
                         "obj_answer": (best_rollout_obj.metadata or {}).get("obj_answer"),
                         "r1_debug": (best_rollout_obj.metadata or {}).get("r1_debug", {}),
                         "r4_debug": (best_rollout_obj.metadata or {}).get("r4_debug", {}),
+                        "timing": dict(((best_rollout_obj.metadata or {}).get("reward_timing", {}) or {})),
+                        "r3_meta": dict(((best_rollout_obj.metadata or {}).get("r3", {}) or {})),
                     },
                     "prior": {
                         "source": str(best_rollout.get("prior_source", "fallback_generation")),
@@ -642,6 +648,7 @@ class FourStageMCTS:
                     "model_sampling_update_excluding_reward_callback_sec": model_sampling_update_sec,
                     "backprop_total_sec": backprop_total_sec,
                     "iteration_total_sec": iter_total_sec,
+                    "grpo_timing": dict((((grpo_report or {}).get("timing", {})) or {})),
                 },
                 "grpo_update": dict(grpo_report),
             }
@@ -1403,6 +1410,10 @@ class FourStageMCTS:
 
         cleaned = "\n".join(code_lines).strip()
         return cleaned
+
+
+
+
 
 
 
