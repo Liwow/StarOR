@@ -902,6 +902,7 @@ class FourStageMCTS:
         rollouts: list[dict[str, Any]],
         fallback_generations: list[Generation],
     ) -> tuple[list[float], str]:
+        del stage, prompt
         if not bool(getattr(self.config, 'enable_prior', True)):
             uniform = [1.0 / float(max(1, len(rollouts)))] * len(rollouts)
             return uniform, 'uniform_disabled'
@@ -912,26 +913,7 @@ class FourStageMCTS:
                 fallback.append(max(1e-6, float(fallback_generations[ridx].prior)))
             else:
                 fallback.append(max(1e-6, float(rollout['child'].prior)))
-
-        score_method = getattr(self.backend, 'score_action_priors', None)
-        if not callable(score_method):
-            return self._normalize_priors(fallback), 'fallback_generation'
-
-        candidates = [str(rollout['child'].text or '') for rollout in rollouts]
-        try:
-            priors = list(score_method(stage=stage, prompt=prompt, candidates=candidates))
-        except TypeError:
-            priors = list(score_method(stage, prompt, candidates))
-        except Exception:
-            priors = []
-
-        if len(priors) != len(rollouts):
-            return self._normalize_priors(fallback), 'fallback_generation'
-
-        normalized = self._normalize_priors(priors)
-        if not normalized:
-            return self._normalize_priors(fallback), 'fallback_generation'
-        return normalized, 'teacher_forcing_lora'
+        return self._normalize_priors(fallback), 'fallback_generation'
 
     def _select_leaf_recursive(
         self,
@@ -1421,6 +1403,7 @@ class FourStageMCTS:
 
         cleaned = "\n".join(code_lines).strip()
         return cleaned
+
 
 
 

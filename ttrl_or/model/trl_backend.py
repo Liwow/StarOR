@@ -300,62 +300,12 @@ class TRLPolicyBackend(PolicyBackend):
             report["train_steps_per_second"] = float(metrics["train_steps_per_second"])
         return captured, report
     def score_action_priors(self, stage: Stage, prompt: Any, candidates: list[str]) -> list[float]:
-        if self._model is None or self._tokenizer is None or not candidates:
+        del stage, prompt
+        n = len(candidates)
+        if n <= 0:
             return []
-        self._model.eval()
-        prompt_text = self._prompt_to_model_text(prompt, add_generation_prompt=True)
-        gamma = 1.0
-        tau = 0.5
-        action_blocks: list[str] = []
-        valid_mask: list[bool] = []
-        for candidate in candidates:
-            action_block = self._canonical_action_block(stage, str(candidate or ''))
-            if not action_block:
-                action_blocks.append('')
-                valid_mask.append(False)
-            else:
-                action_blocks.append(action_block)
-                valid_mask.append(True)
-        try:
-            current_scores = self._teacher_forced_action_scores(prompt_text, action_blocks, gamma=gamma, disable_adapter=False)
-        except Exception:
-            current_scores = [float('-inf')] * len(candidates)
-        try:
-            reference_scores = self._teacher_forced_action_scores(prompt_text, action_blocks, gamma=gamma, disable_adapter=True)
-        except Exception:
-            reference_scores = [float('-inf')] * len(candidates)
+        return [1.0 / float(n)] * n
 
-        raw_scores: list[float] = []
-        reference_used = any(math.isfinite(score) for score in reference_scores)
-        for idx, valid in enumerate(valid_mask):
-            if not valid:
-                raw_scores.append(float('-inf'))
-                continue
-            cur_score = current_scores[idx] if idx < len(current_scores) else float('-inf')
-            ref_score = reference_scores[idx] if idx < len(reference_scores) else float('-inf')
-            if math.isfinite(cur_score) and math.isfinite(ref_score):
-                raw_scores.append(float(cur_score - ref_score))
-            elif math.isfinite(cur_score):
-                raw_scores.append(float(cur_score))
-            else:
-                raw_scores.append(float('-inf'))
-
-        valid = [score for score in raw_scores if math.isfinite(score)]
-        if not valid:
-            n = len(candidates)
-            return [1.0 / float(max(1, n))] * n
-        max_score = max(valid)
-        exp_scores: list[float] = []
-        for score in raw_scores:
-            if not math.isfinite(score):
-                exp_scores.append(0.0)
-            else:
-                exp_scores.append(float(math.exp((score - max_score) / tau)))
-        z = sum(exp_scores)
-        if z <= 0:
-            n = len(candidates)
-            return [1.0 / float(max(1, n))] * n
-        return [float(x / z) for x in exp_scores]
     def grpo_update(self, samples: list[TrainingSample], config: GRPOConfig, stage: Stage) -> dict[str, Any]:
         if not samples:
             return {"updated": False, "stage": stage.value, "num_samples": 0, "backend": "trl"}
@@ -847,7 +797,7 @@ class TRLPolicyBackend(PolicyBackend):
         try:
             vgen = getattr(trainer, "vllm_generation", None)
             if vgen is not None:
-                for fn_name in ("close_communicator", "close", "shutdown"):
+                for fn_name in ("close", "shutdown"):
                     fn = getattr(vgen, fn_name, None)
                     if callable(fn):
                         try:
@@ -856,7 +806,7 @@ class TRLPolicyBackend(PolicyBackend):
                             pass
                 client = getattr(vgen, "vllm_client", None)
                 if client is not None:
-                    for fn_name in ("close_communicator", "close", "shutdown"):
+                    for fn_name in ("close", "shutdown"):
                         cfn = getattr(client, fn_name, None)
                         if callable(cfn):
                             try:
@@ -897,25 +847,11 @@ class TRLPolicyBackend(PolicyBackend):
         before_train: bool,
         after_train: bool,
     ) -> None:
-        if not bool(config.use_vllm):
-            return
-        if str(config.vllm_mode or "").lower() != "server":
-            return
-        rank = _env_int("RANK", 0)
-        # Best-effort communicator cleanup before next trainer init.
-        if before_train and bool(config.vllm_close_communicator_after_update):
-            ok = self._vllm_server_post("/close_communicator/")
-            if rank == 0 and ok:
-                print("[vLLM] close_communicator before trainer init.")
-        if after_train:
-            if bool(config.vllm_reset_prefix_cache_after_update):
-                ok_cache = self._vllm_server_post("/reset_prefix_cache/")
-                if rank == 0 and ok_cache:
-                    print("[vLLM] reset_prefix_cache after update.")
-            if bool(config.vllm_close_communicator_after_update):
-                ok_close = self._vllm_server_post("/close_communicator/")
-                if rank == 0 and ok_close:
-                    print("[vLLM] close_communicator after update.")
+        del config, before_train, after_train
+        # Disabled intentionally: server-side communicator/cache maintenance adds latency
+        # and can interfere with steady-state vLLM generation throughput between GRPO steps.
+        return
+
     def _build_trl_grpo_args(
         self,
         config: GRPOConfig,
@@ -1454,6 +1390,7 @@ def _looks_like_vllm_comm_error(exc: Exception) -> bool:
         "close_communicator first",
     )
     return any(k in text for k in keys)
+
 
 
 
