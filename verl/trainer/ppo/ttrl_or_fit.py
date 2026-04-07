@@ -124,7 +124,6 @@ def _raw_sample_to_task(sample) -> OptimizationTask:
         task_id=str(sample.sample_id),
         description=str(sample.question),
         instance=deepcopy(sample.instance),
-        gold_answer=str(sample.answer or ""),
     )
 
 
@@ -240,7 +239,6 @@ class VerlRayPolicyBackend:
         self.trainer.global_steps = current_step
         prompt_batch = self._make_prompt_batch(
             [messages],
-            ground_truth="",
             extra_infos=[{"task_id": self._current_task_id, "stage": stage.value}],
         )
         prompt_batch.meta_info["temperature"] = rollout_temperature
@@ -415,7 +413,6 @@ class VerlRayPolicyBackend:
             return []
         prompt_batch = self._make_prompt_batch(
             messages_batch,
-            ground_truth="",
             extra_infos=[{"task_id": self._current_task_id, "kind": "aux"} for _ in messages_batch],
         )
         gen_batch = self.trainer._get_gen_batch(prompt_batch)
@@ -432,7 +429,6 @@ class VerlRayPolicyBackend:
         self,
         messages_batch: list[list[dict[str, str]]],
         *,
-        ground_truth: str,
         extra_infos: list[dict[str, Any]] | None = None,
     ) -> DataProto:
         rows: list[dict[str, Any]] = []
@@ -441,7 +437,7 @@ class VerlRayPolicyBackend:
             rows.append(
                 {
                     "data_source": "ttrl_or",
-                    "reward_model": {"style": "rule", "ground_truth": ground_truth},
+                    "reward_model": {"style": "rule"},
                     "extra_info": {"index": idx, **(extra or {})},
                     "raw_prompt": messages,
                     "dummy_tensor": torch.tensor([0], dtype=torch.uint8),
@@ -628,12 +624,10 @@ def _prepare_r3_for_samples(raw_samples: list, runner: TTRLORRunner, rank: int, 
         base_instance = deepcopy(sample.instance)
         base_instances.append(base_instance)
         base_prompt = build_r3_base_scale_prompt(
-            sample_id=sample.sample_id,
             description=sample.question,
             instance=base_instance,
         )
         tests_prompt = build_r3_tests_prompt(
-            sample_id=sample.sample_id,
             description=sample.question,
             instance=base_instance,
             num_tests=max(1, int(cfg.reward.robustness_cases)),
@@ -667,7 +661,6 @@ def _prepare_r3_for_samples(raw_samples: list, runner: TTRLORRunner, rank: int, 
             sample_id=sample.sample_id,
             description=sample.question,
             instance=base_instance,
-            reference_answer=sample.answer,
             robustness_cases=max(1, int(cfg.reward.robustness_cases)),
             llm_base_text=llm_base_texts[idx],
             llm_tests_text=llm_tests_texts[idx],
@@ -762,7 +755,7 @@ def run_ttrl_or_fit(trainer, logger) -> None:
 
         task = _raw_sample_to_task(sample)
         step_before = int(trainer.global_steps)
-        result = runner.run_task(task)
+        result = runner.run_task(task, human_gold_answer=str(sample.answer or ""))
         steps_used = max(0, int(trainer.global_steps) - step_before)
         if steps_used > 0:
             progress_bar.update(steps_used)

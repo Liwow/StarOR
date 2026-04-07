@@ -610,7 +610,6 @@ class FourStageMCTS:
                     },
                     "code": best_rollout_traj.code,
                     "code_execution": (best_rollout_obj.metadata or {}).get("execution", {}),
-                    "gt": str(task.gold_answer or ""),
                     "reward": {
                         "r1": float(best_rollout_obj.r1),
                         "r2": float(best_rollout_obj.r2),

@@ -50,12 +50,12 @@ class TTRLORRunner:
             system_instruction=profile.system_instruction,
         )
 
-    def run_task(self, task: OptimizationTask) -> TaskRunResult:
+    def run_task(self, task: OptimizationTask, human_gold_answer: str | None = None) -> TaskRunResult:
         run_t0 = time.perf_counter()
         self.backend.begin_episode(task)
         task_context = self.backend.prepare_task_context(task, self.config.dataset)
-        if task.gold_answer:
-            task_context["gold_answer"] = task.gold_answer
+        if human_gold_answer:
+            task_context["gold_answer"] = str(human_gold_answer)
 
         backend_name = type(self.backend).__name__
         trace = RunTrace(
@@ -104,7 +104,7 @@ class TTRLORRunner:
                 stage_name = payload.get("stage", "")
                 best_reward = reward_obj.get("total")
                 obj_answer = reward_obj.get("obj_answer")
-                gold_answer = best.get("gt") if isinstance(best, dict) else str(task_context.get("gold_answer", ""))
+                gold_answer = str(task_context.get("gold_answer", ""))
                 print(
                     f"[MCTS][task={task.task_id}] iter={iter_idx} stage={stage_name} "
                     f"best_reward={best_reward} obj={obj_answer} gt={gold_answer} "
@@ -244,9 +244,8 @@ class TTRLORRunner:
             task_id=task_id or str(uuid.uuid4()),
             description=description,
             instance=instance or {},
-            gold_answer=(gold_answer or ""),
         )
-        return self.run_task(task)
+        return self.run_task(task, human_gold_answer=gold_answer)
 
     @staticmethod
     def _pick_best_by_reward(trajectories: list[Trajectory], selected_nodes) -> Trajectory | None:

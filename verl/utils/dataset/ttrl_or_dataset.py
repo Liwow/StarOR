@@ -49,21 +49,24 @@ class TTRLORDataset(Dataset):
 
     def __getitem__(self, item: int) -> dict:
         sample = self.raw_samples[item]
+        raw_payload = deepcopy(sample.raw)
+        if isinstance(raw_payload, dict):
+            raw_payload.pop("answer", None)
+            raw_payload.pop("en_answer", None)
         extra_info = {
             "index": int(item),
             "sample_id": sample.sample_id,
             "dataset": sample.dataset,
             "question": sample.question,
-            "answer": sample.answer,
             "param_mode": sample.param_mode,
             "tables": deepcopy(sample.tables),
             "inline_numbers": deepcopy(sample.inline_numbers),
             "instance": deepcopy(sample.instance),
-            "raw": deepcopy(sample.raw),
+            "raw": raw_payload,
         }
         return {
             "data_source": sample.dataset,
-            "reward_model": {"style": "rule", "ground_truth": sample.answer},
+            "reward_model": {"style": "rule"},
             "extra_info": extra_info,
             "raw_prompt": [{"role": "user", "content": sample.question}],
             "dummy_tensor": torch.tensor([0], dtype=torch.uint8),

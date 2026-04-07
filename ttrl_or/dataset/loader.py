@@ -148,8 +148,6 @@ def load_raw_task_dataset(
             )
             instance["__sample_id__"] = sample_id
             instance["__dataset__"] = dataset_name
-            if answer:
-                instance["__reference_answer__"] = answer
 
             samples.append(
                 RawTaskSample(

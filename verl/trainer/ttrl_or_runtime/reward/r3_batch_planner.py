@@ -17,8 +17,9 @@ Task sketch:
 Expected style:
 <analysis>
 Objective is total transport time, so the objective must be positive and should never be 0.
-Because the demand is 300 and each trip carries roughly 8 to 10 ducks, the objective should be in the order of 10^3 minutes.
-A tight but still tolerant filter can use a positive interval roughly from hundreds to a few thousands.
+Because the demand is 300 and each trip carries roughly 8 to 10 ducks, the plan will likely need dozens of trips and each trip costs tens of minutes.
+That implies a positive objective in the rough order of 10^3 minutes, not single digits and not 10^6.
+A practical filter should stay tolerant but still exclude obviously implausible values such as 0 or tiny magnitudes.
 </analysis>
 <base_scale>
 {
@@ -34,11 +35,12 @@ A tight but still tolerant filter can use a positive interval roughly from hundr
 Example B (table-driven production planning)
 Task sketch:
 - Weekly demand table for two products across 8 weeks
-- Training, overtime, wages, and delay penalties
+- Regular labor, overtime, training, inventory, and delay penalties
 Expected style:
 <analysis>
-Total cost must be positive. Since wages and penalties accumulate over many weeks, the optimal objective should be around 10^5 to 10^6 rather than near zero.
-A good filter should combine a positive sign, a realistic interval, and a magnitude band.
+Total cost must be positive. Labor and penalty terms accumulate across many periods, so the objective should usually be in the order of 10^5 to 10^6 rather than near zero.
+The lower bound should still leave room for unusually efficient schedules, while the upper bound should tolerate stressed but still realistic plans.
+A good filter therefore combines a positive sign, an interval, and an order-of-magnitude band.
 </analysis>
 <base_scale>
 {
@@ -47,6 +49,28 @@ A good filter should combine a positive sign, a realistic interval, and a magnit
   "upper": 600000,
   "sign_relation": "positive",
   "magnitude": {"min_order": 5, "max_order": 6, "use_abs": true},
+  "reject_exact": [0]
+}
+</base_scale>
+
+Example C (facility opening plus shipment cost minimization)
+Task sketch:
+- Open some depots by paying fixed costs
+- Ship goods from chosen depots to customers with distance-based variable costs
+- Demand must be fully covered and depot capacities are finite
+Expected style:
+<analysis>
+The objective is fixed opening cost plus transportation cost, so it must remain positive.
+Even if only a few depots are opened, one still pays several fixed charges and many shipment terms, so the scale should usually be well above 10^3.
+At the same time, this is not a huge national-scale model, so a range around 10^4 to low 10^5 is more plausible than 10^8.
+</analysis>
+<base_scale>
+{
+  "kind": "interval",
+  "lower": 8000,
+  "upper": 150000,
+  "sign_relation": "positive",
+  "magnitude": {"min_order": 3, "max_order": 6, "use_abs": true},
   "reject_exact": [0]
 }
 </base_scale>
@@ -63,38 +87,64 @@ Task sketch:
 Feature catalog snippet:
 - F03: boat capacity = 10
 - F05: demand = 300
+- F07: minimum canoe share = 0.60
 Expected style:
 <analysis>
-Useful stress cases should modify demand or capacity in realistic directions.
-Each case must keep the same problem semantics and must still provide obj_scale from range, sign, and magnitude.
+Useful stress cases should modify demand, capacity, or policy ratios in realistic directions.
+When changes are logically coupled, it is better to modify multiple related quantities together than to perturb one isolated number.
+Include a mix of harder and easier scenarios, and keep every case inside the same transportation semantics.
+Each case must still provide obj_scale from range, sign, and magnitude.
 </analysis>
 <tests>
 [
   {
-    "case_id": "demand_up",
-    "patches": [{"fid": "F05", "new_value": 360}],
+    "case_id": "demand_up_capacity_tighten",
+    "patches": [
+      {"fid": "F05", "new_value": 360},
+      {"fid": "F03", "new_value": 9}
+    ],
     "obj_scale": {
       "kind": "interval",
-      "lower": 700,
-      "upper": 3800,
+      "lower": 800,
+      "upper": 4200,
       "sign_relation": "positive",
       "magnitude": {"min_order": 2, "max_order": 4, "use_abs": true},
       "reject_exact": [0]
     },
-    "rationale": "Higher demand should usually increase total time while keeping the same sign and magnitude family."
+    "rationale": "Higher demand together with slightly tighter boat capacity creates one coherent harder transportation case while keeping the same objective family."
   },
   {
-    "case_id": "boat_capacity_up",
-    "patches": [{"fid": "F03", "new_value": 12}],
+    "case_id": "storm_rule_stress",
+    "patches": [
+      {"fid": "F05", "new_value": 330},
+      {"fid": "F03", "new_value": 9},
+      {"fid": "F07", "new_value": 0.7}
+    ],
     "obj_scale": {
       "kind": "interval",
-      "lower": 500,
-      "upper": 2600,
+      "lower": 900,
+      "upper": 5200,
       "sign_relation": "positive",
       "magnitude": {"min_order": 2, "max_order": 4, "use_abs": true},
       "reject_exact": [0]
     },
-    "rationale": "Higher boat capacity should not change the sign and should keep the objective in the same rough magnitude."
+    "rationale": "A weather-related stress case can simultaneously increase demand pressure, reduce fast-boat effectiveness, and require a higher canoe share, so the total time should remain positive but shift upward."
+  },
+  {
+    "case_id": "demand_down_capacity_relax",
+    "patches": [
+      {"fid": "F05", "new_value": 270},
+      {"fid": "F03", "new_value": 12}
+    ],
+    "obj_scale": {
+      "kind": "interval",
+      "lower": 450,
+      "upper": 2400,
+      "sign_relation": "positive",
+      "magnitude": {"min_order": 2, "max_order": 4, "use_abs": true},
+      "reject_exact": [0]
+    },
+    "rationale": "Lower demand together with relaxed capacity forms one coherent easier case; the objective should stay positive and within the same rough magnitude band."
   }
 ]
 </tests>
@@ -102,34 +152,71 @@ Each case must keep the same problem semantics and must still provide obj_scale 
 Example B (table-driven production planning)
 Task sketch:
 - Weekly demand table for two products across 8 weeks
-- Training, overtime, wages, and delay penalties
+- Training, overtime, wages, inventory, and delay penalties
 Feature catalog snippet:
 - F12: one late-week demand entry
 - F18: overtime wage
+- F21: regular-time weekly capacity
 Expected style:
 <analysis>
-Good robustness tests should perturb demand-like or wage-like quantities while preserving realism.
-The resulting obj_scale should remain positive and remain in the same order of magnitude unless the perturbation is extreme.
+Good robustness tests should perturb demand-like, cost-like, or capacity-like quantities while preserving realism.
+Coordinated multi-parameter changes are encouraged when they reflect one plausible business condition such as a rush week or a temporary easing of pressure.
+The resulting obj_scale should usually remain positive and in the same order family unless the perturbation is intentionally extreme.
 </analysis>
 <tests>
 [
   {
-    "case_id": "late_demand_up",
-    "patches": [{"fid": "F12", "op": "scale", "value": 1.1}],
+    "case_id": "late_demand_and_overtime_up",
+    "patches": [
+      {"fid": "F12", "op": "scale", "value": 1.1},
+      {"fid": "F18", "op": "scale", "value": 1.08}
+    ],
     "obj_scale": {
       "kind": "interval",
-      "lower": 110000,
-      "upper": 700000,
+      "lower": 120000,
+      "upper": 760000,
       "sign_relation": "positive",
       "magnitude": {"min_order": 5, "max_order": 6, "use_abs": true},
       "reject_exact": [0]
     },
-    "rationale": "Increasing late-stage demand should usually increase cost while staying positive and in the same magnitude band."
+    "rationale": "Increasing late demand together with overtime wage models a coherent stressed production environment and should keep cost positive within the same order family."
+  },
+  {
+    "case_id": "rush_week_tighter_capacity",
+    "patches": [
+      {"fid": "F12", "op": "scale", "value": 1.12},
+      {"fid": "F18", "op": "scale", "value": 1.05},
+      {"fid": "F21", "op": "scale", "value": 0.92}
+    ],
+    "obj_scale": {
+      "kind": "interval",
+      "lower": 150000,
+      "upper": 900000,
+      "sign_relation": "positive",
+      "magnitude": {"min_order": 5, "max_order": 6, "use_abs": true},
+      "reject_exact": [0]
+    },
+    "rationale": "A rush-week scenario can plausibly combine higher late demand, slightly costlier overtime, and tighter regular capacity, which should raise pressure while preserving the same cost structure."
+  },
+  {
+    "case_id": "demand_relief_and_capacity_ease",
+    "patches": [
+      {"fid": "F12", "op": "scale", "value": 0.94},
+      {"fid": "F21", "op": "scale", "value": 1.06}
+    ],
+    "obj_scale": {
+      "kind": "interval",
+      "lower": 90000,
+      "upper": 520000,
+      "sign_relation": "positive",
+      "magnitude": {"min_order": 5, "max_order": 6, "use_abs": true},
+      "reject_exact": [0]
+    },
+    "rationale": "Milder late demand together with slightly easier regular capacity gives a coherent relief scenario whose cost should remain positive but drift downward within the same magnitude family."
   }
 ]
 </tests>
 """
-
 
 @dataclass(slots=True)
 class R3SamplePlan:
@@ -147,7 +234,6 @@ class R3SamplePlan:
 
 def build_r3_base_scale_prompt(
     *,
-    sample_id: str,
     description: str,
     instance: dict[str, Any],
 ) -> str:
@@ -174,7 +260,6 @@ def build_r3_base_scale_prompt(
         "Keep the scale informative: not too loose, but broad enough to tolerate modeling variation.\n\n"
         "Few-shot style reference:\n"
         f"{R3_BASE_SCALE_FEWSHOT}\n\n"
-        f"sample_id: {sample_id}\n\n"
         "Task description:\n"
         f"{description}\n\n"
         "Parsed numeric data snapshot (for context only):\n"
@@ -188,7 +273,6 @@ def build_r3_base_scale_prompt(
 
 def build_r3_tests_prompt(
     *,
-    sample_id: str,
     description: str,
     instance: dict[str, Any],
     num_tests: int,
@@ -204,6 +288,10 @@ def build_r3_tests_prompt(
         "<tests>[...JSON list...]</tests>\n\n"
         "Each test must contain: case_id, patches, obj_scale, rationale.\n"
         "Use feature ids only in patches. Do NOT invent internal keys.\n"
+        "Each case may contain 1 to 3 patches. Prefer coordinated multi-patch changes when they describe one plausible scenario.\n"
+        "Do not make random unrelated edits in the same case; grouped edits must have a clear shared logic.\n"
+        "If the feature catalog allows it, include both harder and easier cases, and include at least one coordinated 2-patch or 3-patch scenario.\n"
+        "Keep units and semantics consistent: demand-like terms should stay demand-like, capacity-like terms should stay capacity-like, and ratios should remain plausible.\n"
         "For every obj_scale, describe the objective from THREE aspects whenever possible:\n"
         "1. numeric range bounds\n"
         "2. relation to zero\n"
@@ -212,7 +300,6 @@ def build_r3_tests_prompt(
         "Prefer small, semantically meaningful perturbations.\n\n"
         "Few-shot style reference:\n"
         f"{R3_TESTS_FEWSHOT}\n\n"
-        f"sample_id: {sample_id}\n\n"
         "Task description:\n"
         f"{description}\n\n"
         "Parsed numeric data snapshot (for context only):\n"
@@ -226,13 +313,11 @@ def build_r3_tests_prompt(
 
 def build_r3_planner_prompt(
     *,
-    sample_id: str,
     description: str,
     instance: dict[str, Any],
     num_tests: int,
 ) -> str:
     return build_r3_tests_prompt(
-        sample_id=sample_id,
         description=description,
         instance=instance,
         num_tests=num_tests,
@@ -244,7 +329,6 @@ def build_sample_r3_plan(
     sample_id: str,
     description: str,
     instance: dict[str, Any],
-    reference_answer: str,
     robustness_cases: int,
     llm_base_text: str | None = None,
     llm_tests_text: str | None = None,
@@ -279,12 +363,11 @@ def build_sample_r3_plan(
 
     if isinstance(parsed, dict):
         plan = _normalize_llm_plan(
-            sample_id=sample_id,
+                description=description,
             parsed=parsed,
             base_instance=instance,
             feature_catalog=feature_catalog,
             robustness_cases=robustness_cases,
-            reference_answer=reference_answer,
             raw_preview=_compose_raw_preview(llm_base_text, llm_tests_text, llm_text),
         )
         if plan is not None:
@@ -294,18 +377,16 @@ def build_sample_r3_plan(
             return plan
     if allow_heuristic_fallback:
         return _heuristic_plan(
-            sample_id=sample_id,
+                description=description,
             base_instance=instance,
             feature_catalog=feature_catalog,
             robustness_cases=robustness_cases,
-            reference_answer=reference_answer,
             raw_preview=_compose_raw_preview(llm_base_text, llm_tests_text, llm_text),
         )
     return R3SamplePlan(
-        sample_id=sample_id,
         source="disabled",
         analysis="r3 precompute disabled due to extraction failure",
-        base_obj_bounds=_default_scale_from_reference(reference_answer),
+        base_obj_bounds=_default_scale_from_context(description, instance, feature_catalog),
         test_cases=[],
         mapping=[],
         feature_catalog=feature_catalog,
@@ -336,18 +417,18 @@ def attach_r3_plan_to_instance(instance: dict[str, Any], plan: R3SamplePlan) -> 
 def _normalize_llm_plan(
     *,
     sample_id: str,
+    description: str,
     parsed: dict[str, Any],
     base_instance: dict[str, Any],
     feature_catalog: list[dict[str, Any]],
     robustness_cases: int,
-    reference_answer: str,
     raw_preview: str,
 ) -> R3SamplePlan | None:
     analysis = str(parsed.get("analysis", "")).strip()
     feature_map = _feature_catalog_map(feature_catalog)
     base_bounds = _coerce_scale(parsed.get("base_scale"))
     if not _has_valid_scale(base_bounds):
-        base_bounds = _default_scale_from_reference(reference_answer)
+        base_bounds = _default_scale_from_context(description, base_instance, feature_catalog)
     tests_raw = parsed.get("tests")
     if not isinstance(tests_raw, list):
         tests_raw = []
@@ -400,7 +481,6 @@ def _normalize_llm_plan(
     if not test_cases:
         return None
     return R3SamplePlan(
-        sample_id=sample_id,
         source="llm",
         analysis=analysis,
         base_obj_bounds=base_bounds,
@@ -413,15 +493,15 @@ def _normalize_llm_plan(
 def _heuristic_plan(
     *,
     sample_id: str,
+    description: str,
     base_instance: dict[str, Any],
     feature_catalog: list[dict[str, Any]],
     robustness_cases: int,
-    reference_answer: str,
     raw_preview: str,
 ) -> R3SamplePlan:
     pmap = build_perturbation_map(base_instance)
     generated = generate_perturbed_instances_from_map(base_instance, pmap, max(1, robustness_cases))
-    base_bounds = _default_scale_from_reference(reference_answer)
+    base_bounds = _default_scale_from_context(description, base_instance, feature_catalog)
     fid_lookup = _key_to_fid_map(feature_catalog)
     test_cases: list[dict[str, Any]] = []
     mapping: list[dict[str, Any]] = []
@@ -466,7 +546,6 @@ def _heuristic_plan(
             }
         )
     return R3SamplePlan(
-        sample_id=sample_id,
         source="heuristic",
         analysis="heuristic fallback plan",
         base_obj_bounds=base_bounds,
@@ -533,6 +612,63 @@ def _key_to_fid_map(feature_catalog: list[dict[str, Any]]) -> dict[str, str]:
         if fid and key:
             out[key] = fid
     return out
+
+
+def _collect_numeric_feature_values(instance: dict[str, Any], feature_catalog: list[dict[str, Any]]) -> list[float]:
+    values: list[float] = []
+    seen_keys: set[str] = set()
+    for item in feature_catalog:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key", "")).strip()
+        if key:
+            seen_keys.add(key)
+        num = _to_number(item.get("value"))
+        if num is not None and math.isfinite(num):
+            values.append(float(num))
+    if isinstance(instance, dict):
+        for key, value in instance.items():
+            text_key = str(key).strip()
+            if text_key.startswith("__") or text_key in seen_keys:
+                continue
+            num = _to_number(value)
+            if num is not None and math.isfinite(num):
+                values.append(float(num))
+    return values
+
+
+def _default_scale_from_context(description: str, instance: dict[str, Any], feature_catalog: list[dict[str, Any]]) -> dict[str, Any]:
+    numeric_values = [abs(v) for v in _collect_numeric_feature_values(instance, feature_catalog) if math.isfinite(v) and abs(v) > 1e-12]
+    if not numeric_values:
+        return {
+            "kind": "interval",
+            "lower": None,
+            "upper": None,
+            "sign_relation": "any",
+            "magnitude": {"min_order": None, "max_order": None, "use_abs": True},
+            "reject_exact": [],
+        }
+
+    numeric_values.sort()
+    top_values = numeric_values[-min(8, len(numeric_values)) :]
+    anchor = max(1.0, float(sum(top_values)), float(numeric_values[-1]))
+    smallest = float(numeric_values[0])
+    max_order = int(math.floor(math.log10(max(anchor, 1e-12)))) + 2
+    min_order = int(math.floor(math.log10(max(smallest, 1e-12)))) - 1
+    lowered = str(description or "").lower()
+    sign_relation = "any"
+    if any(token in lowered for token in ("minimize", "maximize", "cost", "profit", "revenue", "penalty", "budget", "time", "transport", "production")):
+        sign_relation = "nonnegative"
+    lower = 0.0 if sign_relation == "nonnegative" else -4.0 * anchor
+    upper = 4.0 * anchor
+    return {
+        "kind": "interval",
+        "lower": float(lower),
+        "upper": float(upper),
+        "sign_relation": sign_relation,
+        "magnitude": {"min_order": min_order, "max_order": max_order, "use_abs": True},
+        "reject_exact": [],
+    }
 def _base_scale_skeleton() -> dict[str, Any]:
     return {
         "analysis": "",
@@ -548,14 +684,23 @@ def _base_scale_skeleton() -> dict[str, Any]:
 
 
 def _tests_skeleton(*, num_tests: int, feature_catalog: list[dict[str, Any]]) -> dict[str, Any]:
-    sample_fids = [str(row.get("fid", "")) for row in feature_catalog[:2] if isinstance(row, dict) and row.get("fid")]
+    sample_fids = [str(row.get("fid", "")) for row in feature_catalog[:3] if isinstance(row, dict) and row.get("fid")]
     tests = []
     for idx in range(max(1, int(num_tests))):
-        fid = sample_fids[min(idx, len(sample_fids) - 1)] if sample_fids else "F01"
+        patch_fids = sample_fids[: min(len(sample_fids), 3)] if sample_fids else ["F01"]
+        patches = []
+        for patch_idx, fid in enumerate(patch_fids):
+            patches.append(
+                {
+                    "fid": fid,
+                    "op": "scale",
+                    "value": (1.08 if patch_idx == 0 else (0.94 if patch_idx == 1 else 1.03)),
+                }
+            )
         tests.append(
             {
-                "case_id": f"case_{idx + 1}",
-                "patches": [{"fid": fid, "new_value": 0}],
+                "case_id": ("stress_case" if idx % 2 == 0 else "relief_case") + f"_{idx + 1}",
+                "patches": patches,
                 "obj_scale": {
                     "kind": "interval",
                     "lower": None,
@@ -678,39 +823,6 @@ def _extract_tag_text(text: str, tag: str, min_len: int = 2) -> str:
         if len(content) >= int(min_len):
             return content
         start = close_idx + len(close_tag)
-def _default_scale_from_reference(reference_answer: str) -> dict[str, Any]:
-    gt = _to_number(reference_answer)
-    if gt is None or not math.isfinite(gt):
-        return {
-            "kind": "interval",
-            "lower": None,
-            "upper": None,
-            "sign_relation": "any",
-            "magnitude": {"min_order": None, "max_order": None, "use_abs": True},
-            "reject_exact": [],
-        }
-    span = max(abs(gt), 1.0)
-    lower = gt - 1.0 * span
-    upper = gt + 1.0 * span
-    reject_exact: list[float] = []
-    sign_relation = "any"
-    if gt > 0:
-        lower = max(lower, 0.1 * gt)
-        reject_exact = [0.0]
-        sign_relation = "positive"
-    elif gt < 0:
-        upper = min(upper, 0.1 * gt)
-        reject_exact = [0.0]
-        sign_relation = "negative"
-    magnitude = _default_magnitude_from_value(gt)
-    return {
-        "kind": "interval",
-        "lower": float(lower),
-        "upper": float(upper),
-        "sign_relation": sign_relation,
-        "magnitude": magnitude,
-        "reject_exact": reject_exact,
-    }
 def _expand_scale(scale: dict[str, Any], factor: float = 1.2) -> dict[str, Any]:
     normalized = _coerce_scale(scale)
     sign_relation = str(normalized.get("sign_relation") or "any")

@@ -421,8 +421,6 @@ def _build_base_instance_for_sample(sample, config: PipelineConfig) -> dict:
     )
     instance["__sample_id__"] = sample.sample_id
     instance["__dataset__"] = sample.dataset
-    if sample.answer:
-        instance["__reference_answer__"] = sample.answer
     return instance
 
 
@@ -451,12 +449,10 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
         base_instance = _build_base_instance_for_sample(sample, cfg)
         base_instances.append(base_instance)
         base_prompt = build_r3_base_scale_prompt(
-            sample_id=sample.sample_id,
             description=sample.question,
             instance=base_instance,
         )
         tests_prompt = build_r3_tests_prompt(
-            sample_id=sample.sample_id,
             description=sample.question,
             instance=base_instance,
             num_tests=max(1, int(cfg.reward.robustness_cases)),
@@ -530,7 +526,6 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
             sample_id=sample.sample_id,
             description=sample.question,
             instance=base_instance,
-            reference_answer=sample.answer,
             robustness_cases=max(1, int(cfg.reward.robustness_cases)),
             llm_base_text=llm_base_text,
             llm_tests_text=llm_tests_text,
