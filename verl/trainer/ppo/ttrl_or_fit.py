@@ -30,6 +30,13 @@ from verl.trainer.ttrl_or_runtime.reward.r3_batch_planner import (
 )
 from verl.trainer.ttrl_or_runtime.types import Generation, OptimizationTask, Stage, TrainingSample
 
+try:
+    from omegaconf import DictConfig, ListConfig, OmegaConf
+except Exception:  # pragma: no cover
+    DictConfig = None  # type: ignore[assignment]
+    ListConfig = None  # type: ignore[assignment]
+    OmegaConf = None  # type: ignore[assignment]
+
 
 def _safe_path_component(name: str) -> str:
     raw = str(name or "").strip()
@@ -59,6 +66,34 @@ def _verl_model_log_root(config: PipelineConfig) -> Path:
     return base / folder
 
 
+def _json_safe(value: Any) -> Any:
+    if OmegaConf is not None and DictConfig is not None and ListConfig is not None:
+        if isinstance(value, (DictConfig, ListConfig)):
+            return _json_safe(OmegaConf.to_container(value, resolve=True))
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return [_json_safe(v) for v in value.tolist()]
+    if isinstance(value, np.generic):
+        return value.item()
+    if torch.is_tensor(value):
+        tensor = value.detach().cpu()
+        if tensor.numel() == 1:
+            return tensor.item()
+        return tensor.tolist()
+    return value
+
+
+def _write_json_file(path: Path, payload: Any) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_json_safe(payload), ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
 def _write_run_config(config: PipelineConfig, model_root: Path) -> Path:
     model_root.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -76,8 +111,7 @@ def _write_run_config(config: PipelineConfig, model_root: Path) -> Path:
         },
     }
     out_path = model_root / "run_config.json"
-    out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return out_path
+    return _write_json_file(out_path, payload)
 
 
 def _sample_run_dir(log_dir: str | os.PathLike[str], sample_id: str) -> Path:
@@ -692,7 +726,7 @@ def _prepare_r3_for_samples(raw_samples: list, runner: TTRLORRunner, rank: int, 
                 "used_vllm_priority": True,
                 "vllm_mode": "colocate",
             }
-            (sample_dir / "r3_precompute.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            _write_json_file(sample_dir / "r3_precompute.json", payload)
 
 
 def run_ttrl_or_fit(trainer, logger) -> None:

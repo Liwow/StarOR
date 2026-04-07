@@ -9,12 +9,26 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from verl.trainer.ttrl_or_runtime.config import PipelineConfig
 from verl.trainer.ttrl_or_runtime.mcts import FourStageMCTS
 from verl.trainer.ttrl_or_runtime.model.backend import PolicyBackend
 from verl.trainer.ttrl_or_runtime.prompts import PromptBuilder, get_prompt_profile
 from verl.trainer.ttrl_or_runtime.reward import TTRLRewardCalculator
 from verl.trainer.ttrl_or_runtime.types import OptimizationTask, RunTrace, Stage, StageTrace, Trajectory
+
+try:
+    import torch
+except Exception:  # pragma: no cover
+    torch = None  # type: ignore[assignment]
+
+try:
+    from omegaconf import DictConfig, ListConfig, OmegaConf
+except Exception:  # pragma: no cover
+    DictConfig = None  # type: ignore[assignment]
+    ListConfig = None  # type: ignore[assignment]
+    OmegaConf = None  # type: ignore[assignment]
 
 
 @dataclass(slots=True)
@@ -34,6 +48,34 @@ def _safe_path_component(name: str) -> str:
     safe = re.sub(r'[\\/:*?"<>|]+', "_", raw)
     safe = safe.strip(" .")
     return safe or "task"
+
+
+def _json_safe(value: Any) -> Any:
+    if OmegaConf is not None and DictConfig is not None and ListConfig is not None:
+        if isinstance(value, (DictConfig, ListConfig)):
+            return _json_safe(OmegaConf.to_container(value, resolve=True))
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return [_json_safe(v) for v in value.tolist()]
+    if isinstance(value, np.generic):
+        return value.item()
+    if torch is not None and torch.is_tensor(value):
+        tensor = value.detach().cpu()
+        if tensor.numel() == 1:
+            return tensor.item()
+        return tensor.tolist()
+    return value
+
+
+def _write_json_file(path: Path, payload: Any) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_json_safe(payload), ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
 
 
 class TTRLORRunner:
@@ -303,13 +345,13 @@ class TTRLORRunner:
             "best_trajectory": trace.best_trajectory,
             "runtime": runtime_summary,
         }
-        summary_path.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_file(summary_path, summary_payload)
 
         stage_events_payload = [asdict(stage_trace) for stage_trace in trace.stages]
-        stages_path.write_text(json.dumps(stage_events_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_file(stages_path, stage_events_payload)
         stages_md_path.write_text(self._format_stage_events_markdown(stage_events_payload), encoding="utf-8")
 
-        iter_logs_path.write_text(json.dumps(iteration_logs, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_file(iter_logs_path, iteration_logs)
         iter_logs_md_path.write_text(
             "".join(self._format_iteration_markdown(item) for item in iteration_logs),
             encoding="utf-8",
@@ -324,8 +366,8 @@ class TTRLORRunner:
             }
             for traj in trajectories
         ]
-        trajectories_path.write_text(json.dumps(traj_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        mcts_stats_path.write_text(json.dumps(mcts_stats, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_file(trajectories_path, traj_payload)
+        _write_json_file(mcts_stats_path, mcts_stats)
 
         if best is not None:
             best_code_path.write_text(best.code, encoding="utf-8")
@@ -337,8 +379,8 @@ class TTRLORRunner:
             "obj_answer": self._best_obj_answer(best),
             "gold_answer": str(trace.task_context.get("gold_answer", "")),
         }
-        result_path.write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        runtime_path.write_text(json.dumps(runtime_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_file(result_path, result_payload)
+        _write_json_file(runtime_path, runtime_summary)
         runtime_md_path.write_text(self._format_runtime_summary_markdown(runtime_summary), encoding="utf-8")
 
         selected_payload = {
@@ -358,7 +400,7 @@ class TTRLORRunner:
                 else {}
             ),
         }
-        selected_trace_path.write_text(json.dumps(selected_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_file(selected_trace_path, selected_payload)
 
         return {
             "run_dir": str(run_dir.resolve()),
