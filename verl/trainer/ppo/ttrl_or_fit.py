@@ -80,6 +80,14 @@ def _write_run_config(config: PipelineConfig, model_root: Path) -> Path:
     return out_path
 
 
+def _sample_run_dir(log_dir: str | os.PathLike[str], sample_id: str) -> Path:
+    return Path(log_dir) / _safe_path_component(sample_id)
+
+
+def _sample_result_path(log_dir: str | os.PathLike[str], sample_id: str) -> Path:
+    return _sample_run_dir(log_dir, sample_id) / "result.json"
+
+
 def _prompt_to_messages(prompt: Any) -> list[dict[str, str]]:
     if isinstance(prompt, list):
         out: list[dict[str, str]] = []
@@ -711,25 +719,42 @@ def run_ttrl_or_fit(trainer, logger) -> None:
 
     rank = int(os.environ.get("RANK", "0"))
     world_size = max(1, int(os.environ.get("WORLD_SIZE", "1")))
-    print(
-        f"[verl-or][dataset] rank={rank}/{world_size} num_samples={len(raw_samples)} "
-        f"dataset={Path(pipeline_config.dataset.jsonl_path).resolve() if str(pipeline_config.dataset.jsonl_path or '').strip() else 'n/a'} "
-        f"log_root={dataset_log_dir.resolve()}"
-    )
-
-    _prepare_r3_for_samples(raw_samples, runner, rank, world_size)
-
-    max_iterations = int(max(1, pipeline_config.mcts.max_iterations))
-    total_budget = max(1, len(raw_samples) * max_iterations)
-    if trainer.global_steps < 0:
-        trainer.global_steps = 0
-
-    progress_bar = tqdm(total=total_budget, initial=min(total_budget, max(0, trainer.global_steps)), desc="TTRL-OR Progress")
     ordered_samples = list(raw_samples)
     if bool(trainer.config.data.shuffle):
         seed = trainer.config.data.get("seed")
         rng = np.random.default_rng(seed if seed is not None else 0)
         rng.shuffle(ordered_samples)
+
+    skipped_completed = 0
+    if bool(pipeline_config.dataset.resume_skip_completed):
+        pending_samples = []
+        for sample in ordered_samples:
+            result_path = _sample_result_path(pipeline_config.log_dir, str(sample.sample_id))
+            if result_path.exists():
+                skipped_completed += 1
+                continue
+            pending_samples.append(sample)
+        ordered_samples = pending_samples
+
+    print(
+        f"[verl-or][dataset] rank={rank}/{world_size} total_samples={len(raw_samples)} "
+        f"pending_samples={len(ordered_samples)} skipped_completed={skipped_completed} "
+        f"dataset={Path(pipeline_config.dataset.jsonl_path).resolve() if str(pipeline_config.dataset.jsonl_path or '').strip() else 'n/a'} "
+        f"log_root={dataset_log_dir.resolve()}"
+    )
+
+    if not ordered_samples:
+        print("[verl-or][dataset] no pending samples found; all samples already have result.json, exiting.")
+        return
+
+    _prepare_r3_for_samples(ordered_samples, runner, rank, world_size)
+
+    max_iterations = int(max(1, pipeline_config.mcts.max_iterations))
+    total_budget = max(1, len(ordered_samples) * max_iterations)
+    if trainer.global_steps < 0:
+        trainer.global_steps = 0
+
+    progress_bar = tqdm(total=total_budget, initial=min(total_budget, max(0, trainer.global_steps)), desc="TTRL-OR Progress")
 
     for sample_idx, sample in enumerate(ordered_samples):
         if trainer.global_steps >= total_budget:

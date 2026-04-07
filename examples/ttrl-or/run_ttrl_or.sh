@@ -23,6 +23,7 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.reward.robustness_cases=3 \
     algorithm.ttrl_or.reward.cluster_scope=local \
     algorithm.ttrl_or.reward.structure_gate_min=0.2 \
+    algorithm.ttrl_or.dataset.resume_skip_completed=True \
     algorithm.ttrl_or.backend.reset_lora_on_begin_episode=True \
     data.train_files=$DATA_PATH \
     data.val_files=$DATA_PATH \
