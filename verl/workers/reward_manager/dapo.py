@@ -89,7 +89,10 @@ class DAPORewardManager(AbstractRewardManager):
             if response_str.endswith(eos_token):
                 response_str = response_str[: -len(eos_token)]
 
-            ground_truth = data_item.non_tensor_batch["reward_model"]["ground_truth"]
+            reward_model = data_item.non_tensor_batch.get("reward_model", {})
+            if not isinstance(reward_model, dict):
+                reward_model = {}
+            ground_truth = reward_model.get("ground_truth", None)
 
             data_source = data_item.non_tensor_batch[self.reward_fn_key]
 

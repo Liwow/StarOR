@@ -126,7 +126,12 @@ class PrimeRewardManager(AbstractRewardManager):
 
         response_ids = data.batch["responses"]
         sequences_str = self.tokenizer.batch_decode(response_ids, skip_special_tokens=True)
-        ground_truth = [data_item.non_tensor_batch["reward_model"]["ground_truth"] for data_item in data]
+        ground_truth = []
+        for data_item in data:
+            reward_model = data_item.non_tensor_batch.get("reward_model", {})
+            if not isinstance(reward_model, dict):
+                reward_model = {}
+            ground_truth.append(reward_model.get("ground_truth", None))
         data_sources = data.non_tensor_batch[self.reward_fn_key]
         extra_info = data.non_tensor_batch.get("extra_info", None)
 

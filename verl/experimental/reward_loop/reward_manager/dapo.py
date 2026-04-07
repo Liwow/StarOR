@@ -58,7 +58,10 @@ class DAPORewardManager(RewardManagerBase):
         valid_response_ids = response_ids[:valid_response_length]
 
         data_source = data_item.non_tensor_batch["data_source"]
-        ground_truth = data_item.non_tensor_batch["reward_model"]["ground_truth"]
+        reward_model = data_item.non_tensor_batch.get("reward_model", {})
+        if not isinstance(reward_model, dict):
+            reward_model = {}
+        ground_truth = reward_model.get("ground_truth", None)
         extra_info = data_item.non_tensor_batch.get("extra_info", {})
 
         response_str = await self.loop.run_in_executor(

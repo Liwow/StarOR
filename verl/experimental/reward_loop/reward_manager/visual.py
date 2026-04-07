@@ -36,7 +36,10 @@ class VisualRewardManager(RewardManagerBase):
         data_item = data[0]
         response_visual = data_item.batch["responses"]
         data_source = data_item.non_tensor_batch["data_source"]
-        ground_truth = data_item.non_tensor_batch["reward_model"]["ground_truth"]
+        reward_model = data_item.non_tensor_batch.get("reward_model", {})
+        if not isinstance(reward_model, dict):
+            reward_model = {}
+        ground_truth = reward_model.get("ground_truth", None)
         extra_info = data_item.non_tensor_batch.get("extra_info", {})
         tool_extra_fields = data_item.non_tensor_batch.get("tool_extra_fields", None)
         if tool_extra_fields is not None:

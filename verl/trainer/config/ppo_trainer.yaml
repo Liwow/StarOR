@@ -134,7 +134,8 @@ algorithm:
       enable_prior: True
 
       # Stop once a rollout achieves reward >= 1.0.
-      stop_on_reward_one: True
+      # Keep this aligned with verl/trainer/ttrl_or_runtime/config.py default.
+      stop_on_reward_one: False
 
       # Enable solverllm-style split completion flow.
       solverllm_compare_mode: False
@@ -142,17 +143,47 @@ algorithm:
     # Reward settings migrated from TTRL-OR.
     reward:
 
+      # Code execution timeout in seconds.
+      code_timeout_sec: 30
+
+      # Number of robustness cases per sample.
+      robustness_cases: 3
+
+      # Relative tolerance used by recent objective consensus checks.
+      global_consensus_rel_tol: 0.005
+
+      # Code executor mode: sandbox or subprocess.
+      code_executor_mode: sandbox
+
+      # Reward cluster scope: local or global.
+      cluster_scope: local
+
+      # R1 semantic cluster smoothing parameter.
+      r1_alpha: 0.6
+
+      # Minimum cluster denominator K for r1.
+      r1_min_clusters: 3
+
       # Whether to use R3 robustness reward.
       enable_r3_reward: True
 
       # Whether to use R4 structural reward.
       enable_r4_reward: True
 
-      # Number of robustness cases per sample.
-      robustness_cases: 3
+      # R4 structural cluster smoothing parameter.
+      r4_alpha: 0.4
 
-      # Reward cluster scope: local or global.
-      cluster_scope: local
+      # Normalization K used by r4.
+      r4_k: 3
+
+      # Historical decay used by r4 global bookkeeping.
+      r4_decay: 0.95
+
+      # Weight of r3 in final reward.
+      r3_weight: 0.1
+
+      # Weight of r4 in final reward.
+      r4_weight: 0.2
 
       # Minimum multiplicative gate when LP structure is incomplete.
       structure_gate_min: 0.2
@@ -160,11 +191,29 @@ algorithm:
     # Dataset / preprocessing settings migrated from TTRL-OR.
     dataset:
 
+      # Optional raw jsonl path override for standalone runtime usage.
+      jsonl_path: ""
+
+      # Skip samples whose result.json already exists under the resolved log directory.
+      resume_skip_completed: True
+
+      # Optional dataset slicing controls for raw jsonl loading.
+      start_index: 0
+      limit: 0
+
       # Max numeric features extracted from the raw OR sample.
       max_numeric_features: 256
 
       # Top-k key parameters tracked by the mapping extractor.
       key_param_top_k: 16
+
+      # Mapping extractor mode for perturbation construction.
+      mapping_extractor: rule
+
+      # Optional mapping-LLM controls when an LLM extractor is used.
+      mapping_llm_max_new_tokens: 1024
+      mapping_llm_temperature: 0.0
+      mapping_llm_top_p: 1.0
 
       # Auxiliary planner generation config for R3.
       r3_plan_max_new_tokens: 1536
@@ -174,8 +223,23 @@ algorithm:
     # Node-step GRPO generation config used by the migrated backend.
     grpo:
 
-      # Max completion length per rollout.
-      max_completion_length: 4096
+      # Optimizer learning rate mirrored into the runtime config.
+      learning_rate: 5.0e-5
+
+      # Alias of num_generations in GRPO literature.
+      group_size: 3
+
+      # KL penalty coefficient beta in the runtime config.
+      kl_coef: 0.001
+
+      # Whether to periodically refresh the KL reference model.
+      sync_ref_model: false
+
+      # Frequency for refreshing the KL reference model.
+      ref_model_sync_steps: 5
+
+      # Mixup factor when syncing the reference model.
+      ref_model_mixup_alpha: 0.6
 
       # Number of train epochs inside one node-step update.
       train_epochs: 1
@@ -183,11 +247,108 @@ algorithm:
       # PPO/GRPO clip epsilon.
       clip_epsilon: 0.2
 
+      # Optional high clip epsilon.
+      clip_epsilon_high: null
+
+      # Runtime per-device train batch size.
+      per_device_train_batch_size: 1
+
+      # Gradient accumulation steps.
+      gradient_accumulation_steps: 1
+
+      # Number of generations per prompt.
+      num_generations: 3
+
+      # Optional explicit generation batch size override.
+      generation_batch_size: 0
+
+      # Max prompt length per rollout.
+      max_prompt_length: 10240
+
+      # Max completion length per rollout.
+      max_completion_length: 4096
+
+      # Whether to use vLLM in standalone runtime mode.
+      use_vllm: false
+
+      # vLLM mode in standalone runtime usage.
+      vllm_mode: server
+
+      # vLLM memory utilization target.
+      vllm_gpu_memory_utilization: 0.85
+
+      # vLLM tensor parallel size.
+      vllm_tensor_parallel_size: 1
+
+      # vLLM max model length.
+      vllm_max_model_len: 16384
+
+      # vLLM max batched tokens.
+      vllm_max_num_batched_tokens: 0
+
+      # vLLM sleep mode flag.
+      vllm_enable_sleep_mode: false
+
+      # Whether to reset prefix cache after update.
+      vllm_reset_prefix_cache_after_update: true
+
+      # Whether to close communicator after update.
+      vllm_close_communicator_after_update: true
+
+      # Whether to disable vLLM fallback after fatal error.
+      vllm_fallback_disable_on_error: true
+
     # Misc backend knobs for prompt/model interfacing.
     backend:
 
+      # Runtime backend label.
+      backend: trl
+
+      # Optional standalone runtime model path override.
+      model_name_or_path: ""
+
+      # Random seed for standalone runtime usage.
+      seed: 7
+
+      # Fallback generation temperature used outside direct rollout calls.
+      temperature: 0.8
+
+      # Fallback top-p used outside direct rollout calls.
+      top_p: 0.95
+
       # Fallback max_new_tokens used outside direct rollout calls.
       max_new_tokens: 4096
+
+      # Torch dtype for standalone runtime usage.
+      torch_dtype: auto
+
+      # Whether to trust remote code for standalone runtime usage.
+      trust_remote_code: false
+
+      # LoRA rank mirrored into the standalone runtime config.
+      lora_r: 8
+
+      # LoRA alpha mirrored into the standalone runtime config.
+      lora_alpha: 16
+
+      # LoRA dropout mirrored into the standalone runtime config.
+      lora_dropout: 0.05
+
+      # LoRA bias mode mirrored into the standalone runtime config.
+      lora_bias: none
+
+      # LoRA target modules mirrored into the standalone runtime config.
+      lora_target_modules:
+        - q_proj
+        - k_proj
+        - v_proj
+        - o_proj
+        - gate_proj
+        - up_proj
+        - down_proj
+
+      # Whether to reuse the base model across tasks in standalone runtime usage.
+      reuse_base_model_across_tasks: true
 
       # Reset actor LoRA at each sample boundary so one sample maps to one episode-local adapter state.
       reset_lora_on_begin_episode: true
