@@ -1,13 +1,13 @@
 ﻿set -x
 export CUDA_VISIBLE_DEVICES=1
-export RAY_DEBUG_POST_MORTEM=1
+# export RAY_DEBUG_POST_MORTEM=1
 DATA_ROOT="${HOME}/code/TTRL-OR/data"
 
 # model_name='Qwen/Qwen2.5-7B-Instruct'
 model_name='Qwen/Qwen3-4B-Instruct-2507'
 MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
-dataset="OptMATH_Bench_166.jsonl"
-# dataset="IndustryOR_fixedV2.jsonl"
+# dataset="OptMATH_Bench_166.jsonl"
+dataset="IndustryOR_fixedV2.jsonl"
 
 DATA_PATH="$DATA_ROOT/$dataset"
 
@@ -19,7 +19,7 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.mcts.c_puct=1.414 \
     algorithm.ttrl_or.mcts.enable_prior=True \
     algorithm.ttrl_or.mcts.solverllm_compare_mode=False \
-    algorithm.ttrl_or.reward.enable_r3_reward=False \
+    algorithm.ttrl_or.reward.enable_r3_reward=True \
     algorithm.ttrl_or.reward.enable_r4_reward=True \
     algorithm.ttrl_or.reward.robustness_cases=3 \
     algorithm.ttrl_or.reward.cluster_scope=local \
@@ -57,7 +57,7 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
     actor_rollout_ref.rollout.free_cache_engine=False \
     actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.rollout.temperature=1.0 \
