@@ -191,6 +191,8 @@ class TTRLRewardCalculator(RewardCalculator):
                 r3=r3,
                 r4=r4,
                 reward_gate=reward_gate,
+                r1_weight=1.0,
+                r2_weight=0.0,
                 r3_weight=self.config.r3_weight,
                 r4_weight=self.config.r4_weight,
             )
@@ -200,6 +202,20 @@ class TTRLRewardCalculator(RewardCalculator):
                 "r1_debug": r1_debug,
                 "r4_debug": r4_debug,
                 "reward_gate": reward_gate,
+                "total_reward_formula": "total_r = ((w1*r1) + (w2*r2) + (w3*(r3*r2)) + (w4*r4)) * reward_gate; total=max(0,total_r)",
+                "total_reward_weights": {
+                    "w1_r1": 1.0,
+                    "w2_r2": 0.0,
+                    "w3_r3_gated_by_r2": float(self.config.r3_weight),
+                    "w4_r4": float(self.config.r4_weight),
+                },
+                "total_reward_terms": {
+                    "r1": float(r1),
+                    "r2": float(r2),
+                    "r3": float(r3),
+                    "r3_gated_by_r2": float(r3 * r2),
+                    "r4": float(r4),
+                },
                 "structure_gate": structure_gate_debug,
                 "r3": r3_meta,
                 "iteration": current_iter,
@@ -332,12 +348,23 @@ class TTRLRewardCalculator(RewardCalculator):
         r3: float,
         r4: float,
         reward_gate: float = 1.0,
+        r1_weight: float = 1.0,
+        r2_weight: float = 0.0,
         r3_weight: float = 0.3,
         r4_weight: float = 0.2,
     ) -> float:
-        total = r1 + r3_weight * r3 * r2 + r4_weight * r4
-        total *= float(reward_gate)
-        return max(0.0, total)
+        # Single point to edit total reward composition:
+        # total_r_raw = (w1*r1) + (w2*r2) + (w3*(r3*r2)) + (w4*r4)
+        # total_r = max(0, total_r_raw * reward_gate)
+        r3_gated = float(r3) * float(r2)
+        total_r_raw = (
+            float(r1_weight) * float(r1)
+            + float(r2_weight) * float(r2)
+            + float(r3_weight) * r3_gated
+            + float(r4_weight) * float(r4)
+        )
+        total_r = total_r_raw * float(reward_gate)
+        return max(0.0, total_r)
 
     def _use_local_cluster_scope(self) -> bool:
         return str(self.config.cluster_scope or "global").strip().lower() == "local"
