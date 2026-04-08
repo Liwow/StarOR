@@ -7,215 +7,55 @@ from typing import Any
 from verl.trainer.ttrl_or_runtime.reward.perturbation import build_perturbation_map, generate_perturbed_instances_from_map
 
 
-R3_BASE_SCALE_FEWSHOT = """Example A (inline numeric description, transportation minimization)
+R3_BASE_SCALE_FEWSHOT = """Example A (transportation minimization)
 Task sketch:
 - Boat capacity 10, canoe capacity 8
 - Boat time 20, canoe time 40
-- At most 12 boat trips
-- At least 60% of trips by canoe
-- At least 300 ducks must be transported
+- At most 12 boat trips, at least 60% canoe, demand 300
 Expected style:
 <analysis>
-Objective is total transport time, so the objective must be positive and should never be 0.
-Because the demand is 300 and each trip carries roughly 8 to 10 ducks, the plan will likely need dozens of trips and each trip costs tens of minutes.
-That implies a positive objective in the rough order of 10^3 minutes, not single digits and not 10^6.
-A practical filter should stay tolerant but still exclude obviously implausible values such as 0 or tiny magnitudes.
+Objective is total transport time, so it should stay positive and far from 0. Demand 300 with per-trip capacity around 8 to 10 implies dozens of trips, each costing tens of minutes, so a rough 10^3 scale is reasonable.
 </analysis>
-<base_scale>
-{
-  "kind": "interval",
-  "lower": 600,
-  "upper": 3000,
-  "sign_relation": "positive",
-  "magnitude": {"min_order": 2, "max_order": 4, "use_abs": true},
-  "reject_exact": [0]
-}
-</base_scale>
+<base_scale>{"kind":"interval","lower":600,"upper":3000,"sign_relation":"positive","magnitude":{"min_order":2,"max_order":4,"use_abs":true},"reject_exact":[0]}</base_scale>
 
-Example B (table-driven production planning)
+Example B (production planning)
 Task sketch:
-- Weekly demand table for two products across 8 weeks
-- Regular labor, overtime, training, inventory, and delay penalties
+- Multi-week demand with labor, overtime, inventory, and delay penalties
 Expected style:
 <analysis>
-Total cost must be positive. Labor and penalty terms accumulate across many periods, so the objective should usually be in the order of 10^5 to 10^6 rather than near zero.
-The lower bound should still leave room for unusually efficient schedules, while the upper bound should tolerate stressed but still realistic plans.
-A good filter therefore combines a positive sign, an interval, and an order-of-magnitude band.
+Total cost should stay positive. Repeated labor and penalty terms across many periods usually put the objective in the 10^5 to 10^6 family, so the filter should be tolerant but still reject near-zero values.
 </analysis>
-<base_scale>
-{
-  "kind": "interval",
-  "lower": 100000,
-  "upper": 600000,
-  "sign_relation": "positive",
-  "magnitude": {"min_order": 5, "max_order": 6, "use_abs": true},
-  "reject_exact": [0]
-}
-</base_scale>
-
-Example C (facility opening plus shipment cost minimization)
-Task sketch:
-- Open some depots by paying fixed costs
-- Ship goods from chosen depots to customers with distance-based variable costs
-- Demand must be fully covered and depot capacities are finite
-Expected style:
-<analysis>
-The objective is fixed opening cost plus transportation cost, so it must remain positive.
-Even if only a few depots are opened, one still pays several fixed charges and many shipment terms, so the scale should usually be well above 10^3.
-At the same time, this is not a huge national-scale model, so a range around 10^4 to low 10^5 is more plausible than 10^8.
-</analysis>
-<base_scale>
-{
-  "kind": "interval",
-  "lower": 8000,
-  "upper": 150000,
-  "sign_relation": "positive",
-  "magnitude": {"min_order": 3, "max_order": 6, "use_abs": true},
-  "reject_exact": [0]
-}
-</base_scale>
+<base_scale>{"kind":"interval","lower":100000,"upper":600000,"sign_relation":"positive","magnitude":{"min_order":5,"max_order":6,"use_abs":true},"reject_exact":[0]}</base_scale>
 """
 
 
-R3_TESTS_FEWSHOT = """Example A (inline numeric description, transportation minimization)
+R3_TESTS_FEWSHOT = """Example A (transportation minimization)
 Task sketch:
 - Boat capacity 10, canoe capacity 8
 - Boat time 20, canoe time 40
-- At most 12 boat trips
-- At least 60% of trips by canoe
-- At least 300 ducks must be transported
+- At most 12 boat trips, at least 60% canoe, demand 300
 Feature catalog snippet:
 - F03: boat capacity = 10
 - F05: demand = 300
 - F07: minimum canoe share = 0.60
 Expected style:
 <analysis>
-Useful stress cases should modify demand, capacity, or policy ratios in realistic directions.
-When changes are logically coupled, it is better to modify multiple related quantities together than to perturb one isolated number.
-Include a mix of harder and easier scenarios, and keep every case inside the same transportation semantics.
-Each case must still provide obj_scale from range, sign, and magnitude.
+Use realistic harder and easier cases. Prefer coordinated multi-patch edits when one scenario naturally changes several related quantities.
 </analysis>
-<tests>
-[
-  {
-    "case_id": "demand_up_capacity_tighten",
-    "patches": [
-      {"fid": "F05", "new_value": 360},
-      {"fid": "F03", "new_value": 9}
-    ],
-    "obj_scale": {
-      "kind": "interval",
-      "lower": 800,
-      "upper": 4200,
-      "sign_relation": "positive",
-      "magnitude": {"min_order": 2, "max_order": 4, "use_abs": true},
-      "reject_exact": [0]
-    },
-    "rationale": "Higher demand together with slightly tighter boat capacity creates one coherent harder transportation case while keeping the same objective family."
-  },
-  {
-    "case_id": "storm_rule_stress",
-    "patches": [
-      {"fid": "F05", "new_value": 330},
-      {"fid": "F03", "new_value": 9},
-      {"fid": "F07", "new_value": 0.7}
-    ],
-    "obj_scale": {
-      "kind": "interval",
-      "lower": 900,
-      "upper": 5200,
-      "sign_relation": "positive",
-      "magnitude": {"min_order": 2, "max_order": 4, "use_abs": true},
-      "reject_exact": [0]
-    },
-    "rationale": "A weather-related stress case can simultaneously increase demand pressure, reduce fast-boat effectiveness, and require a higher canoe share, so the total time should remain positive but shift upward."
-  },
-  {
-    "case_id": "demand_down_capacity_relax",
-    "patches": [
-      {"fid": "F05", "new_value": 270},
-      {"fid": "F03", "new_value": 12}
-    ],
-    "obj_scale": {
-      "kind": "interval",
-      "lower": 450,
-      "upper": 2400,
-      "sign_relation": "positive",
-      "magnitude": {"min_order": 2, "max_order": 4, "use_abs": true},
-      "reject_exact": [0]
-    },
-    "rationale": "Lower demand together with relaxed capacity forms one coherent easier case; the objective should stay positive and within the same rough magnitude band."
-  }
-]
-</tests>
+<tests>[{"case_id":"demand_up_capacity_tighten","patches":[{"fid":"F05","new_value":360},{"fid":"F03","new_value":9}],"obj_scale":{"kind":"interval","lower":800,"upper":4200,"sign_relation":"positive","magnitude":{"min_order":2,"max_order":4,"use_abs":true},"reject_exact":[0]},"rationale":"Higher demand with tighter fast-boat capacity is one coherent harder case."},{"case_id":"storm_rule_stress","patches":[{"fid":"F05","new_value":330},{"fid":"F03","new_value":9},{"fid":"F07","new_value":0.7}],"obj_scale":{"kind":"interval","lower":900,"upper":5200,"sign_relation":"positive","magnitude":{"min_order":2,"max_order":4,"use_abs":true},"reject_exact":[0]},"rationale":"A weather stress case can jointly raise demand pressure, reduce effective capacity, and tighten the canoe-share rule."}]</tests>
 
-Example B (table-driven production planning)
+Example B (production planning)
 Task sketch:
-- Weekly demand table for two products across 8 weeks
-- Training, overtime, wages, inventory, and delay penalties
+- Multi-week demand with training, overtime, wages, inventory, and delay penalties
 Feature catalog snippet:
 - F12: one late-week demand entry
 - F18: overtime wage
 - F21: regular-time weekly capacity
 Expected style:
 <analysis>
-Good robustness tests should perturb demand-like, cost-like, or capacity-like quantities while preserving realism.
-Coordinated multi-parameter changes are encouraged when they reflect one plausible business condition such as a rush week or a temporary easing of pressure.
-The resulting obj_scale should usually remain positive and in the same order family unless the perturbation is intentionally extreme.
+Perturb demand-like, cost-like, and capacity-like numbers in plausible business combinations. Keep obj_scale positive and in the same broad order family unless the case is intentionally extreme.
 </analysis>
-<tests>
-[
-  {
-    "case_id": "late_demand_and_overtime_up",
-    "patches": [
-      {"fid": "F12", "op": "scale", "value": 1.1},
-      {"fid": "F18", "op": "scale", "value": 1.08}
-    ],
-    "obj_scale": {
-      "kind": "interval",
-      "lower": 120000,
-      "upper": 760000,
-      "sign_relation": "positive",
-      "magnitude": {"min_order": 5, "max_order": 6, "use_abs": true},
-      "reject_exact": [0]
-    },
-    "rationale": "Increasing late demand together with overtime wage models a coherent stressed production environment and should keep cost positive within the same order family."
-  },
-  {
-    "case_id": "rush_week_tighter_capacity",
-    "patches": [
-      {"fid": "F12", "op": "scale", "value": 1.12},
-      {"fid": "F18", "op": "scale", "value": 1.05},
-      {"fid": "F21", "op": "scale", "value": 0.92}
-    ],
-    "obj_scale": {
-      "kind": "interval",
-      "lower": 150000,
-      "upper": 900000,
-      "sign_relation": "positive",
-      "magnitude": {"min_order": 5, "max_order": 6, "use_abs": true},
-      "reject_exact": [0]
-    },
-    "rationale": "A rush-week scenario can plausibly combine higher late demand, slightly costlier overtime, and tighter regular capacity, which should raise pressure while preserving the same cost structure."
-  },
-  {
-    "case_id": "demand_relief_and_capacity_ease",
-    "patches": [
-      {"fid": "F12", "op": "scale", "value": 0.94},
-      {"fid": "F21", "op": "scale", "value": 1.06}
-    ],
-    "obj_scale": {
-      "kind": "interval",
-      "lower": 90000,
-      "upper": 520000,
-      "sign_relation": "positive",
-      "magnitude": {"min_order": 5, "max_order": 6, "use_abs": true},
-      "reject_exact": [0]
-    },
-    "rationale": "Milder late demand together with slightly easier regular capacity gives a coherent relief scenario whose cost should remain positive but drift downward within the same magnitude family."
-  }
-]
-</tests>
+<tests>[{"case_id":"rush_week_tighter_capacity","patches":[{"fid":"F12","op":"scale","value":1.12},{"fid":"F18","op":"scale","value":1.05},{"fid":"F21","op":"scale","value":0.92}],"obj_scale":{"kind":"interval","lower":150000,"upper":900000,"sign_relation":"positive","magnitude":{"min_order":5,"max_order":6,"use_abs":true},"reject_exact":[0]},"rationale":"A rush-week scenario can combine higher late demand, costlier overtime, and tighter regular capacity."},{"case_id":"demand_relief_and_capacity_ease","patches":[{"fid":"F12","op":"scale","value":0.94},{"fid":"F21","op":"scale","value":1.06}],"obj_scale":{"kind":"interval","lower":90000,"upper":520000,"sign_relation":"positive","magnitude":{"min_order":5,"max_order":6,"use_abs":true},"reject_exact":[0]},"rationale":"Lower late demand with easier capacity is one coherent relief case."}]</tests>
 """
 
 @dataclass(slots=True)
@@ -241,33 +81,22 @@ def build_r3_base_scale_prompt(
     instance_view = _compact_instance(instance)
     skeleton = _base_scale_skeleton()
     return (
-        "You are an OR objective-scale analyst.\n"
-        "Analyze the task carefully and produce filtering information only for the ORIGINAL sample.\n"
-        "Output exactly two tagged blocks and nothing else:\n"
-        "<analysis>...text...</analysis>\n"
-        "<base_scale>{...JSON...}</base_scale>\n\n"
-        "The scale must be useful for runtime filter(obj, scale).\n"
-        "Describe the objective from THREE aspects whenever possible:\n"
-        "1. numeric range bounds\n"
-        "2. relation to zero\n"
-        "3. order-of-magnitude range\n\n"
-        "Required JSON schema hints:\n"
-        "- kind: interval | point | union\n"
-        "- sign_relation: positive | nonnegative | negative | nonpositive | nonzero | any\n"
-        "- magnitude: {min_order:int|null, max_order:int|null, use_abs:true}\n"
-        "- reject_exact: list of obviously impossible exact values such as 0 when appropriate\n\n"
-        "Your analysis should explain WHY the scale is reasonable.\n"
-        "Keep the scale informative: not too loose, but broad enough to tolerate modeling variation.\n\n"
-        "Few-shot style reference:\n"
+        "You are an OR objective-scale analyst. Return exactly two tagged blocks and nothing else:\n"
+        "<analysis>...</analysis>\n<base_scale>{...JSON...}</base_scale>\n\n"
+        "Goal: produce a runtime filter(obj, scale) for the ORIGINAL sample.\n"
+        "base_scale should capture: bounds, sign_relation, magnitude, and obvious exact rejects.\n"
+        "Schema keys: kind(interval|point|union), sign_relation(positive|nonnegative|negative|nonpositive|nonzero|any), magnitude({min_order,max_order,use_abs:true}), reject_exact(list).\n"
+        "Keep the scale informative: broad enough for modeling variation, narrow enough to reject absurd objectives.\n\n"
+        "Few-shot reference:\n"
         f"{R3_BASE_SCALE_FEWSHOT}\n\n"
         "Task description:\n"
         f"{description}\n\n"
-        "Parsed numeric data snapshot (for context only):\n"
-        f"{json.dumps(instance_view, ensure_ascii=False, indent=2)}\n\n"
-        "Feature catalog (for understanding only; no patches are needed in this prompt):\n"
-        f"{json.dumps(feature_catalog, ensure_ascii=False, indent=2)}\n\n"
-        "Rule-built output skeleton reference:\n"
-        f"{json.dumps(skeleton, ensure_ascii=False, indent=2)}\n"
+        "Numeric snapshot:\n"
+        f"{_compact_json_text(instance_view)}\n\n"
+        "Feature catalog (context only, no patches needed here):\n"
+        f"{_compact_json_text(feature_catalog)}\n\n"
+        "Output skeleton:\n"
+        f"{_compact_json_text(skeleton)}\n"
     )
 
 
@@ -281,33 +110,22 @@ def build_r3_tests_prompt(
     instance_view = _compact_instance(instance)
     skeleton = _tests_skeleton(num_tests=num_tests, feature_catalog=feature_catalog)
     return (
-        "You are an OR robustness test designer.\n"
-        "Analyze the task carefully and design realistic TEST CASES only.\n"
-        "Output exactly two tagged blocks and nothing else:\n"
-        "<analysis>...text...</analysis>\n"
-        "<tests>[...JSON list...]</tests>\n\n"
-        "Each test must contain: case_id, patches, obj_scale, rationale.\n"
-        "Use feature ids only in patches. Do NOT invent internal keys.\n"
-        "Each case may contain 1 to 3 patches. Prefer coordinated multi-patch changes when they describe one plausible scenario.\n"
-        "Do not make random unrelated edits in the same case; grouped edits must have a clear shared logic.\n"
-        "If the feature catalog allows it, include both harder and easier cases, and include at least one coordinated 2-patch or 3-patch scenario.\n"
-        "Keep units and semantics consistent: demand-like terms should stay demand-like, capacity-like terms should stay capacity-like, and ratios should remain plausible.\n"
-        "For every obj_scale, describe the objective from THREE aspects whenever possible:\n"
-        "1. numeric range bounds\n"
-        "2. relation to zero\n"
-        "3. order-of-magnitude range\n\n"
-        "Your analysis should explain why these tests are realistic and useful.\n"
-        "Prefer small, semantically meaningful perturbations.\n\n"
-        "Few-shot style reference:\n"
+        "You are an OR robustness test designer. Return exactly two tagged blocks and nothing else:\n"
+        "<analysis>...</analysis>\n<tests>[...JSON list...]</tests>\n\n"
+        "Each test must include case_id, patches, obj_scale, rationale. Use feature ids only.\n"
+        "Each case may use 1 to 3 patches; prefer coordinated edits when they describe one plausible scenario.\n"
+        "Include a mix of harder and easier cases when possible, keep units/semantics consistent, and make obj_scale describe bounds, sign_relation, and magnitude.\n"
+        "Prefer small but meaningful perturbations.\n\n"
+        "Few-shot reference:\n"
         f"{R3_TESTS_FEWSHOT}\n\n"
         "Task description:\n"
         f"{description}\n\n"
-        "Parsed numeric data snapshot (for context only):\n"
-        f"{json.dumps(instance_view, ensure_ascii=False, indent=2)}\n\n"
-        "Feature catalog (use fid only when proposing changes):\n"
-        f"{json.dumps(feature_catalog, ensure_ascii=False, indent=2)}\n\n"
-        "Rule-built output skeleton reference:\n"
-        f"{json.dumps(skeleton, ensure_ascii=False, indent=2)}\n"
+        "Numeric snapshot:\n"
+        f"{_compact_json_text(instance_view)}\n\n"
+        "Feature catalog (use fid only in patches):\n"
+        f"{_compact_json_text(feature_catalog)}\n\n"
+        "Output skeleton:\n"
+        f"{_compact_json_text(skeleton)}\n"
     )
 
 
@@ -580,7 +398,17 @@ def _feature_catalog_from_instance(instance: dict[str, Any]) -> list[dict[str, A
                 }
             )
     return catalog
-def _compact_feature_catalog(catalog: list[dict[str, Any]], max_items: int = 20) -> list[dict[str, Any]]:
+def _short_snippet(text: Any, max_len: int = 56) -> str:
+    raw = " ".join(str(text or "").split())
+    if len(raw) <= max_len:
+        return raw
+    return raw[: max(8, max_len - 3)].rstrip() + "..."
+
+
+def _compact_json_text(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+def _compact_feature_catalog(catalog: list[dict[str, Any]], max_items: int = 12) -> list[dict[str, Any]]:
     compact: list[dict[str, Any]] = []
     for row in catalog[: max(1, int(max_items))]:
         compact.append(
@@ -588,10 +416,11 @@ def _compact_feature_catalog(catalog: list[dict[str, Any]], max_items: int = 20)
                 "fid": row.get("fid"),
                 "value": row.get("value"),
                 "source": row.get("source"),
-                "snippet": row.get("snippet"),
+                "snippet": _short_snippet(row.get("snippet"), max_len=48),
             }
         )
     return compact
+
 def _feature_catalog_map(feature_catalog: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for item in feature_catalog:
@@ -903,7 +732,7 @@ def _expand_magnitude(magnitude: dict[str, Any], step: int = 1) -> dict[str, Any
         min_order, max_order = max_order, min_order
     return {"min_order": min_order, "max_order": max_order, "use_abs": use_abs}
 
-def _compact_instance(instance: dict[str, Any], max_items: int = 160) -> dict[str, Any]:
+def _compact_instance(instance: dict[str, Any], max_items: int = 96) -> dict[str, Any]:
     compact: dict[str, Any] = {}
     count = 0
     for k, v in instance.items():
@@ -912,12 +741,16 @@ def _compact_instance(instance: dict[str, Any], max_items: int = 160) -> dict[st
             continue
         if isinstance(v, bool):
             continue
-        if isinstance(v, (int, float, str)):
+        if isinstance(v, (int, float)):
             compact[key] = v
+            count += 1
+        elif isinstance(v, str):
+            compact[key] = _short_snippet(v, max_len=80)
             count += 1
         if count >= max_items:
             break
     return compact
+
 def _parse_json_object(text: str | None) -> Any:
     raw = str(text or "").strip()
     if not raw:
@@ -1150,4 +983,24 @@ def _preview(text: str | None, max_len: int = 320) -> str:
     if len(raw) <= max_len:
         return raw
     return raw[: max_len - 3] + "..."
+
+
+def _compose_raw_preview(
+    llm_base_text: str | None,
+    llm_tests_text: str | None,
+    llm_text: str | None,
+    *,
+    max_len: int = 1200,
+) -> str:
+    parts: list[str] = []
+    if str(llm_base_text or "").strip():
+        parts.append(f"[base_scale]\n{str(llm_base_text).strip()}")
+    if str(llm_tests_text or "").strip():
+        parts.append(f"[tests]\n{str(llm_tests_text).strip()}")
+    if str(llm_text or "").strip():
+        parts.append(f"[legacy]\n{str(llm_text).strip()}")
+    merged = "\n\n".join(parts).strip()
+    if len(merged) <= max_len:
+        return merged
+    return merged[: max_len - 3] + "..."
 
