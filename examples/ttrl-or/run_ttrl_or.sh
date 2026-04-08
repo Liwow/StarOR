@@ -33,7 +33,7 @@ python -m verl.trainer.main_ppo \
     data.ttrl_or_max_numeric_features=256 \
     data.ttrl_or_key_param_top_k=16 \
     data.train_batch_size=1 \
-    data.max_prompt_length=4096 \
+    data.max_prompt_length=5120 \
     data.max_response_length=4096 \
     data.filter_overlong_prompts=False \
     data.truncation='error' \
@@ -55,6 +55,7 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.rollout.prompt_length=5120 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
