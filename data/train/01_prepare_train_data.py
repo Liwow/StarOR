@@ -607,11 +607,12 @@ def build_parser() -> argparse.ArgumentParser:
     format_parser.add_argument("--limit", type=int, default=None)
     format_parser.add_argument("--resume", action="store_true", default=True)
     format_parser.set_defaults(func=process_format)
+    
 
     generate_parser = subparsers.add_parser("generate", help="Call an LLM to generate <Type> and <python> blocks.")
     generate_parser.add_argument("--input", default="data/train/train_data.jsonl")
     generate_parser.add_argument("--output", default="data/train/train_data.type_python.jsonl")
-    generate_parser.add_argument("--model", default="")
+    generate_parser.add_argument("--model", default="gemini-3.1-pro-preview")
     generate_parser.add_argument("--base-url", default=os.getenv('IDEALAB_BASE_URL'))
     generate_parser.add_argument("--api-key-env", default=os.getenv('IDEALAB_API_KEY'))
     generate_parser.add_argument("--base-url-env", default=os.getenv('IDEALAB_BASE_URL'))
