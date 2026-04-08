@@ -359,11 +359,11 @@ class TTRLRewardCalculator(RewardCalculator):
         r3: float,
         r4: float,
         reward_gate: float = 1.0,
-        r1_weight: float = 1.0,
-        r2_weight: float = 0.0,
+        r1_weight: float = 0.6,
+        r2_weight: float = 0.1,
         r1_weight_scale: float = 1.0,
-        r3_weight: float = 0.3,
-        r4_weight: float = 0.2,
+        r3_weight: float = 0.2,
+        r4_weight: float = 0.1,
     ) -> float:
         # Single point to edit total reward composition:
         # total_r_raw = (w1*r1*r1_weight_scale) + (w2*r2) + (w3*(r3*r2)) + (w4*r4)
