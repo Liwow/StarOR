@@ -27,21 +27,35 @@ class TTRLORDataset(Dataset):
         del tokenizer, processor
 
         if isinstance(data_files, (list, tuple)):
-            if not data_files:
+            data_file_list = [str(item) for item in data_files if str(item).strip()]
+            if not data_file_list:
                 raise ValueError("TTRLORDataset requires at least one data file.")
-            data_file = str(data_files[0])
         else:
-            data_file = str(data_files)
+            data_file_list = [str(data_files)] if str(data_files).strip() else []
+            if not data_file_list:
+                raise ValueError("TTRLORDataset requires at least one data file.")
 
         dataset_limit = int(max_samples) if int(max_samples) > 0 else None
-        self.raw_samples: list[RawTaskSample] = load_raw_task_dataset(
-            data_file,
-            start_index=0,
-            limit=dataset_limit,
-            max_numeric_features=int(config.get("ttrl_or_max_numeric_features", 256)),
-            key_param_top_k=int(config.get("ttrl_or_key_param_top_k", 16)),
-        )
-        self.data_file = data_file
+        remaining = dataset_limit
+        self.raw_samples: list[RawTaskSample] = []
+        for data_file in data_file_list:
+            per_file_limit = None if remaining is None else max(0, int(remaining))
+            if per_file_limit == 0:
+                break
+            samples = load_raw_task_dataset(
+                data_file,
+                start_index=0,
+                limit=per_file_limit,
+                max_numeric_features=int(config.get("ttrl_or_max_numeric_features", 256)),
+                key_param_top_k=int(config.get("ttrl_or_key_param_top_k", 16)),
+            )
+            self.raw_samples.extend(samples)
+            if remaining is not None:
+                remaining -= len(samples)
+                if remaining <= 0:
+                    break
+        self.data_files = data_file_list
+        self.data_file = data_file_list[0]
         self.config = config
 
     def __len__(self) -> int:

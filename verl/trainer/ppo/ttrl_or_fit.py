@@ -116,6 +116,30 @@ def _write_run_config(config: PipelineConfig, model_root: Path) -> Path:
     return _write_json_file(out_path, payload)
 
 
+def _normalize_dataset_paths(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if OmegaConf is not None and DictConfig is not None and ListConfig is not None and isinstance(value, ListConfig):
+        value = list(value)
+    if isinstance(value, (list, tuple)):
+        items = value
+    else:
+        raw = str(value or "").replace("\r", "\n")
+        for sep in [";", "|"]:
+            raw = raw.replace(sep, "\n")
+        raw = raw.replace(",", "\n")
+        items = raw.split("\n")
+    return tuple(str(item).strip() for item in items if str(item).strip())
+
+
+def _resolve_dataset_paths_from_pipeline_config(pipeline_config: PipelineConfig) -> tuple[str, ...]:
+    paths = _normalize_dataset_paths(getattr(pipeline_config.dataset, "jsonl_paths", ()))
+    if paths:
+        return paths
+    single = str(getattr(pipeline_config.dataset, "jsonl_path", "") or "").strip()
+    return (single,) if single else ()
+
+
 def _sample_run_dir(log_dir: str | os.PathLike[str], sample_id: str) -> Path:
     return Path(log_dir) / _safe_path_component(sample_id)
 
@@ -618,27 +642,24 @@ def build_pipeline_config_from_verl_config(config) -> PipelineConfig:
     pipe.backend.reset_lora_on_begin_episode = bool(
         section.get("backend", {}).get("reset_lora_on_begin_episode", pipe.backend.reset_lora_on_begin_episode)
     )
-    pipe.dataset.jsonl_path = str(
-        config.data.train_files[0] if isinstance(config.data.train_files, (list, tuple)) else config.data.train_files
-    )
+    dataset_paths = _normalize_dataset_paths(config.data.train_files)
+    pipe.dataset.jsonl_paths = dataset_paths
+    pipe.dataset.jsonl_path = str(dataset_paths[0]) if dataset_paths else ""
     pipe.log_dir = str(section.get("log_dir") or os.path.join(config.trainer.default_local_dir, "ttrl_or"))
     pipe.save_logs = bool(section.get("save_logs", True))
     return pipe
 
 
-def _resolve_raw_samples(trainer, pipeline_config: PipelineConfig):
+def _resolve_raw_samples_for_path(trainer, pipeline_config: PipelineConfig, dataset_path: str):
     dataset = getattr(trainer, "train_dataset", None)
-    if dataset is not None and hasattr(dataset, "raw_samples"):
+    dataset_paths = _resolve_dataset_paths_from_pipeline_config(pipeline_config)
+    if len(dataset_paths) <= 1 and dataset is not None and hasattr(dataset, "raw_samples"):
         return list(dataset.raw_samples)
+
     from verl.trainer.ttrl_or_runtime.dataset.loader import load_raw_task_dataset
 
-    data_files = trainer.config.data.train_files
-    if isinstance(data_files, (list, tuple)):
-        data_file = data_files[0]
-    else:
-        data_file = data_files
     return load_raw_task_dataset(
-        data_file,
+        dataset_path,
         start_index=0,
         limit=None if int(trainer.config.data.get("train_max_samples", -1)) <= 0 else int(trainer.config.data.train_max_samples),
         max_numeric_features=int(pipeline_config.dataset.max_numeric_features),
@@ -761,96 +782,124 @@ def run_ttrl_or_fit(trainer, logger) -> None:
     pipeline_config = build_pipeline_config_from_verl_config(trainer.config)
     model_log_root = _verl_model_log_root(pipeline_config)
     _write_run_config(pipeline_config, model_log_root)
-    raw_samples = _resolve_raw_samples(trainer, pipeline_config)
-    dataset_name = Path(pipeline_config.dataset.jsonl_path).stem if str(pipeline_config.dataset.jsonl_path or "").strip() else "dataset"
-    dataset_log_dir = model_log_root / _safe_path_component(dataset_name)
-    pipeline_config.log_dir = str(dataset_log_dir)
     backend = VerlRayPolicyBackend(trainer, pipeline_config)
     runner = TTRLORRunner(backend=backend, config=pipeline_config)
 
     rank = int(os.environ.get("RANK", "0"))
     world_size = max(1, int(os.environ.get("WORLD_SIZE", "1")))
-    ordered_samples = list(raw_samples)
-    if bool(trainer.config.data.shuffle):
-        seed = trainer.config.data.get("seed")
-        rng = np.random.default_rng(seed if seed is not None else 0)
-        rng.shuffle(ordered_samples)
-
-    skipped_completed = 0
-    if bool(pipeline_config.dataset.resume_skip_completed):
-        pending_samples = []
-        for sample in ordered_samples:
-            result_path = _sample_result_path(pipeline_config.log_dir, str(sample.sample_id))
-            if result_path.exists():
-                skipped_completed += 1
-                continue
-            pending_samples.append(sample)
-        ordered_samples = pending_samples
-
-    print(
-        f"[verl-or][dataset] rank={rank}/{world_size} total_samples={len(raw_samples)} "
-        f"pending_samples={len(ordered_samples)} skipped_completed={skipped_completed} "
-        f"dataset={Path(pipeline_config.dataset.jsonl_path).resolve() if str(pipeline_config.dataset.jsonl_path or '').strip() else 'n/a'} "
-        f"log_root={dataset_log_dir.resolve()}"
-    )
-
-    if not ordered_samples:
-        print("[verl-or][dataset] no pending samples found; all samples already have result.json, exiting.")
+    dataset_paths = _resolve_dataset_paths_from_pipeline_config(pipeline_config)
+    if not dataset_paths:
+        print("[verl-or][dataset] no dataset paths configured, exiting.")
         return
 
-    _prepare_r3_for_samples(ordered_samples, runner, rank, world_size)
-
+    dataset_runs: list[dict[str, Any]] = []
+    total_pending_samples = 0
     max_iterations = int(max(1, pipeline_config.mcts.max_iterations))
-    total_budget = max(1, len(ordered_samples) * max_iterations)
+
+    for dataset_path in dataset_paths:
+        raw_samples = _resolve_raw_samples_for_path(trainer, pipeline_config, dataset_path)
+        dataset_name = Path(dataset_path).stem if str(dataset_path).strip() else "dataset"
+        dataset_log_dir = model_log_root / _safe_path_component(dataset_name)
+        ordered_samples = list(raw_samples)
+        if bool(trainer.config.data.shuffle):
+            seed = trainer.config.data.get("seed")
+            rng = np.random.default_rng(seed if seed is not None else 0)
+            rng.shuffle(ordered_samples)
+
+        skipped_completed = 0
+        if bool(pipeline_config.dataset.resume_skip_completed):
+            pending_samples = []
+            for sample in ordered_samples:
+                result_path = _sample_result_path(dataset_log_dir, str(sample.sample_id))
+                if result_path.exists():
+                    skipped_completed += 1
+                    continue
+                pending_samples.append(sample)
+            ordered_samples = pending_samples
+
+        total_pending_samples += len(ordered_samples)
+        dataset_runs.append({
+            "dataset_path": str(Path(dataset_path).resolve()),
+            "dataset_name": dataset_name,
+            "dataset_log_dir": str(dataset_log_dir),
+            "raw_samples": raw_samples,
+            "ordered_samples": ordered_samples,
+            "skipped_completed": skipped_completed,
+        })
+        print(
+            f"[verl-or][dataset] rank={rank}/{world_size} total_samples={len(raw_samples)} "
+            f"pending_samples={len(ordered_samples)} skipped_completed={skipped_completed} "
+            f"dataset={Path(dataset_path).resolve()} log_root={dataset_log_dir.resolve()}"
+        )
+
+    if total_pending_samples <= 0:
+        print("[verl-or][dataset] no pending samples found across all datasets, exiting.")
+        return
+
+    total_budget = max(1, total_pending_samples * max_iterations)
     if trainer.global_steps < 0:
         trainer.global_steps = 0
-
     progress_bar = tqdm(total=total_budget, initial=min(total_budget, max(0, trainer.global_steps)), desc="TTRL-OR Progress")
 
-    for sample_idx, sample in enumerate(ordered_samples):
-        if trainer.global_steps >= total_budget:
-            break
-
-        gold_answer = str(sample.answer or "")
+    for dataset_idx, dataset_run in enumerate(dataset_runs, start=1):
+        ordered_samples = list(dataset_run["ordered_samples"])
+        if not ordered_samples:
+            continue
+        pipeline_config.dataset.jsonl_path = str(dataset_run["dataset_path"])
+        pipeline_config.log_dir = str(dataset_run["dataset_log_dir"])
+        runner.config.log_dir = str(dataset_run["dataset_log_dir"])
         print(
-            f"[verl-or][sample] [{sample_idx + 1}/{len(ordered_samples)}] sample_id={sample.sample_id} "
-            f"gt={gold_answer} global_step={trainer.global_steps}"
+            f"[verl-or][dataset-run] [{dataset_idx}/{len(dataset_runs)}] dataset={dataset_run['dataset_name']} "
+            f"pending_samples={len(ordered_samples)}"
         )
-        task = _raw_sample_to_task(sample)
-        step_before = int(trainer.global_steps)
-        result = runner.run_task(task, human_gold_answer=gold_answer)
-        steps_used = max(0, int(trainer.global_steps) - step_before)
-        if steps_used > 0:
-            progress_bar.update(steps_used)
 
-        best_reward = None
-        best_obj = None
-        if result.best_trajectory is not None and result.best_trajectory.reward is not None:
-            best_reward = float(result.best_trajectory.reward.total)
-            best_obj = (result.best_trajectory.reward.metadata or {}).get("obj_answer")
+        _prepare_r3_for_samples(ordered_samples, runner, rank, world_size)
 
-        metrics = {
-            "training/global_step": float(trainer.global_steps),
-            "training/epoch": 0.0,
-            "ttrl_or/sample_index": float(sample_idx),
-            "ttrl_or/sample_steps": float(steps_used),
-            "ttrl_or/max_iterations": float(max_iterations),
-            "ttrl_or/sample_best_reward": float(best_reward) if isinstance(best_reward, (int, float)) else float("nan"),
-        }
-        if best_obj is not None:
-            try:
-                metrics["ttrl_or/sample_best_obj"] = float(best_obj)
-            except Exception:
-                pass
-        runtime = result.stage_reports.get("runtime", {}) if isinstance(result.stage_reports, dict) else {}
-        if isinstance(runtime.get("total_elapsed_sec"), (int, float)):
-            metrics["ttrl_or/sample_runtime_sec"] = float(runtime["total_elapsed_sec"])
-        metrics.update(_flatten_stage_reports(result.stage_reports))
-        print(
-            f"[verl-or][sample-done] sample_id={sample.sample_id} gt={gold_answer} "
-            f"best_reward={best_reward} best_obj={best_obj} steps={steps_used}"
-        )
-        logger.log(data=metrics, step=max(0, trainer.global_steps))
+        for sample_idx, sample in enumerate(ordered_samples):
+            if trainer.global_steps >= total_budget:
+                break
+
+            gold_answer = str(sample.answer or "")
+            print(
+                f"[verl-or][sample] [{sample_idx + 1}/{len(ordered_samples)}] sample_id={sample.sample_id} "
+                f"dataset={dataset_run['dataset_name']} gt={gold_answer} global_step={trainer.global_steps}"
+            )
+            task = _raw_sample_to_task(sample)
+            step_before = int(trainer.global_steps)
+            result = runner.run_task(task, human_gold_answer=gold_answer)
+            steps_used = max(0, int(trainer.global_steps) - step_before)
+            if steps_used > 0:
+                progress_bar.update(steps_used)
+
+            best_reward = None
+            best_obj = None
+            if result.best_trajectory is not None and result.best_trajectory.reward is not None:
+                best_reward = float(result.best_trajectory.reward.total)
+                best_obj = (result.best_trajectory.reward.metadata or {}).get("obj_answer")
+
+            metrics = {
+                "training/global_step": float(trainer.global_steps),
+                "training/epoch": 0.0,
+                "ttrl_or/dataset_index": float(dataset_idx - 1),
+                "ttrl_or/sample_index": float(sample_idx),
+                "ttrl_or/sample_steps": float(steps_used),
+                "ttrl_or/max_iterations": float(max_iterations),
+                "ttrl_or/sample_best_reward": float(best_reward) if isinstance(best_reward, (int, float)) else float("nan"),
+            }
+            if best_obj is not None:
+                try:
+                    metrics["ttrl_or/sample_best_obj"] = float(best_obj)
+                except Exception:
+                    pass
+            runtime = result.stage_reports.get("runtime", {}) if isinstance(result.stage_reports, dict) else {}
+            if isinstance(runtime.get("total_elapsed_sec"), (int, float)):
+                metrics["ttrl_or/sample_runtime_sec"] = float(runtime["total_elapsed_sec"])
+            metrics.update(_flatten_stage_reports(result.stage_reports))
+            print(
+                f"[verl-or][sample-done] sample_id={sample.sample_id} dataset={dataset_run['dataset_name']} gt={gold_answer} "
+                f"best_reward={best_reward} best_obj={best_obj} steps={steps_used}"
+            )
+            logger.log(data=metrics, step=max(0, trainer.global_steps))
 
     progress_bar.close()
 

@@ -10,6 +10,9 @@ MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
 dataset="IndustryOR_fixedV2.jsonl"
 
 DATA_PATH="$DATA_ROOT/$dataset"
+# For multiple datasets, uncomment and edit the list below.
+# TRAIN_FILES="[$DATA_ROOT/IndustryOR_fixedV2.jsonl,$DATA_ROOT/OptMATH_Bench_166.jsonl]"
+TRAIN_FILES="$DATA_PATH"
 
 python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
@@ -26,8 +29,8 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.reward.structure_gate_min=0.2 \
     algorithm.ttrl_or.dataset.resume_skip_completed=True \
     algorithm.ttrl_or.backend.reset_lora_on_begin_episode=True \
-    data.train_files=$DATA_PATH \
-    data.val_files=$DATA_PATH \
+    data.train_files="$TRAIN_FILES" \
+    data.val_files="$TRAIN_FILES" \
     data.custom_cls.path='pkg://verl.utils.dataset.ttrl_or_dataset' \
     data.custom_cls.name=TTRLORDataset \
     data.ttrl_or_max_numeric_features=256 \

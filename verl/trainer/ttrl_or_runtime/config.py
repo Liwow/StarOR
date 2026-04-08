@@ -20,19 +20,19 @@ class RewardConfig:
     code_executor_mode: str = "sandbox"  # sandbox or subprocess
     cluster_scope: str = "local"  # global or local
 
-    # ©¤©¤©¤ r1 (semantic cluster) settings ©¤©¤©¤
+    #  r1 (semantic cluster) settings 
     r1_alpha: float = 0.6  # Smoothing parameter for r1
     r1_min_clusters: int = 3  # Minimum K value for r1 denominator
 
     enable_r3_reward: bool = False
         
-    # ©¤©¤©¤ r4 (structural cluster) settings ©¤©¤©¤
+    #  r4 (structural cluster) settings 
     enable_r4_reward: bool = True  # Whether to enable r4
     r4_alpha: float = 0.4  # Smoothing parameter for r4
     r4_k: int = 3  # K value for r4 normalization
     r4_decay: float = 0.95  # Decay factor for historical structural counts
 
-    # ©¤©¤©¤ Final reward weights ©¤©¤©¤
+    #  Final reward weights 
     r3_weight: float = 0.1  # Weight for r3 in final reward
     r4_weight: float = 0.2  # Weight for r4 in final reward
     structure_gate_min: float = 0.2  # Minimum multiplier when LP structure is incomplete
@@ -71,6 +71,7 @@ class GRPOConfig:
 @dataclass(slots=True)
 class DatasetConfig:
     jsonl_path: str = ""
+    jsonl_paths: tuple[str, ...] = ()
     start_index: int = 0
     limit: int = 0
     resume_skip_completed: bool = True

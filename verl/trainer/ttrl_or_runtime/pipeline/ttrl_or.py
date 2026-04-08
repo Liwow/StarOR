@@ -391,6 +391,7 @@ class TTRLORRunner:
             "best_code": best.code if best is not None else "",
             "obj_answer": self._best_obj_answer(best),
             "gold_answer": str(trace.task_context.get("gold_answer", "")),
+            "gt": str(trace.task_context.get("gold_answer", "")),
         }
         _write_json_file(result_path, result_payload)
         _write_json_file(runtime_path, runtime_summary)
@@ -399,6 +400,7 @@ class TTRLORRunner:
         selected_payload = {
             "selected_iter": (best.metadata.get("iter") if best is not None else None),
             "max_iter": int(((trace.config or {}).get("mcts") or {}).get("max_iterations", 0)),
+            "gold_answer": str(trace.task_context.get("gold_answer", "")),
             "gt": str(trace.task_context.get("gold_answer", "")),
             "trajectory_id": (best.trajectory_id if best is not None else ""),
             "reward": (asdict(best.reward) if best is not None and best.reward else None),

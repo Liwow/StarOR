@@ -24,6 +24,23 @@ def _safe_path_component(name: str) -> str:
     safe = safe.strip(" .")
     return safe or "sample"
 
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+def _write_json_file(path: Path, payload: Any) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_json_safe(payload), ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name, "")
     if not raw:
@@ -61,6 +78,29 @@ def _resolve_model_name_or_path(value: str) -> str:
     if maybe_path.exists():
         return str(maybe_path.resolve())
     return value
+
+
+def _parse_dataset_jsonls(value: str | list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (list, tuple)):
+        items = value
+    else:
+        raw = str(value).replace("\r", "\n")
+        for sep in [";", "|"]:
+            raw = raw.replace(sep, "\n")
+        raw = raw.replace(",", "\n")
+        items = raw.split("\n")
+    paths = tuple(str(item).strip() for item in items if str(item).strip())
+    return paths
+
+
+def _resolve_dataset_paths(dataset_cfg) -> tuple[str, ...]:
+    paths = _parse_dataset_jsonls(getattr(dataset_cfg, "jsonl_paths", ()))
+    if paths:
+        return paths
+    single = str(getattr(dataset_cfg, "jsonl_path", "") or "").strip()
+    return (single,) if single else ()
 
 
 def _model_mode_label(config: PipelineConfig) -> str:
@@ -104,7 +144,7 @@ def _write_run_config(config: PipelineConfig, model_root: Path) -> Path:
         },
     }
     out_path = model_root / 'run_config.json'
-    out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    _write_json_file(out_path, payload)
     return out_path
 
 
@@ -150,6 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-id", type=str, default="")
 
     parser.add_argument("--dataset-jsonl", type=str, default=defaults.dataset.jsonl_path)
+    parser.add_argument("--dataset-jsonls", type=str, default=",".join(defaults.dataset.jsonl_paths))
     parser.add_argument("--dataset-start-index", type=int, default=defaults.dataset.start_index)
     parser.add_argument("--dataset-limit", type=int, default=defaults.dataset.limit)
     resume_group = parser.add_mutually_exclusive_group()
@@ -340,7 +381,13 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.grpo.vllm_close_communicator_after_update = args.grpo_vllm_close_communicator_after_update
     config.grpo.vllm_fallback_disable_on_error = args.grpo_vllm_fallback_disable_on_error
 
-    config.dataset.jsonl_path = args.dataset_jsonl
+    dataset_paths = _parse_dataset_jsonls(args.dataset_jsonls)
+    if dataset_paths:
+        config.dataset.jsonl_paths = dataset_paths
+        config.dataset.jsonl_path = dataset_paths[0]
+    else:
+        config.dataset.jsonl_paths = ()
+        config.dataset.jsonl_path = args.dataset_jsonl
     config.dataset.start_index = args.dataset_start_index
     config.dataset.limit = args.dataset_limit
     config.dataset.resume_skip_completed = args.dataset_resume_skip_completed
@@ -595,10 +642,7 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
                 "used_vllm_priority": use_vllm,
                 "vllm_mode": vllm_mode,
             }
-            (sample_dir / "r3_precompute.json").write_text(
-                json.dumps(sample_payload, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            _write_json_file(sample_dir / "r3_precompute.json", sample_payload)
             (sample_dir / "r3_precompute.md").write_text(
                 format_r3_precompute_markdown(
                     sample_id=str(sample.sample_id),
@@ -645,7 +689,7 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
                 for sid, item in priors.items()
             },
         }
-        out_path.write_text(json.dumps(serializable, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_file(out_path, serializable)
         print(f"[r3-batch] saved dataset index -> {out_path.resolve()} success_rate={success_rate:.2%}")
 
     return priors
@@ -656,12 +700,8 @@ def _has_completed_sample_artifact(dataset_log_dir: Path, sample_id: str) -> boo
     return (sample_dir / "best_code.py").exists()
 
 
-def _run_dataset(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
+def _run_dataset_file(args: argparse.Namespace, runner: TTRLORRunner, dataset_path: str, base_log_dir: Path) -> dict:
     dataset_cfg = runner.config.dataset
-    dataset_path = dataset_cfg.jsonl_path
-    if not dataset_path:
-        raise ValueError("Dataset mode requires --dataset-jsonl.")
-
     all_samples = load_jsonl_dataset(dataset_path)
     start = max(0, dataset_cfg.start_index)
     if dataset_cfg.limit > 0:
@@ -671,7 +711,6 @@ def _run_dataset(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
         samples = all_samples[start:]
 
     dataset_name = Path(dataset_path).stem
-    base_log_dir = Path(runner.config.log_dir)
     dataset_log_dir = base_log_dir / dataset_name
     runner.config.log_dir = str(dataset_log_dir)
 
@@ -771,6 +810,7 @@ def _run_dataset(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
     return {
         "mode": "dataset",
         "dataset_jsonl": str(Path(dataset_path).resolve()),
+        "dataset_name": dataset_name,
         "backend": runner.config.backend.backend,
         "rank": rank,
         "world_size": world_size,
@@ -779,6 +819,40 @@ def _run_dataset(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
         "num_skipped_completed": skipped_completed,
         "num_pending_before_shard": pending_before_shard,
         "runs": runs,
+    }
+
+
+def _run_datasets(args: argparse.Namespace, runner: TTRLORRunner) -> dict:
+    dataset_paths = _resolve_dataset_paths(runner.config.dataset)
+    if not dataset_paths:
+        raise ValueError("Dataset mode requires --dataset-jsonl or --dataset-jsonls.")
+
+    base_log_dir = Path(runner.config.log_dir)
+    dataset_outputs = []
+    total_samples = 0
+    total_skipped = 0
+    total_pending_before_shard = 0
+    total_completed_runs = 0
+
+    for dataset_idx, dataset_path in enumerate(dataset_paths, start=1):
+        print(f"[dataset-group] [{dataset_idx}/{len(dataset_paths)}] START {Path(dataset_path).resolve()}")
+        dataset_output = _run_dataset_file(args, runner, dataset_path, base_log_dir)
+        dataset_outputs.append(dataset_output)
+        total_samples += int(dataset_output.get("num_samples", 0))
+        total_skipped += int(dataset_output.get("num_skipped_completed", 0))
+        total_pending_before_shard += int(dataset_output.get("num_pending_before_shard", 0))
+        total_completed_runs += len(dataset_output.get("runs", []))
+
+    return {
+        "mode": "dataset",
+        "dataset_jsonls": [str(Path(p).resolve()) for p in dataset_paths],
+        "backend": runner.config.backend.backend,
+        "num_datasets": len(dataset_paths),
+        "num_samples": total_samples,
+        "num_skipped_completed": total_skipped,
+        "num_pending_before_shard": total_pending_before_shard,
+        "num_completed_runs": total_completed_runs,
+        "datasets": dataset_outputs,
     }
 def main() -> int:
     parser = build_parser()
@@ -792,8 +866,8 @@ def main() -> int:
     backend = _build_backend(config)
     runner = TTRLORRunner(backend=backend, config=config)
 
-    if config.dataset.jsonl_path:
-        output = _run_dataset(args, runner)
+    if _resolve_dataset_paths(config.dataset):
+        output = _run_datasets(args, runner)
     else:
         output = _run_single(args, runner)
 
@@ -808,9 +882,9 @@ def main() -> int:
         if world_size > 1:
             suffix = out_path.suffix or ".json"
             out_path = out_path.with_name(f"{out_path.stem}.rank{rank}{suffix}")
-        out_path.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_file(out_path, output)
     else:
-        print(json.dumps(output, ensure_ascii=False, indent=2))
+        print(json.dumps(_json_safe(output), ensure_ascii=False, indent=2))
 
     return 0
 
