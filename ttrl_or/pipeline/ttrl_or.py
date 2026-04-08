@@ -36,6 +36,22 @@ def _safe_path_component(name: str) -> str:
     return safe or "task"
 
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+def _write_json_file(path: Path, payload: Any) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_json_safe(payload), ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
 class TTRLORRunner:
     def __init__(self, backend: PolicyBackend, config: PipelineConfig | None = None) -> None:
         self.backend = backend
@@ -316,13 +332,13 @@ class TTRLORRunner:
             "best_trajectory": trace.best_trajectory,
             "runtime": runtime_summary,
         }
-        summary_path.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_file(summary_path, summary_payload)
 
         stage_events_payload = [asdict(stage_trace) for stage_trace in trace.stages]
-        stages_path.write_text(json.dumps(stage_events_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_file(stages_path, stage_events_payload)
         stages_md_path.write_text(self._format_stage_events_markdown(stage_events_payload), encoding="utf-8")
 
-        iter_logs_path.write_text(json.dumps(iteration_logs, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_file(iter_logs_path, iteration_logs)
         iter_logs_md_path.write_text(
             "".join(self._format_iteration_markdown(item) for item in iteration_logs),
             encoding="utf-8",
@@ -337,8 +353,8 @@ class TTRLORRunner:
             }
             for traj in trajectories
         ]
-        trajectories_path.write_text(json.dumps(traj_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        mcts_stats_path.write_text(json.dumps(mcts_stats, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_file(trajectories_path, traj_payload)
+        _write_json_file(mcts_stats_path, mcts_stats)
 
         if best is not None:
             best_code_path.write_text(best.code, encoding="utf-8")
@@ -349,14 +365,16 @@ class TTRLORRunner:
             "best_code": best.code if best is not None else "",
             "obj_answer": self._best_obj_answer(best),
             "gold_answer": str(trace.task_context.get("gold_answer", "")),
+            "gt": str(trace.task_context.get("gold_answer", "")),
         }
-        result_path.write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        runtime_path.write_text(json.dumps(runtime_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_file(result_path, result_payload)
+        _write_json_file(runtime_path, runtime_summary)
         runtime_md_path.write_text(self._format_runtime_summary_markdown(runtime_summary), encoding="utf-8")
 
         selected_payload = {
             "selected_iter": (best.metadata.get("iter") if best is not None else None),
             "max_iter": int(((trace.config or {}).get("mcts") or {}).get("max_iterations", 0)),
+            "gold_answer": str(trace.task_context.get("gold_answer", "")),
             "gt": str(trace.task_context.get("gold_answer", "")),
             "trajectory_id": (best.trajectory_id if best is not None else ""),
             "reward": (asdict(best.reward) if best is not None and best.reward else None),
@@ -371,7 +389,7 @@ class TTRLORRunner:
                 else {}
             ),
         }
-        selected_trace_path.write_text(json.dumps(selected_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_file(selected_trace_path, selected_payload)
 
         return {
             "run_dir": str(run_dir.resolve()),
@@ -449,12 +467,23 @@ class TTRLORRunner:
             for item in rollout_group:
                 reward_i = item.get('reward', {}) if isinstance(item, dict) else {}
                 timing_i = item.get('timing', {}) if isinstance(item, dict) else {}
+                r1_debug_i = item.get('r1_debug', {}) if isinstance(item, dict) else {}
+                r3_debug_i = item.get('r3_debug', {}) if isinstance(item, dict) else {}
+                r4_debug_i = item.get('r4_debug', {}) if isinstance(item, dict) else {}
+                execution_i = item.get('execution', {}) if isinstance(item, dict) else {}
                 lines.append(
                     f"- rollout={item.get('rollout_index', '')} node={item.get('node_id', '')} "
                     f"prior={item.get('prior', '')} prior_source={item.get('prior_source', '')} "
                     f"obj={item.get('obj_answer', '')} total={reward_i.get('total', '')} "
                     f"r1={reward_i.get('r1', '')} r2={reward_i.get('r2', '')} r3={reward_i.get('r3', '')} r4={reward_i.get('r4', '')} "
                     f"backprop_sec={timing_i.get('backprop_sec', '')}"
+                )
+                lines.append(
+                    f"  exec_success={execution_i.get('success', '')} effective_success={execution_i.get('effective_success', '')} "
+                    f"parsed_obj={execution_i.get('parsed_obj_answer', '')} has_valid_obj={r1_debug_i.get('has_valid_obj', '')} "
+                    f"obj_in_bounds={r1_debug_i.get('obj_in_bounds', '')} r1_eligible={r1_debug_i.get('r1_eligible', '')} "
+                    f"structure_gate={r4_debug_i.get('structure_gate', '')} r3_source={r3_debug_i.get('source', '')} "
+                    f"r3_pass={r3_debug_i.get('passed_cases', '')}/{r3_debug_i.get('num_cases', '')}"
                 )
         else:
             lines.append("- none")
@@ -469,6 +498,10 @@ class TTRLORRunner:
                 f"- obj: {reward.get('obj_answer', '')}",
                 f"- gt: {best.get('gt', '')}",
                 f"- reward: r1={reward.get('r1', '')}, r2={reward.get('r2', '')}, r3={reward.get('r3', '')}, r4={reward.get('r4', '')}, total={reward.get('total', '')}",
+                f"- r1_debug: eligible={((reward.get('r1_debug', {}) or {}).get('r1_eligible', ''))}, valid_obj={((reward.get('r1_debug', {}) or {}).get('has_valid_obj', ''))}, in_bounds={((reward.get('r1_debug', {}) or {}).get('obj_in_bounds', ''))}, code_len={((reward.get('r1_debug', {}) or {}).get('code_len', ''))}",
+                f"- r4_debug: structure_gate={((reward.get('r4_debug', {}) or {}).get('structure_gate', ''))}, extracted={(((reward.get('r4_debug', {}) or {}).get('structure_gate_debug', {}) or {}).get('extracted', ''))}, structural_pass={(((reward.get('r4_debug', {}) or {}).get('structure_gate_debug', {}) or {}).get('passes', ''))}",
+                f"- code_execution: success={((best.get('code_execution', {}) or {}).get('success', ''))}, effective_success={((best.get('code_execution', {}) or {}).get('effective_success', ''))}, parsed_obj={((best.get('code_execution', {}) or {}).get('parsed_obj_answer', ''))}",
+                f"- r3_debug: source={(((best.get('reward', {}) or {}).get('r3_debug', {}) or {}).get('source', ''))}, reason={(((best.get('reward', {}) or {}).get('r3_debug', {}) or {}).get('reason', ''))}, pass={(((best.get('reward', {}) or {}).get('r3_debug', {}) or {}).get('passed_cases', ''))}/{(((best.get('reward', {}) or {}).get('r3_debug', {}) or {}).get('num_cases', ''))}",
                 "",
                 "### Prompt",
                 "```text",

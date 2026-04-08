@@ -194,6 +194,9 @@ algorithm:
       # Optional raw jsonl path override for standalone runtime usage.
       jsonl_path: ""
 
+      # Optional multiple raw jsonl paths for sequential multi-dataset runs.
+      jsonl_paths: []
+
       # Skip samples whose result.json already exists under the resolved log directory.
       resume_skip_completed: True
 

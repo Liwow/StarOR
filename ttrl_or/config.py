@@ -71,6 +71,7 @@ class GRPOConfig:
 @dataclass(slots=True)
 class DatasetConfig:
     jsonl_path: str = ""
+    jsonl_paths: tuple[str, ...] = ()
     start_index: int = 0
     limit: int = 0
     resume_skip_completed: bool = True
