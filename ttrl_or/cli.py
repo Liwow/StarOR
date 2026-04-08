@@ -269,6 +269,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--global-consensus-rel-tol", type=float, default=defaults.reward.global_consensus_rel_tol)
     parser.add_argument("--reward-cluster-scope", type=str, choices=["global", "local"], default=defaults.reward.cluster_scope)
     parser.add_argument("--structure-gate-min", type=float, default=defaults.reward.structure_gate_min)
+    parser.add_argument("--reward-r1-weight", type=float, default=defaults.reward.r1_weight)
+    parser.add_argument("--reward-r2-weight", type=float, default=defaults.reward.r2_weight)
+    parser.add_argument("--reward-r1-obj-scale-fail-multiplier", type=float, default=defaults.reward.r1_obj_scale_fail_multiplier)
+    parser.add_argument("--reward-r3-weight", type=float, default=defaults.reward.r3_weight)
+    parser.add_argument("--reward-r4-weight", type=float, default=defaults.reward.r4_weight)
 
     r3_group = parser.add_mutually_exclusive_group()
     r3_group.add_argument("--enable-r3-reward", dest="enable_r3_reward", action="store_true")
@@ -352,6 +357,11 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
     config.reward.global_consensus_rel_tol = args.global_consensus_rel_tol
     config.reward.cluster_scope = args.reward_cluster_scope
     config.reward.structure_gate_min = args.structure_gate_min
+    config.reward.r1_weight = args.reward_r1_weight
+    config.reward.r2_weight = args.reward_r2_weight
+    config.reward.r1_obj_scale_fail_multiplier = args.reward_r1_obj_scale_fail_multiplier
+    config.reward.r3_weight = args.reward_r3_weight
+    config.reward.r4_weight = args.reward_r4_weight
     config.reward.enable_r3_reward = args.enable_r3_reward
 
     resolved_group_size = int(args.grpo_num_generations if args.grpo_num_generations is not None else args.grpo_group_size)
