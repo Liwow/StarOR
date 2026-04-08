@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import json
@@ -191,7 +191,7 @@ class TTRLRewardCalculator(RewardCalculator):
 
             r3 = 0.0
             r3_meta: dict[str, Any] = {"triggered": False}
-            if r2 == 1.0:
+            if bool(self.config.enable_r3_reward):
                 r3_t0 = time.perf_counter()
                 r3, r3_meta = self._compute_r3_with_details(traj)
                 r3_total_sec += float(time.perf_counter() - r3_t0)
@@ -221,12 +221,12 @@ class TTRLRewardCalculator(RewardCalculator):
                 "r1_debug": r1_debug,
                 "r4_debug": r4_debug,
                 "reward_gate": reward_gate,
-                "total_reward_formula": "total_r = ((w1*r1*r1_weight_scale) + (w2*r2) + (w3*(r3*r2)) + (w4*r4)) * reward_gate; total=max(0,total_r)",
+                "total_reward_formula": "total_r = (w1*r1*r1_weight_scale) + (w2*r2) + (w3*r3) + (w4*r4); total=max(0,total_r)",
                 "total_reward_weights": {
                     "w1_r1": float(self.config.r1_weight),
                     "w2_r2": float(self.config.r2_weight),
                     "r1_obj_scale_fail_multiplier": float(self.config.r1_obj_scale_fail_multiplier),
-                    "w3_r3_gated_by_r2": float(self.config.r3_weight),
+                    "w3_r3": float(self.config.r3_weight),
                     "w4_r4": float(self.config.r4_weight),
                 },
                 "total_reward_terms": {
@@ -236,7 +236,7 @@ class TTRLRewardCalculator(RewardCalculator):
                     "r1_weight_scale": float(r1_weight_scale),
                     "r1_obj_scale_penalized": bool(r1_obj_scale_penalized),
                     "r1_effective_weight": float(self.config.r1_weight) * float(r1_weight_scale),
-                    "r3_gated_by_r2": float(r3 * r2),
+                    "r3_effective": float(r3),
                     "r4": float(r4),
                 },
                 "structure_gate": structure_gate_debug,
@@ -388,23 +388,22 @@ class TTRLRewardCalculator(RewardCalculator):
         r3: float,
         r4: float,
         reward_gate: float = 1.0,
-        r1_weight: float = 1.0,
-        r2_weight: float = 0.0,
+        r1_weight: float = 0.6,
+        r2_weight: float = 0.1,
         r1_weight_scale: float = 1.0,
-        r3_weight: float = 0.3,
-        r4_weight: float = 0.2,
+        r3_weight: float = 0.2,
+        r4_weight: float = 0.1,
     ) -> float:
         # Single point to edit total reward composition:
-        # total_r_raw = (w1*r1*r1_weight_scale) + (w2*r2) + (w3*(r3*r2)) + (w4*r4)
-        # total_r = max(0, total_r_raw * reward_gate)
-        r3_gated = float(r3) * float(r2)
+        # total_r_raw = (w1*r1*r1_weight_scale) + (w2*r2) + (w3*r3) + (w4*r4)
+        # no reward gating: total_r = max(0, total_r_raw)
         total_r_raw = (
             float(r1_weight) * float(r1_weight_scale) * float(r1)
             + float(r2_weight) * float(r2)
-            + float(r3_weight) * r3_gated
+            + float(r3_weight) * float(r3)
             + float(r4_weight) * float(r4)
         )
-        total_r = total_r_raw * float(reward_gate)
+        total_r = total_r_raw
         return max(0.0, total_r)
 
     def _use_local_cluster_scope(self) -> bool:
@@ -589,25 +588,48 @@ class TTRLRewardCalculator(RewardCalculator):
         case_exec_wall_sec = float(time.perf_counter() - exec_t0)
 
         passed_cases = 0
+        weighted_pass_sum = 0.0
+        obj_scale_scaled_cases = 0
         failed_case_index = None
+        scale = float(self.config.r1_obj_scale_fail_multiplier)
         for detail in details:
-            passed = bool(detail.get("effective_success")) and bool(detail.get("obj_in_bounds"))
+            effective = bool(detail.get("effective_success"))
+            in_bounds = bool(detail.get("obj_in_bounds"))
+            passed = effective
+            case_score = 0.0
+            scaled_by_obj_in_bounds = False
+            if effective:
+                if in_bounds:
+                    case_score = 1.0
+                else:
+                    case_score = scale
+                    scaled_by_obj_in_bounds = True
+                    obj_scale_scaled_cases += 1
+
             detail["passed"] = passed
+            detail["r3_case_score"] = float(case_score)
+            detail["r3_scaled_by_obj_in_bounds"] = bool(scaled_by_obj_in_bounds)
+            weighted_pass_sum += float(case_score)
+
             if passed:
                 passed_cases += 1
             elif failed_case_index is None:
                 failed_case_index = int(detail.get("case_index", -1))
 
         num_cases = len(details)
-        r3_score = (float(passed_cases) / float(num_cases)) if num_cases > 0 else 0.0
+        r3_score = (float(weighted_pass_sum) / float(num_cases)) if num_cases > 0 else 0.0
 
         return r3_score, {
             "enabled": True,
             "source": source,
             "num_cases": len(tests),
             "passed_cases": passed_cases,
+            "weighted_pass_sum": float(weighted_pass_sum),
+            "obj_scale_scaled_cases": int(obj_scale_scaled_cases),
             "failed_case_index": failed_case_index,
             "pass_ratio": r3_score,
+            "r3_case_score_mode": "effective_success_with_obj_scale_multiplier",
+            "obj_scale_fail_multiplier": float(self.config.r1_obj_scale_fail_multiplier),
             "cases": details,
             "timing": {
                 "normalize_cases_sec": normalize_cases_sec,
@@ -1124,6 +1146,9 @@ class TTRLRewardCalculator(RewardCalculator):
             'num_vars': num_vars,
             'passes': passes,
         }
+
+
+
 
 
 

@@ -180,19 +180,19 @@ algorithm:
       r4_decay: 0.95
 
       # Weight of r1 in final reward.
-      r1_weight: 1.0
+      r1_weight: 0.6
 
       # Weight of r2 in final reward.
-      r2_weight: 0.0
+      r2_weight: 0.1
 
       # Multiplier on r1 weight when objective scale check fails.
       r1_obj_scale_fail_multiplier: 0.2
 
       # Weight of r3 in final reward.
-      r3_weight: 0.1
+      r3_weight: 0.2
 
       # Weight of r4 in final reward.
-      r4_weight: 0.2
+      r4_weight: 0.1
 
       # Minimum multiplicative gate when LP structure is incomplete.
       structure_gate_min: 0.2
@@ -604,3 +604,4 @@ ray_kwargs:
 
   # Path to save Ray timeline JSON for performance profiling
   timeline_json_file: null
+
