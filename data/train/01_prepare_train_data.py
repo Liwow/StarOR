@@ -1,5 +1,4 @@
 from __future__ import annotations
-import os
 import argparse
 import ast
 import hashlib
@@ -612,10 +611,10 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser = subparsers.add_parser("generate", help="Call an LLM to generate <Type> and <python> blocks.")
     generate_parser.add_argument("--input", default="data/train/train_data.jsonl")
     generate_parser.add_argument("--output", default="data/train/train_data.type_python.jsonl")
-    generate_parser.add_argument("--model", default="gemini-3.1-pro-preview")
-    generate_parser.add_argument("--base-url", default=os.getenv('IDEALAB_BASE_URL'))
-    generate_parser.add_argument("--api-key-env", default=os.getenv('IDEALAB_API_KEY'))
-    generate_parser.add_argument("--base-url-env", default=os.getenv('IDEALAB_BASE_URL'))
+    generate_parser.add_argument("--model", default="")
+    generate_parser.add_argument("--base-url", default=os.getenv("IDEALAB_BASE_URL", ""))
+    generate_parser.add_argument("--api-key-env", default="IDEALAB_API_KEY")
+    generate_parser.add_argument("--base-url-env", default="IDEALAB_BASE_URL")
     generate_parser.add_argument("--model-env", default="OPENAI_MODEL")
     generate_parser.add_argument("--temperature", type=float, default=0.4)
     generate_parser.add_argument("--request-timeout", type=int, default=120)

@@ -316,7 +316,20 @@ class TTRLORRunner:
             visits = node.visits if node is not None else 0
             return reward, q, visits
 
-        return max(trajectories, key=_key)
+        chosen = max(trajectories, key=_key)
+        metadata = chosen.metadata if isinstance(chosen.metadata, dict) else {}
+        metadata["final_selection"] = {
+            "reason_code": "reward_q_visits_fallback",
+            "reason": "selected by fallback rule: maximize (reward.total, node_q_value, node_visits)",
+            "judgement_condition": {
+                "fallback_from": "search_result_best_trajectory_missing",
+                "record_selection_rule": "lexicographic_max(reward_total, node_q_value, node_visits)",
+            },
+            "iteration": (int(metadata.get("iter")) if isinstance(metadata.get("iter"), (int, float)) else None),
+            "stage": str(metadata.get("stage", "")),
+        }
+        chosen.metadata = metadata
+        return chosen
 
     def _save_trace_artifacts(
         self,
@@ -370,15 +383,47 @@ class TTRLORRunner:
             encoding="utf-8",
         )
 
-        traj_payload = [
-            {
-                "trajectory_id": traj.trajectory_id,
-                "priors": {s.value: p for s, p in traj.priors.items()},
-                "reward": asdict(traj.reward) if traj.reward else None,
-                "code": traj.code,
-            }
-            for traj in trajectories
-        ]
+        traj_payload = []
+        for traj in trajectories:
+            metadata = traj.metadata if isinstance(traj.metadata, dict) else {}
+            stage_value = str(metadata.get("stage", "") or "")
+            stage_index = None
+            if stage_value:
+                for idx, stage in enumerate(self.stage_order, start=1):
+                    if stage.value == stage_value:
+                        stage_index = idx
+                        break
+            if stage_index is None:
+                # Fallback: infer by the latest generated stage in stage_order.
+                generated_stage_indices = [
+                    idx
+                    for idx, stage in enumerate(self.stage_order, start=1)
+                    if stage in traj.outputs and str(traj.outputs.get(stage, "")).strip()
+                ]
+                if generated_stage_indices:
+                    stage_index = max(generated_stage_indices)
+                    inferred_stage = self.stage_order[stage_index - 1]
+                    stage_value = inferred_stage.value
+
+            final_selection_meta = metadata.get("final_selection", {})
+            if not isinstance(final_selection_meta, dict):
+                final_selection_meta = {}
+
+            traj_payload.append(
+                {
+                    "trajectory_id": traj.trajectory_id,
+                    "iteration": (int(metadata.get("iter")) if isinstance(metadata.get("iter"), (int, float)) else None),
+                    "stage": stage_value,
+                    "stage_index": stage_index,
+                    "selection_reason_code": str(final_selection_meta.get("reason_code", "")),
+                    "selection_reason": str(final_selection_meta.get("reason", "")),
+                    "selection_judgement_condition": dict(final_selection_meta.get("judgement_condition", {}) or {}),
+                    "is_selected_best": bool(best is not None and traj.trajectory_id == best.trajectory_id),
+                    "priors": {s.value: p for s, p in traj.priors.items()},
+                    "reward": asdict(traj.reward) if traj.reward else None,
+                    "code": traj.code,
+                }
+            )
         _write_json_file(trajectories_path, traj_payload)
         _write_json_file(mcts_stats_path, mcts_stats)
 
