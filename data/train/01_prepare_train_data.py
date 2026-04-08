@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import os
 import argparse
 import ast
 import hashlib
@@ -509,11 +509,11 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--input", default="data/train/train_data.jsonl")
     generate_parser.add_argument("--output", default="data/train/train_data.type_python.jsonl")
     generate_parser.add_argument("--model", default="")
-    generate_parser.add_argument("--base-url", default="https://api.openai.com/v1")
-    generate_parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
-    generate_parser.add_argument("--base-url-env", default="OPENAI_BASE_URL")
+    generate_parser.add_argument("--base-url", default=os.getenv('IDEALAB_BASE_URL'))
+    generate_parser.add_argument("--api-key-env", default=os.getenv('IDEALAB_API_KEY'))
+    generate_parser.add_argument("--base-url-env", default=os.getenv('IDEALAB_BASE_URL'))
     generate_parser.add_argument("--model-env", default="OPENAI_MODEL")
-    generate_parser.add_argument("--temperature", type=float, default=0.2)
+    generate_parser.add_argument("--temperature", type=float, default=0.4)
     generate_parser.add_argument("--request-timeout", type=int, default=120)
     generate_parser.add_argument("--run-timeout", type=int, default=30)
     generate_parser.add_argument("--verification-mode", choices=["syntax", "run", "run-if-available"], default="run-if-available")
