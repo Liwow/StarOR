@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 from ttrl_or.reward.perturbation import build_perturbation_map, generate_perturbed_instances_from_map
 
+OBJ_SCALE_RANGE_MARGIN_RATIO = 0.10
+
 
 R3_BASE_SCALE_FEWSHOT = """Example A (transportation minimization)
 Task sketch:
@@ -207,7 +209,7 @@ def build_sample_r3_plan(
         sample_id=sample_id,
         source="disabled",
         analysis="r3 precompute disabled due to extraction failure",
-        base_obj_bounds=_default_scale_from_context(description, instance, feature_catalog),
+        base_obj_bounds=_expand_obj_scale_margin(_default_scale_from_context(description, instance, feature_catalog)),
         test_cases=[],
         mapping=[],
         feature_catalog=feature_catalog,
@@ -250,12 +252,13 @@ def _normalize_llm_plan(
     base_bounds = _coerce_scale(parsed.get("base_scale"))
     if not _has_valid_scale(base_bounds):
         base_bounds = _default_scale_from_context(description, base_instance, feature_catalog)
+    base_bounds = _expand_obj_scale_margin(base_bounds)
     tests_raw = parsed.get("tests")
     if not isinstance(tests_raw, list):
         tests_raw = []
     test_cases: list[dict[str, Any]] = []
     mapping: list[dict[str, Any]] = []
-    for idx, test in enumerate(tests_raw[: max(1, robustness_cases)]):
+    for idx, test in enumerate(tests_raw):
         if not isinstance(test, dict):
             continue
         case_id = str(test.get("case_id") or f"llm_case_{idx + 1}")
@@ -275,6 +278,7 @@ def _normalize_llm_plan(
         obj_scale = _coerce_scale(test.get("obj_scale") or test.get("obj_bounds"))
         if not _has_valid_scale(obj_scale):
             obj_scale = _expand_scale(base_bounds, factor=1.2)
+        obj_scale = _expand_obj_scale_margin(obj_scale)
         case_instance["__perturbation__"] = {
             "strategy": "llm_r3_batch",
             "case_id": case_id,
@@ -323,14 +327,14 @@ def _heuristic_plan(
 ) -> R3SamplePlan:
     pmap = build_perturbation_map(base_instance)
     generated = generate_perturbed_instances_from_map(base_instance, pmap, max(1, robustness_cases))
-    base_bounds = _default_scale_from_context(description, base_instance, feature_catalog)
+    base_bounds = _expand_obj_scale_margin(_default_scale_from_context(description, base_instance, feature_catalog))
     fid_lookup = _key_to_fid_map(feature_catalog)
     test_cases: list[dict[str, Any]] = []
     mapping: list[dict[str, Any]] = []
     for idx, case in enumerate(generated[: max(1, robustness_cases)]):
         meta = case.get("__perturbation__") if isinstance(case, dict) else {}
         case_id = str(meta.get("case_id") or f"heur_case_{idx + 1}") if isinstance(meta, dict) else f"heur_case_{idx + 1}"
-        obj_scale = _expand_scale(base_bounds, factor=1.25)
+        obj_scale = _expand_obj_scale_margin(_expand_scale(base_bounds, factor=1.25))
         raw_changes = list(meta.get("changes", [])) if isinstance(meta, dict) else []
         patches = []
         for change in raw_changes:
@@ -657,6 +661,54 @@ def _extract_tag_text(text: str, tag: str, min_len: int = 2) -> str:
         if len(content) >= int(min_len):
             return content
         start = close_idx + len(close_tag)
+def _expand_obj_scale_margin(scale: dict[str, Any], ratio: float = OBJ_SCALE_RANGE_MARGIN_RATIO) -> dict[str, Any]:
+    normalized = _coerce_scale(scale)
+    margin_ratio = max(0.0, float(ratio))
+    kind = str(normalized.get("kind") or "interval")
+
+    if kind == "point":
+        point = _to_number(normalized.get("point"))
+        tol_abs = _to_number(normalized.get("tol_abs"))
+        if point is not None:
+            extra = abs(float(point)) * margin_ratio
+            if tol_abs is None:
+                tol_abs = extra
+            else:
+                tol_abs = float(tol_abs) + extra
+        out = dict(normalized)
+        out["tol_abs"] = (float(tol_abs) if tol_abs is not None and math.isfinite(tol_abs) else normalized.get("tol_abs"))
+        return out
+
+    if kind == "union":
+        out = dict(normalized)
+        intervals_out: list[dict[str, float | None]] = []
+        for item in normalized.get("intervals", []):
+            if not isinstance(item, dict):
+                continue
+            lo = _to_number(item.get("lower"))
+            hi = _to_number(item.get("upper"))
+            if lo is not None:
+                lo = float(lo) - abs(float(lo)) * margin_ratio
+            if hi is not None:
+                hi = float(hi) + abs(float(hi)) * margin_ratio
+            if lo is not None and hi is not None and lo > hi:
+                lo, hi = hi, lo
+            intervals_out.append({"lower": lo, "upper": hi})
+        out["intervals"] = intervals_out
+        return out
+
+    out = dict(normalized)
+    lo = _to_number(normalized.get("lower"))
+    hi = _to_number(normalized.get("upper"))
+    if lo is not None:
+        lo = float(lo) - abs(float(lo)) * margin_ratio
+    if hi is not None:
+        hi = float(hi) + abs(float(hi)) * margin_ratio
+    if lo is not None and hi is not None and lo > hi:
+        lo, hi = hi, lo
+    out["lower"] = lo
+    out["upper"] = hi
+    return out
 def _expand_scale(scale: dict[str, Any], factor: float = 1.2) -> dict[str, Any]:
     normalized = _coerce_scale(scale)
     sign_relation = str(normalized.get("sign_relation") or "any")
@@ -1072,3 +1124,9 @@ def _compose_raw_preview(
     if len(merged) <= max_len:
         return merged
     return merged[: max_len - 3] + "..."
+
+
+
+
+
+

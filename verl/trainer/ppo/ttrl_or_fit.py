@@ -539,6 +539,8 @@ class VerlRayPolicyBackend:
     ) -> tuple[DataProto, torch.Tensor]:
         prompt_ids = self._encode_prompt_messages(prompt_messages)
         pad_id = int(self.tokenizer.pad_token_id or self.tokenizer.eos_token_id or 0)
+        if not prompt_ids:
+            prompt_ids = [pad_id]
         response_id_seqs = []
         for candidate in candidates:
             response_ids = self.tokenizer(
@@ -551,15 +553,18 @@ class VerlRayPolicyBackend:
             response_id_seqs.append(response_ids)
 
         max_resp = max(len(seq) for seq in response_id_seqs)
+        prompt_len = len(prompt_ids)
         max_total = max(len(prompt_ids) + len(seq) for seq in response_id_seqs)
         bsz = len(response_id_seqs)
         input_ids = torch.full((bsz, max_total), pad_id, dtype=torch.long)
+        prompts = torch.full((bsz, prompt_len), pad_id, dtype=torch.long)
         attention_mask = torch.zeros((bsz, max_total), dtype=torch.long)
         responses = torch.full((bsz, max_resp), pad_id, dtype=torch.long)
         response_mask = torch.zeros((bsz, max_resp), dtype=torch.long)
 
         for row_idx, response_ids in enumerate(response_id_seqs):
             total_ids = prompt_ids + response_ids
+            prompts[row_idx, :prompt_len] = torch.tensor(prompt_ids, dtype=torch.long)
             input_ids[row_idx, : len(total_ids)] = torch.tensor(total_ids, dtype=torch.long)
             attention_mask[row_idx, : len(total_ids)] = 1
             responses[row_idx, : len(response_ids)] = torch.tensor(response_ids, dtype=torch.long)
@@ -568,6 +573,7 @@ class VerlRayPolicyBackend:
         position_ids = compute_position_id_with_mask(attention_mask)
         batch = DataProto.from_dict(
             tensors={
+                "prompts": prompts,
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
                 "position_ids": position_ids,

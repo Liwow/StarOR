@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import json
@@ -6,6 +6,7 @@ import math
 import os
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
@@ -67,6 +68,7 @@ class TTRLRewardCalculator(RewardCalculator):
         if not trajectories:
             return []
 
+        group_t0 = time.perf_counter()
         current_iter = self._current_iteration + 1
         if commit:
             self._current_iteration = current_iter
@@ -74,7 +76,9 @@ class TTRLRewardCalculator(RewardCalculator):
         base_obj_scale = self._base_obj_scale()
         local_scope = self._use_local_cluster_scope()
 
+        exec_group_t0 = time.perf_counter()
         execution_pairs = self._execute_group(trajectories)
+        execution_group_sec = float(time.perf_counter() - exec_group_t0)
 
         evals: list[dict[str, Any]] = []
         for traj, (execution, exec_cache_hit) in zip(trajectories, execution_pairs, strict=False):
@@ -107,11 +111,17 @@ class TTRLRewardCalculator(RewardCalculator):
                 }
             )
 
+        semantic_t0 = time.perf_counter()
         semantic_group_counts, semantic_group_total = self._prepare_semantic_group(evals, local_scope=local_scope)
+        semantic_prepare_sec = float(time.perf_counter() - semantic_t0)
+        structural_t0 = time.perf_counter()
         structural_group_counts = self._prepare_structural_group(evals)
+        structural_prepare_sec = float(time.perf_counter() - structural_t0)
         structural_group_total = len(evals)
 
         rewards: list[RewardBreakdown] = []
+        reward_loop_t0 = time.perf_counter()
+        r3_total_sec = 0.0
         for e in evals:
             traj = e["trajectory"]
             execution = e["execution"]
@@ -182,7 +192,9 @@ class TTRLRewardCalculator(RewardCalculator):
             r3 = 0.0
             r3_meta: dict[str, Any] = {"triggered": False}
             if bool(self.config.enable_r3_reward):
+                r3_t0 = time.perf_counter()
                 r3, r3_meta = self._compute_r3_with_details(traj)
+                r3_total_sec += float(time.perf_counter() - r3_t0)
                 r3_meta["triggered"] = True
 
             r1_weight_scale = 1.0
@@ -191,16 +203,23 @@ class TTRLRewardCalculator(RewardCalculator):
                 r1_weight_scale = float(self.config.r1_obj_scale_fail_multiplier)
                 r1_obj_scale_penalized = True
 
+            # If r3 is disabled, fold r3 weight into r1 to keep total weight mass stable.
+            r3_enabled = bool(self.config.enable_r3_reward)
+            base_r1_weight = float(self.config.r1_weight)
+            base_r3_weight = float(self.config.r3_weight)
+            r1_weight_effective = base_r1_weight + (0.0 if r3_enabled else base_r3_weight)
+            r3_weight_effective = base_r3_weight if r3_enabled else 0.0
+
             total = self.combine_rewards(
                 r1=r1,
                 r2=r2,
                 r3=r3,
                 r4=r4,
                 reward_gate=reward_gate,
-                r1_weight=self.config.r1_weight,
+                r1_weight=r1_weight_effective,
                 r2_weight=self.config.r2_weight,
                 r1_weight_scale=r1_weight_scale,
-                r3_weight=self.config.r3_weight,
+                r3_weight=r3_weight_effective,
                 r4_weight=self.config.r4_weight,
             )
 
@@ -211,11 +230,15 @@ class TTRLRewardCalculator(RewardCalculator):
                 "reward_gate": reward_gate,
                 "total_reward_formula": "total_r = (w1*r1*r1_weight_scale) + (w2*r2) + (w3*r3) + (w4*r4); total=max(0,total_r)",
                 "total_reward_weights": {
-                    "w1_r1": float(self.config.r1_weight),
+                    "w1_r1": float(r1_weight_effective),
                     "w2_r2": float(self.config.r2_weight),
                     "r1_obj_scale_fail_multiplier": float(self.config.r1_obj_scale_fail_multiplier),
-                    "w3_r3": float(self.config.r3_weight),
+                    "w3_r3": float(r3_weight_effective),
                     "w4_r4": float(self.config.r4_weight),
+                    "w1_base_r1": float(base_r1_weight),
+                    "w3_base_r3": float(base_r3_weight),
+                    "r3_enabled": bool(r3_enabled),
+                    "r3_weight_folded_into_r1": bool(not r3_enabled),
                 },
                 "total_reward_terms": {
                     "r1": float(r1),
@@ -223,7 +246,7 @@ class TTRLRewardCalculator(RewardCalculator):
                     "r3": float(r3),
                     "r1_weight_scale": float(r1_weight_scale),
                     "r1_obj_scale_penalized": bool(r1_obj_scale_penalized),
-                    "r1_effective_weight": float(self.config.r1_weight) * float(r1_weight_scale),
+                    "r1_effective_weight": float(r1_weight_effective) * float(r1_weight_scale),
                     "r3_effective": float(r3),
                     "r4": float(r4),
                 },
@@ -272,6 +295,8 @@ class TTRLRewardCalculator(RewardCalculator):
                 )
             )
 
+        reward_loop_sec = float(time.perf_counter() - reward_loop_t0)
+        commit_t0 = time.perf_counter()
         if commit and (not local_scope):
             for e in evals:
                 if bool(e["r1_eligible"]) and isinstance(e["obj_answer"], (int, float)) and isinstance(e.get("semantic_leader"), (int, float)):
@@ -286,6 +311,21 @@ class TTRLRewardCalculator(RewardCalculator):
                     feature_tuple=e["feature_tuple"],
                     iteration=current_iter,
                 )
+        commit_sec = float(time.perf_counter() - commit_t0)
+        reward_group_timing = {
+            "execution_group_sec": execution_group_sec,
+            "semantic_prepare_sec": semantic_prepare_sec,
+            "structural_prepare_sec": structural_prepare_sec,
+            "reward_loop_sec": reward_loop_sec,
+            "r3_total_sec": r3_total_sec,
+            "commit_sec": commit_sec,
+            "total_sec": float(time.perf_counter() - group_t0),
+            "num_trajectories": len(trajectories),
+        }
+        for reward in rewards:
+            if reward.metadata is None:
+                reward.metadata = {}
+            reward.metadata["reward_timing"] = dict(reward_group_timing)
 
         return rewards
 
@@ -499,6 +539,7 @@ class TTRLRewardCalculator(RewardCalculator):
         }
 
     def _compute_r3_with_details(self, trajectory: Trajectory) -> tuple[float, dict]:
+        r3_t0 = time.perf_counter()
         r3_enabled = bool(self.config.enable_r3_reward)
         if not r3_enabled:
             return 1.0, {
@@ -524,8 +565,11 @@ class TTRLRewardCalculator(RewardCalculator):
                 "num_cases": 0,
             }
 
+        normalize_t0 = time.perf_counter()
         normalized_cases = [self._normalize_r3_case(raw_case) for raw_case in tests]
+        normalize_cases_sec = float(time.perf_counter() - normalize_t0)
 
+        exec_t0 = time.perf_counter()
         max_workers = min(len(normalized_cases), max(1, min(8, os.cpu_count() or 1)))
         case_instances = [case_instance for case_instance, _, _ in normalized_cases]
         if len(normalized_cases) <= 1:
@@ -552,6 +596,7 @@ class TTRLRewardCalculator(RewardCalculator):
                     "case_id": str(case_meta.get("case_id", f"case_{idx}")) if isinstance(case_meta, dict) else f"case_{idx}",
                 }
             )
+        case_exec_wall_sec = float(time.perf_counter() - exec_t0)
 
         passed_cases = 0
         weighted_pass_sum = 0.0
@@ -588,7 +633,8 @@ class TTRLRewardCalculator(RewardCalculator):
         return r3_score, {
             "enabled": True,
             "source": source,
-            "num_cases": len(tests),
+            "num_cases": len(details),
+            "requested_cases": int(self.config.robustness_cases),
             "passed_cases": passed_cases,
             "weighted_pass_sum": float(weighted_pass_sum),
             "obj_scale_scaled_cases": int(obj_scale_scaled_cases),
@@ -597,6 +643,14 @@ class TTRLRewardCalculator(RewardCalculator):
             "r3_case_score_mode": "effective_success_with_obj_scale_multiplier",
             "obj_scale_fail_multiplier": float(self.config.r1_obj_scale_fail_multiplier),
             "cases": details,
+            "timing": {
+                "normalize_cases_sec": normalize_cases_sec,
+                "case_exec_wall_sec": case_exec_wall_sec,
+                "case_exec_elapsed_sum_sec": float(sum(float(d.get("elapsed_sec", 0.0) or 0.0) for d in details)),
+                "num_cases": len(details),
+                "max_workers": max_workers,
+                "total_sec": float(time.perf_counter() - r3_t0),
+            },
         }
 
     def _execute_group(self, trajectories: list[Trajectory]) -> list[tuple[ExecutionResult, bool]]:
@@ -610,7 +664,7 @@ class TTRLRewardCalculator(RewardCalculator):
             return list(pool.map(self._execute, trajectories))
 
     def _load_r3_tests(self) -> tuple[list[dict[str, Any]], str]:
-        precomputed = self._precomputed_r3_cases(self.config.robustness_cases)
+        precomputed = self._precomputed_r3_cases()
         if precomputed:
             return precomputed, "precomputed"
 
@@ -628,12 +682,12 @@ class TTRLRewardCalculator(RewardCalculator):
         )
         return list(tests), "heuristic"
 
-    def _precomputed_r3_cases(self, k: int) -> list[dict[str, Any]]:
+    def _precomputed_r3_cases(self) -> list[dict[str, Any]]:
         raw = self.task.instance.get("__r3_test_cases__") if isinstance(self.task.instance, dict) else None
         if not isinstance(raw, list):
             return []
         out: list[dict[str, Any]] = []
-        for item in raw[: max(1, int(k))]:
+        for item in raw:
             if isinstance(item, dict):
                 out.append(item)
         return out
@@ -1104,5 +1158,19 @@ class TTRLRewardCalculator(RewardCalculator):
             'num_vars': num_vars,
             'passes': passes,
         }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

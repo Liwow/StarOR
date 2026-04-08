@@ -13,6 +13,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import concurrent.futures
 from pathlib import Path
 from typing import Any
 
@@ -365,6 +366,91 @@ def build_generation_record(
     }
 
 
+def _generate_one_record(
+    *,
+    source_index: int,
+    record: dict[str, Any],
+    rid: str,
+    client: "OpenAICompatClient",
+    system_prompt: str,
+    temperature: float,
+    max_retries: int,
+    retry_sleep: float,
+    verification_mode: str,
+    run_timeout: int,
+) -> dict[str, Any]:
+    try:
+        tagged_output = build_tagged_sections(record)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "record_id": rid,
+            "source_index": source_index,
+            "stage": "formatting",
+            "error_payload": {
+                "record_id": rid,
+                "source_index": source_index,
+                "stage": "formatting",
+                "error": str(exc),
+                "input_preview": str(record.get("input", ""))[:500],
+            },
+            "attempt_errors": [],
+        }
+
+    feedback = ""
+    last_exc: Exception | None = None
+    attempt_errors: list[str] = []
+    for attempt in range(1, max_retries + 1):
+        user_prompt = build_generation_prompt(str(record.get("input", "")), tagged_output)
+        if feedback:
+            user_prompt += "\n\nYour previous answer was rejected. Fix this issue and regenerate from scratch:\n" + feedback + "\n"
+        try:
+            response_text = client.chat(system_prompt=system_prompt, user_prompt=user_prompt, temperature=temperature)
+            type_block, python_block = extract_type_and_python(response_text)
+            type_verification = verify_type_block(type_block)
+            verification = verify_python_block(python_block, mode=verification_mode, timeout=run_timeout)
+            verification["type_verification"] = type_verification
+            payload = build_generation_record(
+                source_record=record,
+                source_index=source_index,
+                tagged_output=tagged_output,
+                type_block=type_block,
+                python_block=python_block,
+                verification=verification,
+                raw_response=response_text,
+            )
+            return {
+                "ok": True,
+                "record_id": rid,
+                "source_index": source_index,
+                "attempt": attempt,
+                "payload": payload,
+                "verification_mode": verification.get("mode"),
+                "attempt_errors": attempt_errors,
+            }
+        except Exception as exc:
+            last_exc = exc
+            feedback = str(exc)
+            attempt_errors.append(f"attempt={attempt}/{max_retries}: {exc}")
+            time.sleep(retry_sleep)
+
+    return {
+        "ok": False,
+        "record_id": rid,
+        "source_index": source_index,
+        "stage": "generation",
+        "error_payload": {
+            "record_id": rid,
+            "source_index": source_index,
+            "stage": "generation",
+            "error": str(last_exc) if last_exc else "unknown generation error",
+            "input_preview": str(record.get("input", ""))[:500],
+            "tagged_output_preview": tagged_output[:1000],
+        },
+        "attempt_errors": attempt_errors,
+    }
+
+
 def process_format(args: argparse.Namespace) -> None:
     input_path = Path(args.input)
     output_path = Path(args.output)
@@ -404,6 +490,7 @@ def process_generate(args: argparse.Namespace) -> None:
     output_path = Path(args.output)
     error_path = output_path.with_suffix(output_path.suffix + ".errors.jsonl")
     seen = load_seen_record_ids(output_path) if args.resume else set()
+    parallel = max(1, int(args.parallel))
 
     api_key = os.getenv(args.api_key_env, "")
     if not api_key:
@@ -416,81 +503,97 @@ def process_generate(args: argparse.Namespace) -> None:
 
     processed = 0
     skipped = 0
-    for source_index, record in iter_jsonl(input_path):
-        rid = stable_record_id(record, source_index)
-        if rid in seen:
-            skipped += 1
-            continue
-        if args.limit is not None and processed >= args.limit:
-            break
+    source_iter = iter_jsonl(input_path)
+    exhausted = False
+    system_prompt = SYSTEM_INSTRUCTION.strip() + "\nOnly output the requested final tagged blocks. Do not output <thought>."
 
-        try:
-            tagged_output = build_tagged_sections(record)
-        except Exception as exc:
-            append_jsonl(
-                error_path,
-                {
-                    "record_id": rid,
-                    "source_index": source_index,
-                    "stage": "formatting",
-                    "error": str(exc),
-                    "input_preview": str(record.get("input", ""))[:500],
-                },
-            )
-            print(f"[generate] formatting failed source_index={source_index} record_id={rid}: {exc}", flush=True)
-            continue
+    def next_candidate() -> tuple[int, dict[str, Any], str] | None:
+        nonlocal skipped, exhausted
+        if exhausted:
+            return None
+        for source_index, record in source_iter:
+            rid = stable_record_id(record, source_index)
+            if rid in seen:
+                skipped += 1
+                continue
+            return source_index, record, rid
+        exhausted = True
+        return None
 
-        system_prompt = SYSTEM_INSTRUCTION.strip() + "\nOnly output the requested final tagged blocks. Do not output <thought>."
-        feedback = ""
-        last_exc: Exception | None = None
-        for attempt in range(1, args.max_retries + 1):
-            user_prompt = build_generation_prompt(str(record.get("input", "")), tagged_output)
-            if feedback:
-                user_prompt += "\n\nYour previous answer was rejected. Fix this issue and regenerate from scratch:\n" + feedback + "\n"
-            try:
-                response_text = client.chat(system_prompt=system_prompt, user_prompt=user_prompt, temperature=args.temperature)
-                type_block, python_block = extract_type_and_python(response_text)
-                type_verification = verify_type_block(type_block)
-                verification = verify_python_block(python_block, mode=args.verification_mode, timeout=args.run_timeout)
-                verification["type_verification"] = type_verification
-                payload = build_generation_record(
-                    source_record=record,
-                    source_index=source_index,
-                    tagged_output=tagged_output,
-                    type_block=type_block,
-                    python_block=python_block,
-                    verification=verification,
-                    raw_response=response_text,
-                )
-                append_jsonl(output_path, payload)
-                seen.add(rid)
-                processed += 1
-                print(
-                    f"[generate] wrote source_index={source_index} record_id={rid} attempt={attempt} verification={verification['mode']}",
-                    flush=True,
-                )
-                last_exc = None
+    with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as executor:
+        inflight: dict[concurrent.futures.Future, tuple[int, str]] = {}
+
+        while True:
+            remaining_needed = None if args.limit is None else max(0, int(args.limit) - processed)
+            if remaining_needed == 0:
                 break
-            except Exception as exc:
-                last_exc = exc
-                feedback = str(exc)
-                print(
-                    f"[generate] retry source_index={source_index} record_id={rid} attempt={attempt}/{args.max_retries}: {exc}",
-                    flush=True,
+            max_inflight = parallel if remaining_needed is None else min(parallel, remaining_needed)
+
+            while len(inflight) < max_inflight:
+                candidate = next_candidate()
+                if candidate is None:
+                    break
+                source_index, record, rid = candidate
+                fut = executor.submit(
+                    _generate_one_record,
+                    source_index=source_index,
+                    record=record,
+                    rid=rid,
+                    client=client,
+                    system_prompt=system_prompt,
+                    temperature=args.temperature,
+                    max_retries=args.max_retries,
+                    retry_sleep=args.retry_sleep,
+                    verification_mode=args.verification_mode,
+                    run_timeout=args.run_timeout,
                 )
-                time.sleep(args.retry_sleep)
-        if last_exc is not None:
-            append_jsonl(
-                error_path,
-                {
-                    "record_id": rid,
-                    "source_index": source_index,
-                    "stage": "generation",
-                    "error": str(last_exc),
-                    "input_preview": str(record.get("input", ""))[:500],
-                    "tagged_output_preview": tagged_output[:1000],
-                },
-            )
+                inflight[fut] = (source_index, rid)
+
+            if not inflight:
+                break
+
+            done, _ = concurrent.futures.wait(inflight.keys(), return_when=concurrent.futures.FIRST_COMPLETED)
+            for fut in done:
+                source_index, rid = inflight.pop(fut)
+                try:
+                    result = fut.result()
+                except Exception as exc:
+                    append_jsonl(
+                        error_path,
+                        {
+                            "record_id": rid,
+                            "source_index": source_index,
+                            "stage": "worker_crash",
+                            "error": str(exc),
+                        },
+                    )
+                    print(f"[generate] worker failed source_index={source_index} record_id={rid}: {exc}", flush=True)
+                    continue
+
+                for retry_msg in result.get("attempt_errors", []):
+                    print(
+                        f"[generate] retry source_index={result.get('source_index', source_index)} "
+                        f"record_id={result.get('record_id', rid)} {retry_msg}",
+                        flush=True,
+                    )
+
+                if bool(result.get("ok")):
+                    append_jsonl(output_path, result["payload"])
+                    seen.add(rid)
+                    processed += 1
+                    print(
+                        f"[generate] wrote source_index={result['source_index']} record_id={result['record_id']} "
+                        f"attempt={result.get('attempt')} verification={result.get('verification_mode')}",
+                        flush=True,
+                    )
+                else:
+                    append_jsonl(error_path, result["error_payload"])
+                    print(
+                        f"[generate] {result.get('stage', 'generation')} failed source_index={result['source_index']} "
+                        f"record_id={result['record_id']}: {result['error_payload'].get('error')}",
+                        flush=True,
+                    )
+
     print(f"[generate] done processed={processed} skipped={skipped} output={output_path}", flush=True)
 
 
@@ -519,6 +622,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--verification-mode", choices=["syntax", "run", "run-if-available"], default="run-if-available")
     generate_parser.add_argument("--max-retries", type=int, default=4)
     generate_parser.add_argument("--retry-sleep", type=float, default=1.5)
+    generate_parser.add_argument("--parallel", type=int, default=4, help="Number of concurrent generation workers.")
     generate_parser.add_argument("--limit", type=int, default=None)
     generate_parser.add_argument("--resume", action="store_true", default=True)
     generate_parser.set_defaults(func=process_generate)

@@ -18,6 +18,7 @@ from verl.trainer.ttrl_or_runtime.types import ExecutionResult, ModelInfo
 _RUNNER_CODE = """
 import importlib.util
 import json
+from pathlib import Path
 import sys
 import traceback
 
@@ -39,7 +40,12 @@ def _pick_script_result(module):
 
 def main():
     target = sys.argv[1]
-    payload = json.loads(sys.argv[2])
+    payload_arg = sys.argv[2]
+    payload_path = Path(payload_arg)
+    if payload_path.exists():
+        payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    else:
+        payload = json.loads(payload_arg)
     try:
         spec = importlib.util.spec_from_file_location("candidate_solution_runtime", target)
         module = importlib.util.module_from_spec(spec)
@@ -266,9 +272,11 @@ class PythonCodeExecutor:
         start: float,
         lp_injection_applied: bool = False,
     ) -> ExecutionResult:
+        instance_file = cwd / f"{solution_path.stem}.instance.json"
+        instance_file.write_text(json.dumps(instance, ensure_ascii=False), encoding="utf-8")
         try:
             proc = subprocess.run(
-                [sys.executable, str(runner_path), str(solution_path), json.dumps(instance)],
+                [sys.executable, str(runner_path), str(solution_path), str(instance_file)],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_sec,
@@ -287,6 +295,24 @@ class PythonCodeExecutor:
                 model_info=None,
                 lp_injection_applied=bool(lp_injection_applied),
             )
+        except OSError as exc:
+            elapsed = time.perf_counter() - start
+            return ExecutionResult(
+                success=False,
+                output={"ok": False, "error": str(exc), "type": type(exc).__name__},
+                stdout="",
+                stderr="",
+                error_type=type(exc).__name__,
+                signature="EXEC_ERROR",
+                elapsed_sec=elapsed,
+                model_info=None,
+                lp_injection_applied=bool(lp_injection_applied),
+            )
+        finally:
+            try:
+                instance_file.unlink(missing_ok=True)
+            except Exception:
+                pass
 
         elapsed = time.perf_counter() - start
         parsed = self._parse_stdout(proc.stdout)

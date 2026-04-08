@@ -203,16 +203,23 @@ class TTRLRewardCalculator(RewardCalculator):
                 r1_weight_scale = float(self.config.r1_obj_scale_fail_multiplier)
                 r1_obj_scale_penalized = True
 
+            # If r3 is disabled, fold r3 weight into r1 to keep total weight mass stable.
+            r3_enabled = bool(self.config.enable_r3_reward)
+            base_r1_weight = float(self.config.r1_weight)
+            base_r3_weight = float(self.config.r3_weight)
+            r1_weight_effective = base_r1_weight + (0.0 if r3_enabled else base_r3_weight)
+            r3_weight_effective = base_r3_weight if r3_enabled else 0.0
+
             total = self.combine_rewards(
                 r1=r1,
                 r2=r2,
                 r3=r3,
                 r4=r4,
                 reward_gate=reward_gate,
-                r1_weight=self.config.r1_weight,
+                r1_weight=r1_weight_effective,
                 r2_weight=self.config.r2_weight,
                 r1_weight_scale=r1_weight_scale,
-                r3_weight=self.config.r3_weight,
+                r3_weight=r3_weight_effective,
                 r4_weight=self.config.r4_weight,
             )
 
@@ -223,11 +230,15 @@ class TTRLRewardCalculator(RewardCalculator):
                 "reward_gate": reward_gate,
                 "total_reward_formula": "total_r = (w1*r1*r1_weight_scale) + (w2*r2) + (w3*r3) + (w4*r4); total=max(0,total_r)",
                 "total_reward_weights": {
-                    "w1_r1": float(self.config.r1_weight),
+                    "w1_r1": float(r1_weight_effective),
                     "w2_r2": float(self.config.r2_weight),
                     "r1_obj_scale_fail_multiplier": float(self.config.r1_obj_scale_fail_multiplier),
-                    "w3_r3": float(self.config.r3_weight),
+                    "w3_r3": float(r3_weight_effective),
                     "w4_r4": float(self.config.r4_weight),
+                    "w1_base_r1": float(base_r1_weight),
+                    "w3_base_r3": float(base_r3_weight),
+                    "r3_enabled": bool(r3_enabled),
+                    "r3_weight_folded_into_r1": bool(not r3_enabled),
                 },
                 "total_reward_terms": {
                     "r1": float(r1),
@@ -235,7 +246,7 @@ class TTRLRewardCalculator(RewardCalculator):
                     "r3": float(r3),
                     "r1_weight_scale": float(r1_weight_scale),
                     "r1_obj_scale_penalized": bool(r1_obj_scale_penalized),
-                    "r1_effective_weight": float(self.config.r1_weight) * float(r1_weight_scale),
+                    "r1_effective_weight": float(r1_weight_effective) * float(r1_weight_scale),
                     "r3_effective": float(r3),
                     "r4": float(r4),
                 },
@@ -622,7 +633,8 @@ class TTRLRewardCalculator(RewardCalculator):
         return r3_score, {
             "enabled": True,
             "source": source,
-            "num_cases": len(tests),
+            "num_cases": len(details),
+            "requested_cases": int(self.config.robustness_cases),
             "passed_cases": passed_cases,
             "weighted_pass_sum": float(weighted_pass_sum),
             "obj_scale_scaled_cases": int(obj_scale_scaled_cases),
@@ -652,7 +664,7 @@ class TTRLRewardCalculator(RewardCalculator):
             return list(pool.map(self._execute, trajectories))
 
     def _load_r3_tests(self) -> tuple[list[dict[str, Any]], str]:
-        precomputed = self._precomputed_r3_cases(self.config.robustness_cases)
+        precomputed = self._precomputed_r3_cases()
         if precomputed:
             return precomputed, "precomputed"
 
@@ -670,12 +682,12 @@ class TTRLRewardCalculator(RewardCalculator):
         )
         return list(tests), "heuristic"
 
-    def _precomputed_r3_cases(self, k: int) -> list[dict[str, Any]]:
+    def _precomputed_r3_cases(self) -> list[dict[str, Any]]:
         raw = self.task.instance.get("__r3_test_cases__") if isinstance(self.task.instance, dict) else None
         if not isinstance(raw, list):
             return []
         out: list[dict[str, Any]] = []
-        for item in raw[: max(1, int(k))]:
+        for item in raw:
             if isinstance(item, dict):
                 out.append(item)
         return out
@@ -1146,6 +1158,8 @@ class TTRLRewardCalculator(RewardCalculator):
             'num_vars': num_vars,
             'passes': passes,
         }
+
+
 
 
 
