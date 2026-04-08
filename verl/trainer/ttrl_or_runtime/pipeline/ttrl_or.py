@@ -478,12 +478,23 @@ class TTRLORRunner:
             for item in rollout_group:
                 reward_i = item.get('reward', {}) if isinstance(item, dict) else {}
                 timing_i = item.get('timing', {}) if isinstance(item, dict) else {}
+                r1_debug_i = item.get('r1_debug', {}) if isinstance(item, dict) else {}
+                r3_debug_i = item.get('r3_debug', {}) if isinstance(item, dict) else {}
+                r4_debug_i = item.get('r4_debug', {}) if isinstance(item, dict) else {}
+                execution_i = item.get('execution', {}) if isinstance(item, dict) else {}
                 lines.append(
                     f"- rollout={item.get('rollout_index', '')} node={item.get('node_id', '')} "
                     f"prior={item.get('prior', '')} prior_source={item.get('prior_source', '')} "
                     f"obj={item.get('obj_answer', '')} total={reward_i.get('total', '')} "
                     f"r1={reward_i.get('r1', '')} r2={reward_i.get('r2', '')} r3={reward_i.get('r3', '')} r4={reward_i.get('r4', '')} "
                     f"backprop_sec={timing_i.get('backprop_sec', '')}"
+                )
+                lines.append(
+                    f"  exec_success={execution_i.get('success', '')} effective_success={execution_i.get('effective_success', '')} "
+                    f"parsed_obj={execution_i.get('parsed_obj_answer', '')} has_valid_obj={r1_debug_i.get('has_valid_obj', '')} "
+                    f"obj_in_bounds={r1_debug_i.get('obj_in_bounds', '')} r1_eligible={r1_debug_i.get('r1_eligible', '')} "
+                    f"structure_gate={r4_debug_i.get('structure_gate', '')} r3_source={r3_debug_i.get('source', '')} "
+                    f"r3_pass={r3_debug_i.get('passed_cases', '')}/{r3_debug_i.get('num_cases', '')}"
                 )
         else:
             lines.append("- none")
@@ -498,6 +509,10 @@ class TTRLORRunner:
                 f"- obj: {reward.get('obj_answer', '')}",
                 f"- gt: {best.get('gt', '')}",
                 f"- reward: r1={reward.get('r1', '')}, r2={reward.get('r2', '')}, r3={reward.get('r3', '')}, r4={reward.get('r4', '')}, total={reward.get('total', '')}",
+                f"- r1_debug: eligible={((reward.get('r1_debug', {}) or {}).get('r1_eligible', ''))}, valid_obj={((reward.get('r1_debug', {}) or {}).get('has_valid_obj', ''))}, in_bounds={((reward.get('r1_debug', {}) or {}).get('obj_in_bounds', ''))}, code_len={((reward.get('r1_debug', {}) or {}).get('code_len', ''))}",
+                f"- r4_debug: structure_gate={((reward.get('r4_debug', {}) or {}).get('structure_gate', ''))}, extracted={(((reward.get('r4_debug', {}) or {}).get('structure_gate_debug', {}) or {}).get('extracted', ''))}, structural_pass={(((reward.get('r4_debug', {}) or {}).get('structure_gate_debug', {}) or {}).get('passes', ''))}",
+                f"- code_execution: success={((best.get('code_execution', {}) or {}).get('success', ''))}, effective_success={((best.get('code_execution', {}) or {}).get('effective_success', ''))}, parsed_obj={((best.get('code_execution', {}) or {}).get('parsed_obj_answer', ''))}",
+                f"- r3_debug: source={(((best.get('reward', {}) or {}).get('r3_debug', {}) or {}).get('source', ''))}, reason={(((best.get('reward', {}) or {}).get('r3_debug', {}) or {}).get('reason', ''))}, pass={(((best.get('reward', {}) or {}).get('r3_debug', {}) or {}).get('passed_cases', ''))}/{(((best.get('reward', {}) or {}).get('r3_debug', {}) or {}).get('num_cases', ''))}",
                 "",
                 "### Prompt",
                 "```text",
