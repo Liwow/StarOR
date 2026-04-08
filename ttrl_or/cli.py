@@ -557,8 +557,9 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
             "vllm_mode": vllm_mode,
         }
 
+        gold_answer = str(getattr(sample, "answer", "") or "")
         print(
-            f"[r3-batch] [{idx}/{len(samples)}] sample_id={sample.sample_id} "
+            f"[r3-batch] [{idx}/{len(samples)}] sample_id={sample.sample_id} gt={gold_answer} "
             f"status={precompute_status} source={plan.source} tests={len(plan.test_cases)} "
             f"base_scale={plan.base_obj_bounds}"
         )
@@ -569,6 +570,8 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
             sample_payload = {
                 "dataset": dataset_name,
                 "sample_id": sample.sample_id,
+                "gold_answer": gold_answer,
+                "gt": gold_answer,
                 "sample_dir_name": sample_dir.name,
                 "status": precompute_status,
                 "source": plan.source,
@@ -613,6 +616,8 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
                 sid: {
                     "status": item.get("status"),
                     "source": item.get("source"),
+                    "gold_answer": item.get("gold_answer", ""),
+                    "gt": item.get("gt", ""),
                     "base_obj_scale": item.get("base_obj_scale", item.get("base_obj_bounds")),
                     "base_obj_bounds": item.get("base_obj_bounds"),
                     "base_scale_summary": summarize_scale(item.get("base_obj_scale", item.get("base_obj_bounds"))),

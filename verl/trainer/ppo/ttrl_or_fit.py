@@ -701,12 +701,22 @@ def _prepare_r3_for_samples(raw_samples: list, runner: TTRLORRunner, rank: int, 
             allow_heuristic_fallback=False,
         )
         sample.instance = attach_r3_plan_to_instance(base_instance, plan)
+        gold_answer = str(getattr(sample, "answer", "") or "")
+        precompute_status = "ok" if plan.test_cases else "empty"
+        print(
+            f"[verl-or][r3] [{idx + 1}/{len(raw_samples)}] sample_id={sample.sample_id} "
+            f"gt={gold_answer} status={precompute_status} source={plan.source} tests={len(plan.test_cases)} "
+            f"base_scale={plan.base_obj_bounds}"
+        )
 
         if cfg.save_logs:
             sample_dir = Path(cfg.log_dir) / _safe_path_component(sample.sample_id)
             sample_dir.mkdir(parents=True, exist_ok=True)
             payload = {
                 "sample_id": sample.sample_id,
+                "gold_answer": gold_answer,
+                "gt": gold_answer,
+                "status": precompute_status,
                 "source": plan.source,
                 "analysis": plan.analysis,
                 "base_obj_scale": plan.base_obj_bounds,
@@ -787,9 +797,14 @@ def run_ttrl_or_fit(trainer, logger) -> None:
         if trainer.global_steps >= total_budget:
             break
 
+        gold_answer = str(sample.answer or "")
+        print(
+            f"[verl-or][sample] [{sample_idx + 1}/{len(ordered_samples)}] sample_id={sample.sample_id} "
+            f"gt={gold_answer} global_step={trainer.global_steps}"
+        )
         task = _raw_sample_to_task(sample)
         step_before = int(trainer.global_steps)
-        result = runner.run_task(task, human_gold_answer=str(sample.answer or ""))
+        result = runner.run_task(task, human_gold_answer=gold_answer)
         steps_used = max(0, int(trainer.global_steps) - step_before)
         if steps_used > 0:
             progress_bar.update(steps_used)
@@ -817,6 +832,10 @@ def run_ttrl_or_fit(trainer, logger) -> None:
         if isinstance(runtime.get("total_elapsed_sec"), (int, float)):
             metrics["ttrl_or/sample_runtime_sec"] = float(runtime["total_elapsed_sec"])
         metrics.update(_flatten_stage_reports(result.stage_reports))
+        print(
+            f"[verl-or][sample-done] sample_id={sample.sample_id} gt={gold_answer} "
+            f"best_reward={best_reward} best_obj={best_obj} steps={steps_used}"
+        )
         logger.log(data=metrics, step=max(0, trainer.global_steps))
 
     progress_bar.close()
