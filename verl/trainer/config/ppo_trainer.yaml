@@ -179,6 +179,15 @@ algorithm:
       # Historical decay used by r4 global bookkeeping.
       r4_decay: 0.95
 
+      # Weight of r1 in final reward.
+      r1_weight: 1.0
+
+      # Weight of r2 in final reward.
+      r2_weight: 0.0
+
+      # Multiplier on r1 weight when objective scale check fails.
+      r1_obj_scale_fail_multiplier: 0.2
+
       # Weight of r3 in final reward.
       r3_weight: 0.1
 

@@ -23,14 +23,13 @@ Please define the type, set, parameters, variables, objective, constraints, and 
 Here is the specific description of the optimization problem:
 {task_description}. 
 The required order from this point is:
-1. <thought>
-2. <Type>
-3. <Sets>
-4. <Parameters>
-5. <Variables>
-6. <Objective>
-7. <Constraints>
-8. <python>"""
+1. <Type>
+2. <Sets>
+3. <Parameters>
+4. <Variables>
+5. <Objective>
+6. <Constraints>
+7. <python>"""
 
 STAGE_OUTPUT_ORDER: list[tuple[Stage, tuple[str, ...], str]] = [
     (Stage.SCHEMA, ("Type", "Sets"), "schema"),
@@ -38,6 +37,30 @@ STAGE_OUTPUT_ORDER: list[tuple[Stage, tuple[str, ...], str]] = [
     (Stage.OBJ_CONS, ("Objective", "Constraints"), "obj_cons"),
     (Stage.CODE, ("python",), "code"),
 ]
+
+
+def sanitize_prompt_without_thought(prompt_text: str) -> str:
+    """Remove <thought>/think-step instructions to match no-thought prompt policy."""
+    text = str(prompt_text or "")
+    lines = text.splitlines()
+    cleaned: list[str] = []
+    for line in lines:
+        lower = line.strip().lower()
+        if "<thought>" in lower:
+            continue
+        if "think step by step" in lower:
+            continue
+        if "you should think first" in lower:
+            continue
+        if "before you output, you should think" in lower:
+            continue
+        cleaned.append(line)
+
+    text = "\n".join(cleaned)
+    # Renumber bullet order lines like "2. <Type>" -> "1. <Type>" after thought removal.
+    text = re.sub(r"(?m)^\s*[2-9]\.\s*<", lambda m: f"{int(m.group(0).strip().split('.')[0]) - 1}. <", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
 
 
 def iter_jsonl(path: Path):
@@ -150,6 +173,7 @@ def build_mcts_records(record: dict[str, Any], source_index: int) -> list[dict[s
     trajectory = Trajectory(trajectory_id=f"mcts_format_{source_index}")
     for stage_index, (stage, output_tags, stage_name) in enumerate(STAGE_OUTPUT_ORDER, start=1):
         prompt_text = builder.build(task, stage, trajectory if trajectory.outputs else None)
+        prompt_text = sanitize_prompt_without_thought(prompt_text)
         stage_output = stage_outputs[stage]
         record_id = stable_record_id(record, source_index, suffix=stage_name)
         records.append(
@@ -185,7 +209,7 @@ def build_full_prompt_record(record: dict[str, Any], source_index: int) -> dict[
         "source_record_id": str(record.get("record_id", "") or ""),
         "source_index": source_index,
         "mode": "full_prompt",
-        "input": FULL_PROMPT_TEMPLATE.format(task_description=task_text),
+        "input": sanitize_prompt_without_thought(FULL_PROMPT_TEMPLATE.format(task_description=task_text)),
         "output": output_text,
         "task": task_text,
     }

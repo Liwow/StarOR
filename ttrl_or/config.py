@@ -33,6 +33,9 @@ class RewardConfig:
     r4_decay: float = 0.95  # Decay factor for historical structural counts
 
     # ������ Final reward weights ������
+    r1_weight: float = 1.0  # Weight for r1 in final reward
+    r2_weight: float = 0.0  # Weight for r2 in final reward
+    r1_obj_scale_fail_multiplier: float = 0.2  # Multiplier on r1 weight when obj-scale check fails
     r3_weight: float = 0.1  # Weight for r3 in final reward
     r4_weight: float = 0.2  # Weight for r4 in final reward
     structure_gate_min: float = 0.2  # Minimum multiplier when LP structure is incomplete

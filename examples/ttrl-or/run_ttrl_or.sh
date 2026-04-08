@@ -26,6 +26,11 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.reward.enable_r4_reward=True \
     algorithm.ttrl_or.reward.robustness_cases=3 \
     algorithm.ttrl_or.reward.cluster_scope=local \
+    algorithm.ttrl_or.reward.r1_weight=1.0 \
+    algorithm.ttrl_or.reward.r2_weight=0.0 \
+    algorithm.ttrl_or.reward.r1_obj_scale_fail_multiplier=0.2 \
+    algorithm.ttrl_or.reward.r3_weight=0.1 \
+    algorithm.ttrl_or.reward.r4_weight=0.2 \
     algorithm.ttrl_or.reward.structure_gate_min=0.2 \
     algorithm.ttrl_or.dataset.resume_skip_completed=True \
     algorithm.ttrl_or.backend.reset_lora_on_begin_episode=True \
