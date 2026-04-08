@@ -119,9 +119,8 @@ Return exactly these two blocks in order:
 <Sets> ... </Sets>
 Do not define parameters, variables, objective, constraints, or code.
 The required order from this point is:
-1. <thought>
-2. <Type>
-3. <Sets>
+1. <Type>
+2. <Sets>
 
 {TYPE_SET_NOTICE}
 """.strip(),
@@ -141,9 +140,8 @@ Return exactly these two blocks in order:
 <Variables> ... </Variables>
 Do not write the objective, constraints, or code.
 The required order from this point is:
-1. <thought>
-2. <Parameters>
-3. <Variables>
+1. <Parameters>
+2. <Variables>
 
 {PARA_VAR_NOTICE}
 """.strip(),
@@ -166,9 +164,8 @@ Return exactly these two blocks in order:
 <Constraints> ... </Constraints>
 Do not generate code.
 The required order from this point is:
-1. <thought>
-2. <Objective>
-3. <Constraints>
+1. <Objective>
+2. <Constraints>
 
 
 {OBJ_CON_NOTICE}
@@ -191,8 +188,7 @@ Here are the objective and constraints that have already been defined:
 Please provide the executable Gurobi Python code needed for this optimization problem within <python>.
 Translate the finalized model faithfully and do not redesign it.
 The required order from this point is:
-1. <thought>
-2. <python>
+1. <python>
 
 {CODE_NOTICE}
 """.strip(),
@@ -206,25 +202,22 @@ You are a professional optimization problem analyst, proficient in extracting ke
 Here is the specific description of the optimization problem:
 {{task_description}}
 
-1. You should first think step by step in <thought> and carefully analyze the problem structure.
-
-2. Then you should generate the TYPE and SETS components first and in order:
+1. You should generate the TYPE and SETS components first and in order:
 <Type> ... </Type>
 <Sets> ... </Sets>
 
-3. After finishing the current stage, continue the formulation and finally provide the corresponding Gurobi Python code within <python> ... </python>.
+2. After finishing the current stage, continue the formulation and finally provide the corresponding Gurobi Python code within <python> ... </python>.
 
 The required order from this point is:
-1. <thought>
-2. <Type>
-3. <Sets>
-4. <python>
+1. <Type>
+2. <Sets>
+3. <python>
 
 {TYPE_SET_NOTICE}
 
 {CODE_NOTICE}
 
-NOTE: You should think first in <thought>, and then output the problem type in <Type> and the Sets in <Sets>, finally output the complete optimization problem modeling code in <python>.
+NOTE: You should output the problem type in <Type> and the Sets in <Sets>, finally output the complete optimization problem modeling code in <python>.
 """.strip(),
     Stage.SET_PARAM_VAR: f"""
 You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
@@ -235,25 +228,22 @@ Here is the specific description of the optimization problem:
 Here are the type analysis and sets that have already been defined:
 {{schema_skill_str}}
 
-1. You should first think step by step in <thought> and carefully analyze the parameters and decisions needed by the formulation.
-
-2. Then you should generate the PARAMETERS and VARIABLES components first and in order:
+1. You should generate the PARAMETERS and VARIABLES components first and in order:
 <Parameters> ... </Parameters>
 <Variables> ... </Variables>
 
-3. After finishing the current stage, continue the formulation and finally provide the corresponding Gurobi Python code within <python> ... </python>.
+2. After finishing the current stage, continue the formulation and finally provide the corresponding Gurobi Python code within <python> ... </python>.
 
 The required order from this point is:
-1. <thought>
-2. <Parameters>
-3. <Variables>
-4. <python>
+1. <Parameters>
+2. <Variables>
+3. <python>
 
 {PARA_VAR_NOTICE}
 
 {CODE_NOTICE}
 
-NOTE: You should think first in <thought>, and then output the problem Parameters in <Parameters> and the problem Variables in <Variables>, finally output the complete optimization problem modeling code in <python>.
+NOTE: You should output the problem Parameters in <Parameters> and the problem Variables in <Variables>, finally output the complete optimization problem modeling code in <python>.
 """.strip(),
     Stage.OBJ_CONS: f"""
 You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
@@ -267,24 +257,21 @@ Here are the type analysis and sets that have already been defined:
 Here are the parameters and variables that have already been defined:
 {{set_param_var_str}}
 
-1. You should first think step by step in <thought> and carefully analyze the mathematical objective and constraints.
-
-2. Then you should generate the Objectives and Constraints components first and in order:
+1. You should generate the Objectives and Constraints components first and in order:
 <Objective> ... </Objective>
 <Constraints> ... </Constraints>
 
-3. After finishing the current stage, continue and provide the corresponding Gurobi Python code within <python> ... </python>.
+2. After finishing the current stage, continue and provide the corresponding Gurobi Python code within <python> ... </python>.
 
 The required order from this point is:
-1. <thought>
-2. <Objective>
-3. <Constraints>
-4. <python>
+1. <Objective>
+2. <Constraints>
+3. <python>
 
 {OBJ_CON_NOTICE}
 
 {CODE_NOTICE}
-NOTE: You should think first in <thought>, and then output the problem Objective in <Objective> and the problem Constraints in <Variables>, finally output the complete optimization problem modeling code in <python>.
+NOTE: You should output the problem Objective in <Objective> and the problem Constraints in <Variables>, finally output the complete optimization problem modeling code in <python>.
 """.strip(),
     Stage.CODE: f"""
 You are an optimization expert. You should solve the optimization problem and only Provide the corresponding Gurobi Python code to implement the model within <python> and </python>

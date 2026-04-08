@@ -308,7 +308,6 @@ OBJ_CON_NOTICE = """
 
 3. All symbols in objective/constraints must come from previous stages.
 4. Use symbolic parameters rather than hard-coded numeric coefficients whenever possible.
-5. Output results directly. Do NOT output chain-of-thought.
 
 
 # OBJECTIVE INSTRUCTIONS
