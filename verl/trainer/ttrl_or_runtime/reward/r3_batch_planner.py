@@ -181,7 +181,8 @@ def build_sample_r3_plan(
 
     if isinstance(parsed, dict):
         plan = _normalize_llm_plan(
-                description=description,
+            sample_id=sample_id,
+            description=description,
             parsed=parsed,
             base_instance=instance,
             feature_catalog=feature_catalog,
@@ -195,13 +196,15 @@ def build_sample_r3_plan(
             return plan
     if allow_heuristic_fallback:
         return _heuristic_plan(
-                description=description,
+            sample_id=sample_id,
+            description=description,
             base_instance=instance,
             feature_catalog=feature_catalog,
             robustness_cases=robustness_cases,
             raw_preview=_compose_raw_preview(llm_base_text, llm_tests_text, llm_text),
         )
     return R3SamplePlan(
+        sample_id=sample_id,
         source="disabled",
         analysis="r3 precompute disabled due to extraction failure",
         base_obj_bounds=_default_scale_from_context(description, instance, feature_catalog),
@@ -299,6 +302,7 @@ def _normalize_llm_plan(
     if not test_cases:
         return None
     return R3SamplePlan(
+        sample_id=sample_id,
         source="llm",
         analysis=analysis,
         base_obj_bounds=base_bounds,
@@ -364,6 +368,7 @@ def _heuristic_plan(
             }
         )
     return R3SamplePlan(
+        sample_id=sample_id,
         source="heuristic",
         analysis="heuristic fallback plan",
         base_obj_bounds=base_bounds,
