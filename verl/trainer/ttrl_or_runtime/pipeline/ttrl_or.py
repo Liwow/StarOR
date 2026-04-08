@@ -134,6 +134,12 @@ class TTRLORRunner:
                 iter_live_writer = (run_dir / "mcts_iterations.md").open("w", encoding="utf-8")
 
             def _on_iteration_log(payload: dict[str, Any]) -> None:
+                gold_answer = str(task_context.get("gold_answer", ""))
+                if isinstance(payload, dict):
+                    payload["gt"] = gold_answer
+                    best_payload = payload.get("best_rollout")
+                    if isinstance(best_payload, dict):
+                        best_payload["gt"] = gold_answer
                 if iter_live_writer is None:
                     return
                 iter_live_writer.write(self._format_iteration_markdown(payload))
@@ -146,7 +152,6 @@ class TTRLORRunner:
                 stage_name = payload.get("stage", "")
                 best_reward = reward_obj.get("total")
                 obj_answer = reward_obj.get("obj_answer")
-                gold_answer = str(task_context.get("gold_answer", ""))
                 print(
                     f"[MCTS][task={task.task_id}] iter={iter_idx} stage={stage_name} "
                     f"best_reward={best_reward} obj={obj_answer} gt={gold_answer} "
@@ -162,6 +167,14 @@ class TTRLORRunner:
             records = search_result.records
             stop_info = dict(search_result.stop_info or {})
             iteration_logs = list(search_result.iteration_logs or [])
+            gold_answer = str(task_context.get("gold_answer", ""))
+            for item in iteration_logs:
+                if not isinstance(item, dict):
+                    continue
+                item["gt"] = gold_answer
+                best_payload = item.get("best_rollout")
+                if isinstance(best_payload, dict):
+                    best_payload["gt"] = gold_answer
             trace.iteration_logs = iteration_logs
 
             stage_reports: dict[str, dict] = {}

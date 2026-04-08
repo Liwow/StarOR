@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 from pathlib import Path
 from typing import Any
@@ -89,6 +90,27 @@ class PythonCodeExecutor:
             return self._run_in_sandbox(code=code, instance=instance)
         return self._run_in_subprocess_mode(code=code, instance=instance)
 
+    def run_many(
+        self,
+        code: str,
+        instances: list[dict[str, Any]],
+        *,
+        max_workers: int | None = None,
+    ) -> list[ExecutionResult]:
+        if not instances:
+            return []
+        if len(instances) == 1:
+            return [self.run(code, instances[0])]
+
+        workers = int(max_workers or len(instances))
+        workers = max(1, min(len(instances), workers))
+
+        if self.mode == "sandbox":
+            return self._run_many_in_sandbox(code=code, instances=instances, max_workers=workers)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(lambda item: self._run_in_subprocess_mode(code=code, instance=item), instances))
+
     def close(self) -> None:
         if self._sandbox_dir is None:
             return
@@ -145,6 +167,32 @@ class PythonCodeExecutor:
                 start=start,
                 lp_injection_applied=lp_injection_applied,
             )
+
+    def _run_many_in_sandbox(
+        self,
+        code: str,
+        instances: list[dict[str, Any]],
+        *,
+        max_workers: int,
+    ) -> list[ExecutionResult]:
+        instrumented_code, lp_injection_applied = self._inject_lp_dump_before_optimize(code)
+
+        def _run_single(instance: dict[str, Any]) -> ExecutionResult:
+            worker_dir, runner_file, run_index = self._get_worker_sandbox()
+            start = time.perf_counter()
+            solution_file = worker_dir / f"solution_{run_index}.py"
+            solution_file.write_text(instrumented_code, encoding="utf-8")
+            return self._invoke_runner(
+                runner_path=runner_file,
+                solution_path=solution_file,
+                instance=instance,
+                cwd=worker_dir,
+                start=start,
+                lp_injection_applied=lp_injection_applied,
+            )
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            return list(pool.map(_run_single, instances))
 
     def _get_worker_sandbox(self) -> tuple[Path, Path, int]:
         assert self._sandbox_dir is not None

@@ -488,32 +488,32 @@ class TTRLRewardCalculator(RewardCalculator):
 
         normalized_cases = [self._normalize_r3_case(raw_case) for raw_case in tests]
 
-        def _run_case(args: tuple[int, tuple[dict[str, Any], dict[str, float | None], dict[str, Any]]]) -> dict[str, Any]:
-            idx, (case_instance, case_bounds, case_meta) = args
-            res = self.executor.run(trajectory.code, case_instance)
+        max_workers = min(len(normalized_cases), max(1, min(8, os.cpu_count() or 1)))
+        case_instances = [case_instance for case_instance, _, _ in normalized_cases]
+        if len(normalized_cases) <= 1:
+            exec_results = self.executor.run_many(trajectory.code, case_instances, max_workers=1) if normalized_cases else []
+        else:
+            exec_results = self.executor.run_many(trajectory.code, case_instances, max_workers=max_workers)
+
+        details: list[dict[str, Any]] = []
+        for idx, ((_, case_bounds, case_meta), res) in enumerate(zip(normalized_cases, exec_results, strict=False)):
             effective_success = self._effective_execution_success(res)
             case_obj = self._extract_objective_from_execution(res)
             obj_in_bounds = self._objective_matches_scale(case_obj, case_bounds)
-            return {
-                "case_index": idx,
-                "success": bool(res.success),
-                "effective_success": bool(effective_success),
-                "signature": res.signature,
-                "elapsed_sec": float(res.elapsed_sec),
-                "obj_answer": case_obj,
-                "obj_in_bounds": obj_in_bounds,
-                "obj_bounds": case_bounds,
-                "changes": list(case_meta.get("changes", [])) if isinstance(case_meta, dict) else [],
-                "case_id": str(case_meta.get("case_id", f"case_{idx}")) if isinstance(case_meta, dict) else f"case_{idx}",
-            }
-
-        max_workers = min(len(normalized_cases), max(1, min(8, os.cpu_count() or 1)))
-        if len(normalized_cases) <= 1:
-            details = [_run_case((0, normalized_cases[0]))] if normalized_cases else []
-        else:
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                details = list(pool.map(_run_case, list(enumerate(normalized_cases))))
-            details.sort(key=lambda x: int(x.get("case_index", 0)))
+            details.append(
+                {
+                    "case_index": idx,
+                    "success": bool(res.success),
+                    "effective_success": bool(effective_success),
+                    "signature": res.signature,
+                    "elapsed_sec": float(res.elapsed_sec),
+                    "obj_answer": case_obj,
+                    "obj_in_bounds": obj_in_bounds,
+                    "obj_bounds": case_bounds,
+                    "changes": list(case_meta.get("changes", [])) if isinstance(case_meta, dict) else [],
+                    "case_id": str(case_meta.get("case_id", f"case_{idx}")) if isinstance(case_meta, dict) else f"case_{idx}",
+                }
+            )
 
         passed_cases = 0
         failed_case_index = None
