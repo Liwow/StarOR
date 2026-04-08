@@ -1163,18 +1163,42 @@ class FourStageMCTS:
                     key=lambda cluster: (
                         int(len(cluster['records'])),
                         max(
-                            float(rec.trajectory.reward.total if rec.trajectory.reward is not None else rec.reward)
+                            self._record_reward_total(rec)
                             for rec in cluster['records']
                         ),
                     ),
                     reverse=True,
                 )
                 chosen_cluster = qualified_clusters[0]
-                chosen = max(
-                    chosen_cluster['records'],
-                    key=lambda rec: float(rec.trajectory.reward.total if rec.trajectory.reward is not None else rec.reward),
+                ordered_cluster_records = sorted(
+                    list(chosen_cluster["records"]),
+                    key=self._record_reward_total,
+                    reverse=True,
                 )
-                chosen_reward = float(chosen.trajectory.reward.total if chosen.trajectory.reward is not None else chosen.reward)
+                chosen, obj_scale_meta = self._pick_with_obj_scale_preference(ordered_cluster_records)
+                chosen_reward = self._record_reward_total(chosen)
+                chosen_cluster_ratio = float(len(chosen_cluster["records"])) / float(total_valid)
+                self._annotate_final_selection(
+                    chosen.trajectory,
+                    reason_code="qualified_obj_consensus_cluster",
+                    reason=(
+                        "selected from objective-consensus cluster "
+                        "(effective_success + finite objective, cluster ratio >= 0.4; tie-break: cluster size, then max reward), "
+                        "then prefer first candidate whose objective is within expanded obj-scale bounds"
+                    ),
+                    judgement_condition={
+                        "effective_success_required": True,
+                        "finite_objective_required": True,
+                        "consensus_ratio_threshold": 0.4,
+                        "total_valid_records": int(total_valid),
+                        "selected_cluster_leader": float(chosen_cluster.get("leader", 0.0)),
+                        "selected_cluster_size": int(len(chosen_cluster["records"])),
+                        "selected_cluster_ratio": float(chosen_cluster_ratio),
+                        "cluster_tie_breaker": "cluster_size_then_cluster_max_reward",
+                        "record_selection_rule": "max_reward_with_obj_scale_preference_within_selected_cluster",
+                        **obj_scale_meta,
+                    },
+                )
                 return chosen.trajectory, chosen_reward
 
         if records:
@@ -1182,20 +1206,242 @@ class FourStageMCTS:
                 last_iter = max(int(item.get('iter', -1)) for item in iteration_logs)
                 last_iter_records = [rec for rec in records if int(rec.iteration) == last_iter]
                 if last_iter_records:
-                    chosen = max(
-                        last_iter_records,
-                        key=lambda rec: float(rec.trajectory.reward.total if rec.trajectory.reward is not None else rec.reward),
+                    ordered_last_iter_records = sorted(
+                        list(last_iter_records),
+                        key=self._record_reward_total,
+                        reverse=True,
                     )
-                    chosen_reward = float(chosen.trajectory.reward.total if chosen.trajectory.reward is not None else chosen.reward)
+                    chosen, obj_scale_meta = self._pick_with_obj_scale_preference(ordered_last_iter_records)
+                    chosen_reward = self._record_reward_total(chosen)
+                    self._annotate_final_selection(
+                        chosen.trajectory,
+                        reason_code="last_iteration_max_reward_fallback",
+                        reason=(
+                            "no qualified objective-consensus cluster, fallback to last-iteration candidates; "
+                            "prefer first objective within expanded obj-scale bounds, otherwise fallback to first candidate"
+                        ),
+                        judgement_condition={
+                            "fallback_from": "qualified_obj_consensus_cluster",
+                            "last_iteration": int(last_iter),
+                            "candidate_records_in_last_iteration": int(len(last_iter_records)),
+                            "record_selection_rule": "max_reward_with_obj_scale_preference",
+                            **obj_scale_meta,
+                        },
+                    )
                     return chosen.trajectory, chosen_reward
-            chosen = max(
-                records,
-                key=lambda rec: float(rec.trajectory.reward.total if rec.trajectory.reward is not None else rec.reward),
+            ordered_records = sorted(list(records), key=self._record_reward_total, reverse=True)
+            chosen, obj_scale_meta = self._pick_with_obj_scale_preference(ordered_records)
+            chosen_reward = self._record_reward_total(chosen)
+            self._annotate_final_selection(
+                chosen.trajectory,
+                reason_code="global_max_reward_fallback",
+                reason=(
+                    "no last-iteration candidates, fallback to global candidates; "
+                    "prefer first objective within expanded obj-scale bounds, otherwise fallback to first candidate"
+                ),
+                judgement_condition={
+                    "fallback_from": "last_iteration_max_reward_fallback",
+                    "candidate_records_global": int(len(records)),
+                    "record_selection_rule": "max_reward_with_obj_scale_preference",
+                    **obj_scale_meta,
+                },
             )
-            chosen_reward = float(chosen.trajectory.reward.total if chosen.trajectory.reward is not None else chosen.reward)
             return chosen.trajectory, chosen_reward
 
         return None, float('-inf')
+
+    @staticmethod
+    def _record_reward_total(rec: StageExpansionRecord) -> float:
+        return float(rec.trajectory.reward.total if rec.trajectory.reward is not None else rec.reward)
+
+    def _pick_with_obj_scale_preference(
+        self,
+        ordered_records: list[StageExpansionRecord],
+    ) -> tuple[StageExpansionRecord, dict[str, Any]]:
+        if not ordered_records:
+            raise ValueError("ordered_records must be non-empty")
+
+        enabled = bool(getattr(self.config, "final_select_obj_scale_preference", True))
+        ratio_raw = getattr(self.config, "final_select_obj_scale_expand_ratio", 0.10)
+        try:
+            expand_ratio = max(0.0, float(ratio_raw))
+        except Exception:
+            expand_ratio = 0.10
+
+        if not enabled:
+            return ordered_records[0], {
+                "obj_scale_filter_applied": False,
+                "obj_scale_expand_ratio": float(expand_ratio),
+                "obj_scale_candidate_count": int(len(ordered_records)),
+                "obj_scale_selected_rank": 0,
+                "obj_scale_selected_by_in_bounds": False,
+                "obj_scale_fallback_to_first": True,
+                "obj_scale_candidates_preview": [],
+            }
+
+        status_list: list[dict[str, Any]] = []
+        for idx, rec in enumerate(ordered_records):
+            in_expanded_bounds, status = self._record_obj_in_expanded_scale(rec, expand_ratio=expand_ratio)
+            status_item = {
+                "rank": int(idx),
+                "trajectory_id": str(rec.trajectory.trajectory_id),
+                "obj_answer": status.get("obj_answer"),
+                "obj_in_expanded_bounds": bool(in_expanded_bounds),
+                "reason": str(status.get("reason", "")),
+            }
+            status_list.append(status_item)
+            if in_expanded_bounds:
+                return rec, {
+                    "obj_scale_filter_applied": True,
+                    "obj_scale_expand_ratio": float(expand_ratio),
+                    "obj_scale_candidate_count": int(len(ordered_records)),
+                    "obj_scale_selected_rank": int(idx),
+                    "obj_scale_selected_by_in_bounds": True,
+                    "obj_scale_fallback_to_first": False,
+                    "obj_scale_candidates_preview": status_list[:12],
+                }
+
+        return ordered_records[0], {
+            "obj_scale_filter_applied": True,
+            "obj_scale_expand_ratio": float(expand_ratio),
+            "obj_scale_candidate_count": int(len(ordered_records)),
+            "obj_scale_selected_rank": 0,
+            "obj_scale_selected_by_in_bounds": False,
+            "obj_scale_fallback_to_first": True,
+            "obj_scale_candidates_preview": status_list[:12],
+        }
+
+    def _record_obj_in_expanded_scale(
+        self,
+        rec: StageExpansionRecord,
+        *,
+        expand_ratio: float,
+    ) -> tuple[bool, dict[str, Any]]:
+        reward = rec.trajectory.reward
+        meta = (reward.metadata or {}) if reward is not None else {}
+        obj = meta.get("obj_answer")
+        if not isinstance(obj, (int, float)) or not math.isfinite(float(obj)):
+            return False, {"reason": "obj_not_finite", "obj_answer": obj}
+
+        base_scale = meta.get("base_obj_scale")
+        if not isinstance(base_scale, dict):
+            base_scale = meta.get("base_obj_bounds")
+        if not isinstance(base_scale, dict):
+            return False, {"reason": "base_obj_scale_missing", "obj_answer": float(obj)}
+
+        expanded_scale = self._expand_obj_scale_margin(base_scale, ratio=expand_ratio)
+        in_bounds = self._objective_matches_scale(float(obj), expanded_scale)
+        return bool(in_bounds), {
+            "reason": ("in_expanded_bounds" if in_bounds else "out_of_expanded_bounds"),
+            "obj_answer": float(obj),
+        }
+
+    @staticmethod
+    def _expand_obj_scale_margin(scale: dict[str, Any], ratio: float = 0.10) -> dict[str, Any]:
+        margin_ratio = max(0.0, float(ratio))
+        kind = str(scale.get("kind") or "interval").strip().lower()
+
+        if kind == "point":
+            # Margin expansion is only applied to explicit lower/upper bounds.
+            # Point-based scales stay unchanged.
+            return dict(scale)
+
+        if kind == "union":
+            out = dict(scale)
+            intervals_out: list[dict[str, float | None]] = []
+            intervals = scale.get("intervals") if isinstance(scale.get("intervals"), list) else []
+            for item in intervals:
+                if not isinstance(item, dict):
+                    continue
+                lo = item.get("lower")
+                hi = item.get("upper")
+                lo_num = float(lo) if isinstance(lo, (int, float)) and math.isfinite(float(lo)) else None
+                hi_num = float(hi) if isinstance(hi, (int, float)) and math.isfinite(float(hi)) else None
+                if lo_num is not None:
+                    lo_num = lo_num - abs(lo_num) * margin_ratio
+                if hi_num is not None:
+                    hi_num = hi_num + abs(hi_num) * margin_ratio
+                if lo_num is not None and hi_num is not None and lo_num > hi_num:
+                    lo_num, hi_num = hi_num, lo_num
+                intervals_out.append({"lower": lo_num, "upper": hi_num})
+            out["intervals"] = intervals_out
+            return out
+
+        out = dict(scale)
+        lo = scale.get("lower")
+        hi = scale.get("upper")
+        lo_num = float(lo) if isinstance(lo, (int, float)) and math.isfinite(float(lo)) else None
+        hi_num = float(hi) if isinstance(hi, (int, float)) and math.isfinite(float(hi)) else None
+        if lo_num is not None:
+            lo_num = lo_num - abs(lo_num) * margin_ratio
+        if hi_num is not None:
+            hi_num = hi_num + abs(hi_num) * margin_ratio
+        if lo_num is not None and hi_num is not None and lo_num > hi_num:
+            lo_num, hi_num = hi_num, lo_num
+        out["lower"] = lo_num
+        out["upper"] = hi_num
+        return out
+
+    def _objective_matches_scale(self, obj_answer: float, scale: dict[str, Any]) -> bool:
+        checker = getattr(self.rewarder, "_objective_matches_scale", None)
+        if callable(checker):
+            try:
+                return bool(checker(obj_answer, scale))
+            except Exception:
+                pass
+
+        kind = str(scale.get("kind") or "interval").strip().lower()
+        eps = 1e-9
+        if kind == "union":
+            intervals = scale.get("intervals") if isinstance(scale.get("intervals"), list) else []
+            for item in intervals:
+                if not isinstance(item, dict):
+                    continue
+                lo = item.get("lower")
+                hi = item.get("upper")
+                if isinstance(lo, (int, float)) and obj_answer < float(lo) - eps:
+                    continue
+                if isinstance(hi, (int, float)) and obj_answer > float(hi) + eps:
+                    continue
+                return True
+            return False if intervals else True
+
+        if kind == "point":
+            point = scale.get("point")
+            if not isinstance(point, (int, float)):
+                return True
+            tol_abs = float(scale.get("tol_abs", 0.0) or 0.0) if isinstance(scale.get("tol_abs"), (int, float)) else 0.0
+            tol_rel = float(scale.get("tol_rel", 0.0) or 0.0) if isinstance(scale.get("tol_rel"), (int, float)) else 0.0
+            tol = max(tol_abs, abs(float(point)) * tol_rel)
+            return abs(obj_answer - float(point)) <= tol + eps
+
+        lo = scale.get("lower")
+        hi = scale.get("upper")
+        if isinstance(lo, (int, float)) and obj_answer < float(lo) - eps:
+            return False
+        if isinstance(hi, (int, float)) and obj_answer > float(hi) + eps:
+            return False
+        return True
+
+    @staticmethod
+    def _annotate_final_selection(
+        trajectory: Trajectory,
+        *,
+        reason_code: str,
+        reason: str,
+        judgement_condition: dict[str, Any],
+    ) -> None:
+        metadata = trajectory.metadata if isinstance(trajectory.metadata, dict) else {}
+        iter_value = metadata.get("iter")
+        stage_value = metadata.get("stage")
+        metadata["final_selection"] = {
+            "reason_code": str(reason_code),
+            "reason": str(reason),
+            "judgement_condition": dict(judgement_condition or {}),
+            "iteration": (int(iter_value) if isinstance(iter_value, (int, float)) else None),
+            "stage": (str(stage_value) if stage_value is not None else ""),
+        }
+        trajectory.metadata = metadata
 
     def _check_recent_obj_consensus(self, iteration_logs: list[dict[str, Any]]) -> dict[str, Any] | None:
         if len(iteration_logs) < 3:

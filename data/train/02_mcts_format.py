@@ -14,7 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from ttrl_or.prompts import PromptBuilder
 from ttrl_or.prompts.notice_prompts import SYSTEM_INSTRUCTION
-from ttrl_or.prompts.templates import DEFAULT_TEMPLATES
+from ttrl_or.prompts.templates import DEFAULT_ROLLOUT_TEMPLATES, DEFAULT_TEMPLATES
 from ttrl_or.types import DEFAULT_STAGE_ORDER, OptimizationTask, Stage, Trajectory
 
 FULL_PROMPT_TEMPLATE = """You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
@@ -148,8 +148,42 @@ def build_stage_outputs(blocks: dict[str, str]) -> dict[Stage, str]:
     }
 
 
+def build_rollout_supervision_outputs(canonical_stage_outputs: dict[Stage, str]) -> dict[Stage, str]:
+    python_block = canonical_stage_outputs[Stage.CODE]
+    rollout_outputs: dict[Stage, str] = {
+        Stage.CODE: python_block,
+    }
+    for stage in [Stage.SCHEMA, Stage.SET_PARAM_VAR, Stage.OBJ_CONS]:
+        rollout_outputs[stage] = "\n\n".join([canonical_stage_outputs[stage], python_block]).strip()
+    return rollout_outputs
 
-def build_mcts_records(record: dict[str, Any], source_index: int) -> list[dict[str, Any]]:
+
+def _clamp_probability(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _deterministic_unit_interval(record: dict[str, Any], source_index: int, suffix: str) -> float:
+    key = stable_record_id(record, source_index, suffix=suffix)
+    hv = hashlib.sha1(key.encode("utf-8")).hexdigest()
+    numerator = int(hv[:16], 16)
+    denominator = float(16**16 - 1)
+    if denominator <= 0:
+        return 0.0
+    return float(numerator / denominator)
+
+
+def should_keep_code_stage(record: dict[str, Any], source_index: int, code_stage_prob: float) -> bool:
+    prob = _clamp_probability(code_stage_prob)
+    if prob <= 0.0:
+        return False
+    if prob >= 1.0:
+        return True
+    u = _deterministic_unit_interval(record, source_index, suffix="code_stage_sampling")
+    return bool(u < prob)
+
+
+
+def build_mcts_records(record: dict[str, Any], source_index: int, code_stage_prob: float = 0.3) -> list[dict[str, Any]]:
     task_text = str(record.get("input", "") or "").strip()
     output_text = str(record.get("output", "") or "").strip()
     if not task_text:
@@ -158,13 +192,16 @@ def build_mcts_records(record: dict[str, Any], source_index: int) -> list[dict[s
         raise ValueError("missing output text")
 
     blocks = extract_required_blocks(output_text)
-    stage_outputs = build_stage_outputs(blocks)
+    canonical_stage_outputs = build_stage_outputs(blocks)
+    rollout_stage_outputs = build_rollout_supervision_outputs(canonical_stage_outputs)
+    keep_code_stage = should_keep_code_stage(record, source_index, code_stage_prob=code_stage_prob)
     task = OptimizationTask(
         task_id=str(record.get("record_id", "") or f"source_{source_index}"),
         description=task_text,
     )
     builder = PromptBuilder(
         templates=DEFAULT_TEMPLATES,
+        rollout_templates=DEFAULT_ROLLOUT_TEMPLATES,
         stage_order=DEFAULT_STAGE_ORDER,
         system_instruction=SYSTEM_INSTRUCTION,
     )
@@ -172,9 +209,11 @@ def build_mcts_records(record: dict[str, Any], source_index: int) -> list[dict[s
     records: list[dict[str, Any]] = []
     trajectory = Trajectory(trajectory_id=f"mcts_format_{source_index}")
     for stage_index, (stage, output_tags, stage_name) in enumerate(STAGE_OUTPUT_ORDER, start=1):
-        prompt_text = builder.build(task, stage, trajectory if trajectory.outputs else None)
+        if stage == Stage.CODE and not keep_code_stage:
+            continue
+        prompt_text = builder.build_rollout(task, stage, trajectory if trajectory.outputs else None)
         prompt_text = sanitize_prompt_without_thought(prompt_text)
-        stage_output = stage_outputs[stage]
+        stage_output = rollout_stage_outputs[stage]
         record_id = stable_record_id(record, source_index, suffix=stage_name)
         records.append(
             {
@@ -188,11 +227,15 @@ def build_mcts_records(record: dict[str, Any], source_index: int) -> list[dict[s
                 "output_tags": list(output_tags),
                 "input": prompt_text,
                 "output": stage_output,
+                "code_stage_prob": _clamp_probability(code_stage_prob),
+                "code_stage_sampled": bool(keep_code_stage),
                 "task": task_text,
                 "full_output": output_text,
             }
         )
-        trajectory.outputs[stage] = stage_output
+        # Keep canonical stage-only content in trajectory history so later-stage prompts
+        # receive the same structured context as runtime MCTS.
+        trajectory.outputs[stage] = canonical_stage_outputs[stage]
     return records
 
 
@@ -244,7 +287,11 @@ def process(args: argparse.Namespace) -> None:
         if args.limit is not None and processed >= args.limit:
             break
         try:
-            payloads = build_mcts_records(record, source_index) if mcts_mode else [build_full_prompt_record(record, source_index)]
+            payloads = (
+                build_mcts_records(record, source_index, code_stage_prob=float(args.code_stage_prob))
+                if mcts_mode
+                else [build_full_prompt_record(record, source_index)]
+            )
             pending = [payload for payload in payloads if str(payload.get("record_id", "")) not in seen]
             if not pending:
                 skipped += 1
@@ -283,6 +330,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", default="data/train/train_data.type_python.jsonl")
     parser.add_argument("--output", default="")
     parser.add_argument("--mcts", default="true")
+    parser.add_argument(
+        "--code-stage-prob",
+        type=float,
+        default=0.3,
+        help="When --mcts=true, probability to keep the Stage.CODE sample for each source record.",
+    )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--resume", dest="resume", action="store_true", default=True)
     parser.add_argument("--no-resume", dest="resume", action="store_false")

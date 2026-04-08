@@ -211,7 +211,11 @@ class VerlRayPolicyBackend:
         self.pipeline_config = pipeline_config
         self.tokenizer = trainer.tokenizer
         self._current_task_id = ""
-        self._prior_temperature = 0.5
+        self._prior_temperature = float(getattr(self.pipeline_config.mcts, "prior_temperature", 0.8) or 0.8)
+        self._prior_tail_tokens = int(getattr(self.pipeline_config.mcts, "prior_tail_tokens", 64) or 64)
+        self._prior_standardize = bool(getattr(self.pipeline_config.mcts, "prior_standardize", True))
+        self._prior_use_ref = bool(getattr(self.pipeline_config.mcts, "prior_use_ref", False))
+        self._prior_min_std = float(getattr(self.pipeline_config.mcts, "prior_min_std", 1e-4) or 1e-4)
 
     def _sample_reset_enabled(self) -> bool:
         return bool(self.pipeline_config.backend.reset_lora_on_begin_episode)
@@ -268,17 +272,29 @@ class VerlRayPolicyBackend:
             batch.meta_info["temperature"] = float(self.trainer.config.actor_rollout_ref.rollout.temperature)
             old_log_prob, _ = self.trainer._compute_old_log_prob(batch)
             log_probs = old_log_prob.batch["old_log_probs"]
-            curr_scores = self._masked_mean(log_probs, response_mask)
+            curr_scores = self._masked_mean(log_probs, response_mask, tail_k=self._prior_tail_tokens)
 
             ref_scores = None
-            if self.trainer.use_reference_policy:
+            if self._prior_use_ref and self.trainer.use_reference_policy:
                 ref_batch = self.trainer._compute_ref_log_prob(batch)
                 ref_log_prob = ref_batch.batch["ref_log_prob"]
-                ref_scores = self._masked_mean(ref_log_prob, response_mask)
+                ref_scores = self._masked_mean(ref_log_prob, response_mask, tail_k=self._prior_tail_tokens)
 
             raw_scores = curr_scores if ref_scores is None else (curr_scores - ref_scores)
+            if self._prior_standardize and int(raw_scores.numel()) > 1:
+                mean = raw_scores.mean()
+                std = raw_scores.std(unbiased=False)
+                std_value = float(std.detach().cpu().item()) if torch.is_tensor(std) else float(std)
+                if std_value >= self._prior_min_std:
+                    raw_scores = (raw_scores - mean) / std
+                else:
+                    raw_scores = raw_scores - mean
             raw_scores = raw_scores / max(1e-6, float(self._prior_temperature))
-            priors = torch.softmax(raw_scores, dim=0).detach().cpu().tolist()
+            probs = torch.softmax(raw_scores, dim=0)
+            if not bool(torch.isfinite(probs).all()):
+                n = len(candidates)
+                return [1.0 / float(max(1, n))] * n
+            priors = probs.detach().cpu().tolist()
             return [float(x) for x in priors]
         except Exception as exc:  # noqa: BLE001
             print(f"[verl-or][WARN] prior fallback to uniform: {type(exc).__name__}: {exc}")
@@ -607,9 +623,15 @@ class VerlRayPolicyBackend:
         )
 
     @staticmethod
-    def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        denom = torch.clamp(mask.sum(dim=-1), min=1.0)
-        return (values * mask).sum(dim=-1) / denom
+    def _masked_mean(values: torch.Tensor, mask: torch.Tensor, tail_k: int = 0) -> torch.Tensor:
+        mask_tensor = mask.to(dtype=values.dtype)
+        if int(tail_k) > 0:
+            seq_len = int(values.shape[-1])
+            start = max(0, seq_len - int(tail_k))
+            values = values[:, start:]
+            mask_tensor = mask_tensor[:, start:]
+        denom = torch.clamp(mask_tensor.sum(dim=-1), min=1.0)
+        return (values * mask_tensor).sum(dim=-1) / denom
 
 
 def build_pipeline_config_from_verl_config(config) -> PipelineConfig:

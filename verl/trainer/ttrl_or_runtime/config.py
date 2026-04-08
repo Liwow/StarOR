@@ -8,8 +8,15 @@ class MCTSConfig:
     max_iterations: int = 20
     c_puct: float = 1.414
     enable_prior: bool = True
+    prior_temperature: float = 0.6
+    prior_tail_tokens: int = 0
+    prior_standardize: bool = True
+    prior_use_ref: bool = False
+    prior_min_std: float = 1e-4
     stop_on_reward_one: bool = False
     solverllm_compare_mode: bool = False
+    final_select_obj_scale_preference: bool = True
+    final_select_obj_scale_expand_ratio: float = 0.10
 
 
 @dataclass(slots=True)
