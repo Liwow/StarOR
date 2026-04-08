@@ -24,7 +24,9 @@ from verl.trainer.ttrl_or_runtime.reward.r3_batch_planner import (
     attach_r3_plan_to_instance,
     build_r3_base_scale_prompt,
     build_r3_tests_prompt,
+    build_readable_test_case,
     build_sample_r3_plan,
+    format_r3_precompute_markdown,
     summarize_scale,
     summarize_test_case,
 )
@@ -726,6 +728,7 @@ def _prepare_r3_for_samples(raw_samples: list, runner: TTRLORRunner, rank: int, 
                 "mapping": plan.mapping,
                 "tests": plan.test_cases,
                 "tests_summary": [summarize_test_case(case) for case in plan.test_cases],
+                "tests_readable": [build_readable_test_case(case) for case in plan.test_cases],
                 "llm_raw_preview": plan.llm_raw_preview,
                 "llm_base_preview": plan.llm_base_preview,
                 "llm_tests_preview": plan.llm_tests_preview,
@@ -737,6 +740,17 @@ def _prepare_r3_for_samples(raw_samples: list, runner: TTRLORRunner, rank: int, 
                 "vllm_mode": "colocate",
             }
             _write_json_file(sample_dir / "r3_precompute.json", payload)
+            (sample_dir / "r3_precompute.md").write_text(
+                format_r3_precompute_markdown(
+                    sample_id=str(sample.sample_id),
+                    gold_answer=gold_answer,
+                    source=str(plan.source),
+                    analysis=str(plan.analysis),
+                    base_obj_bounds=plan.base_obj_bounds,
+                    tests=plan.test_cases,
+                ),
+                encoding="utf-8",
+            )
 
 
 def run_ttrl_or_fit(trainer, logger) -> None:

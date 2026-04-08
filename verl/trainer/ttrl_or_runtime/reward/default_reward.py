@@ -132,6 +132,9 @@ class TTRLRewardCalculator(RewardCalculator):
                 "effective_success": effective_success,
                 "has_valid_obj": e["has_valid_obj"],
                 "obj_in_bounds": e["obj_in_bounds"],
+                "has_code": e["has_code"],
+                "code_len": e["code_len"],
+                "base_obj_scale": base_obj_scale,
             }
             if r1_eligible and isinstance(obj_answer, (int, float)) and isinstance(semantic_leader, (int, float)):
                 if local_scope:
@@ -837,38 +840,78 @@ class TTRLRewardCalculator(RewardCalculator):
             if isinstance(value, bool):
                 return None
             if isinstance(value, (int, float)):
-                return float(value)
+                numeric = float(value)
+                return numeric if math.isfinite(numeric) else None
             if isinstance(value, str):
                 text = value.strip().replace(",", "")
                 if not text:
                     return None
                 try:
-                    return float(text)
+                    numeric = float(text)
+                    return numeric if math.isfinite(numeric) else None
                 except Exception:
                     return None
             return None
 
+        # Direct scalar outputs are common in script-style candidates where
+        # the runtime picks module.optimal / module.obj / module.objective.
+        direct_numeric = _as_float(output)
+        if direct_numeric is not None:
+            return direct_numeric
+
+        objective_keys = (
+            "objective",
+            "obj",
+            "optimal",
+            "optimal_value",
+            "objective_value",
+            "obj_value",
+            "best_objective",
+            "optimal_obj",
+            "objective_val",
+        )
+
         if isinstance(output, dict):
-            for key in ("objective", "obj", "optimal", "optimal_value", "best_objective"):
+            for key in objective_keys:
                 numeric = _as_float(output.get(key))
                 if numeric is not None:
                     return numeric
-            nested = output.get("result")
-            if isinstance(nested, dict):
-                for key in ("objective", "obj", "optimal", "optimal_value", "best_objective"):
-                    numeric = _as_float(nested.get(key))
+
+            for wrapper_key in ("result", "value", "val", "data"):
+                nested = output.get(wrapper_key)
+                if nested is not None:
+                    numeric = TTRLRewardCalculator._extract_objective_numeric(nested)
                     if numeric is not None:
                         return numeric
+
+            repr_value = output.get("repr")
+            if repr_value is not None:
+                numeric = TTRLRewardCalculator._extract_objective_from_text(str(repr_value))
+                if numeric is not None:
+                    return numeric
+
+            # Fallback: recursively scan nested dict/list payloads for common
+            # objective keys before giving up.
+            for _, value in output.items():
+                if isinstance(value, (dict, list, tuple)):
+                    numeric = TTRLRewardCalculator._extract_objective_numeric(value)
+                    if numeric is not None:
+                        return numeric
+
+        if isinstance(output, (list, tuple)):
+            for item in output:
+                numeric = TTRLRewardCalculator._extract_objective_numeric(item)
+                if numeric is not None:
+                    return numeric
 
         if isinstance(output, str):
             try:
                 maybe = json.loads(output)
             except Exception:
                 return TTRLRewardCalculator._extract_objective_from_text(output)
-            if isinstance(maybe, dict):
-                numeric = TTRLRewardCalculator._extract_objective_numeric(maybe)
-                if numeric is not None:
-                    return numeric
+            numeric = TTRLRewardCalculator._extract_objective_numeric(maybe)
+            if numeric is not None:
+                return numeric
             return TTRLRewardCalculator._extract_objective_from_text(output)
 
         return None

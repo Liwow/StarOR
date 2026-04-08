@@ -13,7 +13,7 @@ from ttrl_or.config import PipelineConfig
 from ttrl_or.dataset import build_instance_from_question, load_jsonl_dataset
 from ttrl_or.model import MockPolicyBackend, TRLPolicyBackend, TRL_IMPORT_ERROR
 from ttrl_or.pipeline import TTRLORRunner
-from ttrl_or.reward.r3_batch_planner import attach_r3_plan_to_instance, build_r3_planner_prompt, build_sample_r3_plan, summarize_scale, summarize_test_case
+from ttrl_or.reward.r3_batch_planner import attach_r3_plan_to_instance, build_readable_test_case, build_r3_planner_prompt, build_sample_r3_plan, format_r3_precompute_markdown, summarize_scale, summarize_test_case
 
 
 def _safe_path_component(name: str) -> str:
@@ -584,6 +584,7 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
                 "mapping": plan.mapping,
                 "tests": plan.test_cases,
                 "tests_summary": [summarize_test_case(case) for case in plan.test_cases],
+                "tests_readable": [build_readable_test_case(case) for case in plan.test_cases],
                 "llm_raw_preview": plan.llm_raw_preview,
                 "llm_base_preview": plan.llm_base_preview,
                 "llm_tests_preview": plan.llm_tests_preview,
@@ -596,6 +597,17 @@ def _batch_prepare_r3_priors(samples: list, runner: TTRLORRunner, rank: int, wor
             }
             (sample_dir / "r3_precompute.json").write_text(
                 json.dumps(sample_payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            (sample_dir / "r3_precompute.md").write_text(
+                format_r3_precompute_markdown(
+                    sample_id=str(sample.sample_id),
+                    gold_answer=gold_answer,
+                    source=str(plan.source),
+                    analysis=str(plan.analysis),
+                    base_obj_bounds=plan.base_obj_bounds,
+                    tests=plan.test_cases,
+                ),
                 encoding="utf-8",
             )
 

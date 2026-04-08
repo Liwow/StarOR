@@ -983,6 +983,70 @@ def summarize_test_case(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _display_instance(instance: dict[str, Any]) -> dict[str, Any]:
+    display: dict[str, Any] = {}
+    if not isinstance(instance, dict):
+        return display
+    for key, value in instance.items():
+        text_key = str(key)
+        if text_key.startswith("__"):
+            continue
+        display[text_key] = value
+    return display
+
+
+def build_readable_test_case(case: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "case_id": str(case.get("case_id", "")),
+        "rationale": str(case.get("rationale", "")).strip(),
+        "patches": list(case.get("patches", [])) if isinstance(case.get("patches"), list) else [],
+        "obj_scale": case.get("obj_scale") or case.get("obj_bounds") or {},
+        "obj_scale_summary": summarize_scale(case.get("obj_scale") or case.get("obj_bounds")),
+        "perturbed_instance": _display_instance(case.get("instance", {})),
+    }
+
+
+def format_r3_precompute_markdown(
+    *,
+    sample_id: str,
+    gold_answer: str,
+    source: str,
+    analysis: str,
+    base_obj_bounds: dict[str, Any],
+    tests: list[dict[str, Any]],
+) -> str:
+    lines: list[str] = []
+    lines.append(f"# R3 Precompute: {sample_id}")
+    lines.append("")
+    lines.append(f"- gt: {gold_answer}")
+    lines.append(f"- source: {source}")
+    lines.append(f"- num_tests: {len(tests)}")
+    lines.append(f"- base_obj_scale: {json.dumps(base_obj_bounds, ensure_ascii=False)}")
+    lines.append(f"- base_scale_summary: {json.dumps(summarize_scale(base_obj_bounds), ensure_ascii=False)}")
+    lines.append("")
+    lines.append("## Analysis")
+    lines.append(analysis or "")
+    for idx, case in enumerate(tests, start=1):
+        readable = build_readable_test_case(case)
+        lines.append("")
+        lines.append(f"## Test Case {idx}: {readable['case_id']}")
+        lines.append(f"- rationale: {readable['rationale']}")
+        lines.append(f"- obj_scale: {json.dumps(readable['obj_scale'], ensure_ascii=False)}")
+        lines.append(f"- obj_scale_summary: {json.dumps(readable['obj_scale_summary'], ensure_ascii=False)}")
+        lines.append("- patches:")
+        patch_lines = json.dumps(readable["patches"], ensure_ascii=False, indent=2)
+        lines.append("```json")
+        lines.append(patch_lines)
+        lines.append("```")
+        lines.append("- perturbed_instance:")
+        instance_lines = json.dumps(readable["perturbed_instance"], ensure_ascii=False, indent=2)
+        lines.append("```json")
+        lines.append(instance_lines)
+        lines.append("```")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _preview(text: str | None, max_len: int = 320) -> str:
     raw = str(text or "").strip().replace("\n", " ")
     if len(raw) <= max_len:
