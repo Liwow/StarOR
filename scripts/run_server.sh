@@ -9,7 +9,7 @@ STOP_SERVER_SCRIPT="scripts/stop_vllm_server.sh"
 # "data/OptMATH_Bench_166.jsonl"
 DATASET_JSONL="data/IndustryOR_fixedV2.jsonl"
 CHUNK_SAMPLES=8
-offset=79
+offset=35
 TOTAL_LIMIT=0   # 0 = run all samples in dataset
 
 LOG_DIR="logs/run"
