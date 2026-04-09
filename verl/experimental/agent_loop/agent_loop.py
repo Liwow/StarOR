@@ -33,7 +33,7 @@ from transformers import AutoProcessor, AutoTokenizer
 from verl.experimental.agent_loop.prometheus_utils import update_prometheus_config
 from verl.experimental.agent_loop.utils import resolve_config_path
 from verl.experimental.teacher_loop import TeacherModelManager
-from verl.protocol import DataProto
+from verl.protocol import DataProto, pad_dataproto_to_divisor, unpad_dataproto
 from verl.single_controller.ray.base import RayResourcePool, RayWorkerGroup
 from verl.trainer.distillation import is_distillation_enabled
 from verl.utils.chat_template import apply_chat_template, initialize_system_prompt
@@ -1153,7 +1153,9 @@ class AgentLoopManager:
         """
         if self.stream_teacher_with_rollout:
             await self.teacher_model_manager.wake_up()
-        chunkes = prompts.chunk(len(self.agent_loop_workers))
+        size_divisor = len(self.agent_loop_workers)
+        prompts_padded, pad_size = pad_dataproto_to_divisor(prompts, size_divisor)
+        chunkes = prompts_padded.chunk(size_divisor)
         outputs = await asyncio.gather(
             *[
                 worker.generate_sequences.remote(chunk)
@@ -1162,11 +1164,12 @@ class AgentLoopManager:
         )
         if self.stream_teacher_with_rollout:
             await self.teacher_model_manager.sleep()
-        output = DataProto.concat(outputs)
+        output_padded = DataProto.concat(outputs)
 
         # calculate performance metrics
         metrics = [output.meta_info.pop("metrics") for output in outputs]  # List[List[Dict[str, str]]]
-        timing = self._performance_metrics(metrics, output)
+        timing = self._performance_metrics(metrics, output_padded)
+        output = unpad_dataproto(output_padded, pad_size=pad_size)
 
         output.meta_info = {"timing": timing, **outputs[0].meta_info}
         return output
