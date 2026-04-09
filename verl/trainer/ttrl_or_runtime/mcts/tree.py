@@ -718,6 +718,7 @@ class FourStageMCTS:
                     "selected_iteration": recent_consensus_stop.get("selected_iteration"),
                     "obj_scale_mode": "expanded",
                     "obj_scale_expand_ratio": recent_consensus_stop.get("obj_scale_expand_ratio"),
+                    "recent_top_obj_gate": recent_consensus_stop.get("recent_top_obj_gate", {}),
                     "tie_breaker": "prior_when_reward_equal",
                 }
                 return self._finalize_result(
@@ -1648,6 +1649,10 @@ class FourStageMCTS:
         if current_iter < 2:
             return None
 
+        top_obj_gate = self._check_recent_top_obj_alignment(records=records, current_iter=current_iter)
+        if top_obj_gate is None:
+            return None
+
         min_iter = max(0, int(current_iter) - 2)
         recent_records = [rec for rec in records if int(rec.iteration) >= min_iter and int(rec.iteration) <= int(current_iter)]
         if not recent_records:
@@ -1706,6 +1711,53 @@ class FourStageMCTS:
             "trajectory_id": str(chosen.trajectory.trajectory_id),
             "reward_total": float(self._record_reward_total(chosen)),
             "obj_scale_expand_ratio": float(expand_ratio),
+            "recent_top_obj_gate": dict(top_obj_gate),
+        }
+
+    def _check_recent_top_obj_alignment(
+        self,
+        *,
+        records: list[StageExpansionRecord],
+        current_iter: int,
+    ) -> dict[str, Any] | None:
+        if current_iter < 2:
+            return None
+
+        target_iters = [int(current_iter) - 2, int(current_iter) - 1, int(current_iter)]
+        top_records: list[StageExpansionRecord] = []
+        top_objs: list[float] = []
+
+        for iter_id in target_iters:
+            iter_records = [
+                rec
+                for rec in records
+                if int(rec.iteration) == int(iter_id) and self._record_obj_answer(rec) is not None
+            ]
+            if not iter_records:
+                return None
+
+            top_rec = self._pick_record_max_reward_prior(iter_records)
+            if top_rec is None:
+                return None
+
+            top_obj = self._record_obj_answer(top_rec)
+            if top_obj is None:
+                return None
+
+            top_records.append(top_rec)
+            top_objs.append(float(top_obj))
+
+        leader = float(top_objs[0])
+        for value in top_objs[1:]:
+            if not self._within_rel_tol(float(value), leader):
+                return None
+
+        return {
+            "iterations": [int(x) for x in target_iters],
+            "top_obj_values": [float(x) for x in top_objs],
+            "top_obj_leader": float(leader),
+            "trajectory_ids": [str(rec.trajectory.trajectory_id) for rec in top_records],
+            "rule": "same_top_obj_across_last_3_iterations_with_rel_tol",
         }
 
     def _check_code_stage_consensus(
