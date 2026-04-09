@@ -1,13 +1,14 @@
 set -x
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 # export RAY_DEBUG_POST_MORTEM=1
 DATA_ROOT="${HOME}/code/TTRL-OR/data"
 
 # model_name='Qwen/Qwen2.5-7B-Instruct'
 model_name='Qwen/Qwen3-4B-Instruct-2507'
-MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
-# dataset="IndustryOR_fixedV2.jsonl"
-dataset="MAMO_ComplexLP_fixed.jsonl"
+# MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
+MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_or_qwen3_4b_int_cp150_v1"
+dataset="IndustryOR_fixedV2.jsonl"
+# dataset="MAMO_ComplexLP_fixed.jsonl"
 
 DATA_PATH="$DATA_ROOT/$dataset"
 # For multiple datasets, uncomment and edit the list below.
@@ -48,7 +49,7 @@ python -m verl.trainer.main_ppo \
     data.truncation='error' \
     data.shuffle=False \
     actor_rollout_ref.model.path=${MODEL_NAME_OR_PATH} \
-    actor_rollout_ref.model.use_shm=True \
+    actor_rollout_ref.model.use_shm=False \
     actor_rollout_ref.model.target_modules=all-linear \
     actor_rollout_ref.model.lora_rank=16 \
     actor_rollout_ref.model.lora_alpha=32 \
