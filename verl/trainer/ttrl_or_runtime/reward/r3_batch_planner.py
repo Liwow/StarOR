@@ -101,7 +101,7 @@ def build_r3_base_scale_prompt(
     instance_view = _compact_instance(instance)
     skeleton = _base_scale_skeleton()
     return (
-        "You are an OR objective-scale analyst. Return exactly two tagged blocks and nothing else:\n"
+        "You are an OR objective-scale analyst. You should think frist and then Return exactly two tagged blocks and nothing else:\n"
         "<analysis>...</analysis>\n<base_scale>{...JSON...}</base_scale>\n\n"
 
         "Goal: Produce a runtime filter(obj, scale) for the ORIGINAL sample.\n"
@@ -170,7 +170,8 @@ def build_r3_tests_prompt(
         "Output skeleton:\n"
         f"{_compact_json_text(skeleton)}\n"
         "Few-shot reference:\n"
-        f"{R3_TESTS_FEWSHOT}\n\n"
+        f"{R3_TESTS_FEWSHOT}\n"
+        "You should think frist and Thoroughly analyze and comprehend the problem description and associated data. Now, begin your task!"
     )
 
 
