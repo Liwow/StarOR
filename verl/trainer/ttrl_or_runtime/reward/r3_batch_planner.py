@@ -107,8 +107,6 @@ def build_r3_base_scale_prompt(
         "base_scale should capture: bounds, sign_relation, magnitude, and obvious exact rejects.\n"
         "Schema keys: kind(interval|point|union), sign_relation(positive|nonnegative|negative|nonpositive|nonzero|any), magnitude({min_order,max_order,use_abs:true}), reject_exact(list).\n"
         "Keep the scale informative: broad enough for modeling variation, narrow enough to reject absurd objectives.\n\n"
-        "Few-shot reference:\n"
-        f"{R3_BASE_SCALE_FEWSHOT}\n\n"
         "Task description:\n"
         f"{description}\n\n"
         "Numeric snapshot:\n"
@@ -117,6 +115,8 @@ def build_r3_base_scale_prompt(
         f"{_compact_json_text(feature_catalog)}\n\n"
         "Output skeleton:\n"
         f"{_compact_json_text(skeleton)}\n"
+        "Few-shot reference:\n"
+        f"{R3_BASE_SCALE_FEWSHOT}\n\n"
     )
 
 
@@ -136,8 +136,6 @@ def build_r3_tests_prompt(
         "Each case may use 1 to 3 patches; prefer coordinated edits when they describe one plausible scenario.\n"
         "Include a mix of harder and easier cases when possible, keep units/semantics consistent, and make obj_scale describe bounds, sign_relation, and magnitude.\n"
         "Prefer small but meaningful perturbations.\n\n"
-        "Few-shot reference:\n"
-        f"{R3_TESTS_FEWSHOT}\n\n"
         "Task description:\n"
         f"{description}\n\n"
         "Numeric snapshot:\n"
@@ -146,6 +144,8 @@ def build_r3_tests_prompt(
         f"{_compact_json_text(feature_catalog)}\n\n"
         "Output skeleton:\n"
         f"{_compact_json_text(skeleton)}\n"
+        "Few-shot reference:\n"
+        f"{R3_TESTS_FEWSHOT}\n\n"
     )
 
 

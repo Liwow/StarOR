@@ -1,5 +1,5 @@
 set -x
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 # export RAY_DEBUG_POST_MORTEM=1
 DATA_ROOT="${HOME}/code/TTRL-OR/data"
 
@@ -7,11 +7,11 @@ DATA_ROOT="${HOME}/code/TTRL-OR/data"
 model_name='Qwen/Qwen3-4B-Instruct-2507'
 MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
 # dataset="OptMATH_Bench_166.jsonl"
-dataset="IndustryOR_fixedV2.jsonl"
+dataset="MAMO_ComplexLP_fixed.jsonl"
 
 DATA_PATH="$DATA_ROOT/$dataset"
 # For multiple datasets, uncomment and edit the list below.
-# TRAIN_FILES="[$DATA_ROOT/IndustryOR_fixedV2.jsonl,$DATA_ROOT/OptMATH_Bench_166.jsonl]"
+# TRAIN_FILES="[$DATA_ROOT/IndustryOR_fixedV2.jsonl,$DATA_ROOT/OptMATH_Bench_166.jsonl, $DATA_ROOT/"MAMO_ComplexLP_fixed.jsonl"]"
 TRAIN_FILES="$DATA_PATH"
 
 python -m verl.trainer.main_ppo \
@@ -28,7 +28,7 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.reward.cluster_scope=local \
     algorithm.ttrl_or.reward.r1_weight=0.6 \
     algorithm.ttrl_or.reward.r2_weight=0.1 \
-    algorithm.ttrl_or.reward.r1_obj_scale_fail_multiplier=0.2 \
+    algorithm.ttrl_or.reward.r1_obj_scale_fail_multiplier=0.5 \
     algorithm.ttrl_or.reward.r3_weight=0.2 \
     algorithm.ttrl_or.reward.r4_weight=0.1 \
     algorithm.ttrl_or.reward.structure_gate_min=1.0 \
