@@ -216,7 +216,8 @@ The required order from this point is:
 {TYPE_SET_NOTICE}
 
 {CODE_NOTICE}
-NOTE: You should output the problem type in <Type> and the Sets in <Sets>, and then MUST output the complete optimization problem modeling code in <python>.
+**NOTE**: You should output the problem type in <Type> and the Sets in <Sets>, and then MUST output the complete optimization problem modeling code in <python>.
+IMPORTANT: Do not skip any steps. AFTER the TYPE and SET sections are fully completed, you must output the full modeling and solving Python code inside <python>. Proceed with the task now.
 """.strip(),
     Stage.SET_PARAM_VAR: f"""
 You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
@@ -242,6 +243,7 @@ The required order from this point is:
 
 {CODE_NOTICE}
 **NOTE**: You should output the problem Parameters in <Parameters> and the problem Variables in <Variables>, and then MUST output the complete optimization problem modeling code in <python>.
+IMPORTANT: Do not skip any steps. AFTER the Parameters and Variables sections are fully completed, you must output the full modeling and solving Python code inside <python>. Proceed with the task now.
 """.strip(),
     Stage.OBJ_CONS: f"""
 You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
@@ -269,7 +271,8 @@ The required order from this point is:
 {OBJ_CON_NOTICE}
 
 {CODE_NOTICE}
-NOTE: You should output the problem Objective in <Objective> and the problem Constraints in <Variables>, and then MUST output the complete optimization problem modeling code in <python>.
+**NOTE**: You should output the problem Objective in <Objective> and the problem Constraints in <Variables>, and then MUST output the complete optimization problem modeling code in <python>.
+IMPORTANT: Do not skip any steps. AFTER the Objective and Constraints sections are fully completed, you must output the full modeling and solving Python code inside <python>. Proceed with the task now.
 """.strip(),
     Stage.CODE: f"""
 You are an optimization expert. You should solve the optimization problem and only Provide the corresponding Gurobi Python code to implement the model within <python> and </python>
