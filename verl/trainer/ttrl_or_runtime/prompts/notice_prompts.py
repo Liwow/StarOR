@@ -25,8 +25,8 @@ TYPE_SET_NOTICE = """
 <Sets> ... </Sets>
 
 2. <Type> should summarize:
-- optimization type: LP / MILP / NLP / MINLP
-- classical OR family when identifiable
+- optimization type: LP / MILP / NLP / MINLP and so on.
+- classical OR family when identifiable: TSP / Facility Location Problem / VRP (Vehicle Routing Problem) and so on. 
 - Explanation: Provide a brief sentence outlining the rationale and key points.
 
 3. <Sets> should define the minimum necessary indexing sets.
@@ -39,8 +39,21 @@ Example:
 # DETAILED INSTRUCTIONS
 
 1. Type Analysis
+a. Classical OR Family: Identify and categorize the problem into its closest classical Operations Research family (e.g., Facility Location, VRP, TSP, Knapsack, Multi-commodity Flow, etc.).
+
+b. Variable Analysis (Integrity): Identify if there are Binary (0-1) variables or General Integer variables.
+Logic: If integer variables exist, the model must be MILP or MINLP. If all variables are continuous, it is LP or NLP.
+Briefly explain what these integer variables represent (e.g., discrete choices, counts).
+
+c. Linearity Analysis (Functional Form): Analyze the characteristics of the Objective Function and Constraints
+Logic: If any non-linear features exist (e.g., products of variables, powers, trigonometric functions), the model is NLP or MINLP. If all terms are linear, it is LP or MILP.
+Provide a brief rationale for the linearity/non-linearity identified.
+
+Rules:
 - Identify the optimization type and the closest classical OR family.
 - Focus on how the problem should be structured, not on solving details.
+- When dealing with distinct food servings (e.g., "a chicken costs 6" rather than a cost per weight unit), these are considered indivisible servings and must be modeled as NONNEGATIVE INTEGER variables. This automatically classifies the problem as MILP (or MINLP if non-linearities are present), not a standard LP.
+Ambiguity Tip: If the problem states "Food X costs $Y" without a weight unit (like 'per kg'), assume it is an indivisible serving and use NONNEGATIVE INTEGER. So, this problem exists INTEGER variables (LP / NLP).
 
 2. Sets Definition
 Define all necessary sets that index objects, resources, time periods, locations, or categories.
@@ -129,11 +142,15 @@ Rules:
   divisible amounts -> continuous.
 - Include all core decisions, but no unnecessary auxiliary variables unless clearly needed.
 - Variable names should be consistent with sets and parameters.
+- Counts/Units -> NONNEGATIVE INTEGER: Use this for items with a fixed cost per unit/serving (e.g., "Chicken costs 6","an Apple costs 1") or distinct entities (people, machines, shifts).
+
+Ambiguity Tip: If the problem states "Food X costs $Y" without a weight unit (like 'per kg'), assume it is an indivisible serving and use NONNEGATIVE INTEGER.
 
 Examples:
 - x_p: Production quantity of product p (NONNEGATIVE CONTINUOUS)
 - y_f: Whether facility f is opened (BINARY)
-- x_f: Number of full-time shifts (NONNEGATIVE INTEGER)
+- z_s: Number of full-time shifts (NONNEGATIVE INTEGER)
+- n_f: Number of servings of food f to purchase (NONNEGATIVE INTEGER)
 
 
 # ALLOWED / FORBIDDEN
