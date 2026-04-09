@@ -814,6 +814,7 @@ def build_parser() -> argparse.ArgumentParser:
     format_parser.add_argument("--resume", dest="resume", action="store_true", default=True)
     format_parser.add_argument("--no-resume", dest="resume", action="store_false")
     format_parser.set_defaults(func=process_format)
+    
 
     generate_parser = subparsers.add_parser("generate", help="Call an LLM to generate <Type> and <python> blocks.")
     generate_parser.add_argument("--input", default="data/train/train_data.jsonl")

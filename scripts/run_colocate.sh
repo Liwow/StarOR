@@ -10,7 +10,7 @@ set -euo pipefail
 # - each rank trains on its local GPU
 # - colocated vLLM shares the same GPUs for generation
 
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 NPROC_PER_NODE=1
 MASTER_ADDR=127.0.0.1
 MASTER_PORT=29521
@@ -20,8 +20,8 @@ ACCELERATE_MIXED_PRECISION=no
 ACCELERATE_CONFIG_FILE="scripts/accelerate_colocate.yaml"
 
 BACKEND=trl
-MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-$HOME/model/Qwen/Qwen2.5-7B-Instruct}"
-DATASET_JSONL="${DATASET_JSONL:-data/IndustryOR_fixedV2.jsonl}"
+MODEL_NAME_OR_PATH="$HOME/model/Qwen/Qwen3-4B-Instruct-2507"
+DATASET_JSONL="data/IndustryOR_fixedV2.jsonl"
 DATASET_START_INDEX=0
 DATASET_LIMIT=0
 RESUME_SKIP_COMPLETED=true
