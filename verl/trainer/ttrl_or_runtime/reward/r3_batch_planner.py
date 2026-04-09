@@ -9,55 +9,73 @@ from verl.trainer.ttrl_or_runtime.reward.perturbation import build_perturbation_
 OBJ_SCALE_RANGE_MARGIN_RATIO = 0.10
 
 
-R3_BASE_SCALE_FEWSHOT = """Example A (transportation minimization)
-Task sketch:
-- Boat capacity 10, canoe capacity 8
-- Boat time 20, canoe time 40
-- At most 12 boat trips, at least 60% canoe, demand 300
-Expected style:
+R3_BASE_SCALE_FEWSHOT = """Example A (duck transport minimization)
+Task description:
+There has been an oil spill in the ocean and ducks need to be taken to shore to be cleaned either by boat or by canoe. A boat can take 10 ducks per trip while a canoe can take 8 ducks per trip. Since the boats are motor powered, they take 20 minutes per trip while the canoes take 40 minutes per trip. In order to avoid further environmental damage, there can be at most 12 boat trips and at least 60% of the trips should be by canoe. If at least 300 ducks need to be taken to shore, how many of each transportation method should be used to minimize the total amount of time needed to transport the ducks?
+Ground-truth objective (reference only): 1160.0
+Expected output:
 <analysis>
-Objective is total transport time, so it should stay positive and far from 0. Demand 300 with per-trip capacity around 8 to 10 implies dozens of trips, each costing tens of minutes, so a rough 10^3 scale is reasonable.
+The objective is total transport time, so it must be positive and clearly away from zero. With demand at least 300 and per-trip capacity around 8 to 10, the total number of trips is on the order of dozens. Each trip contributes tens of minutes, so the objective should typically lie in the 10^3 family.
 </analysis>
-<base_scale>{"kind":"interval","lower":600,"upper":3000,"sign_relation":"positive","magnitude":{"min_order":2,"max_order":4,"use_abs":true},"reject_exact":[0]}</base_scale>
+<base_scale>{"kind":"interval","lower":500,"upper":2800,"sign_relation":"positive","magnitude":{"min_order":2,"max_order":4,"use_abs":true},"reject_exact":[0]}</base_scale>
 
-Example B (production planning)
-Task sketch:
-- Multi-week demand with labor, overtime, inventory, and delay penalties
-Expected style:
+Example B (farmland allocation profit maximization)
+Task description:
+A farmer has a field of 100 acres on which he can grow wheat and corn. The farmer needs to decide how many acres to dedicate to each crop in order to maximize his profits. Each acre of wheat yields a profit of $20, while each acre of corn yields a profit of $30. However, due to market demands and farming regulations, the combined output from 3 acres of wheat and 2 acres of corn must be at least 200 units (a unit represents the yield from an acre). Given these conditions and aiming for whole numbers of acres due to practicalities, what is the maximum total profit that the farmer can make by optimally allocating his land between wheat and corn? Provide your answer in dollars, rounded to the nearest whole number.
+Ground-truth objective (reference only): 3000
+Expected output:
 <analysis>
-Total cost should stay positive. Repeated labor and penalty terms across many periods usually put the objective in the 10^5 to 10^6 family, so the filter should be tolerant but still reject near-zero values.
+The objective is total profit, so it should be positive. With up to 100 acres and per-acre profit around 20 to 30, the optimal objective is naturally around thousands. A practical filter should keep broad room for feasible variations while excluding implausible near-zero values.
 </analysis>
-<base_scale>{"kind":"interval","lower":100000,"upper":600000,"sign_relation":"positive","magnitude":{"min_order":5,"max_order":6,"use_abs":true},"reject_exact":[0]}</base_scale>
+<base_scale>{"kind":"interval","lower":1200,"upper":3800,"sign_relation":"positive","magnitude":{"min_order":3,"max_order":4,"use_abs":true},"reject_exact":[0]}</base_scale>
 """
 
 
-R3_TESTS_FEWSHOT = """Example A (transportation minimization)
-Task sketch:
-- Boat capacity 10, canoe capacity 8
-- Boat time 20, canoe time 40
-- At most 12 boat trips, at least 60% canoe, demand 300
-Feature catalog snippet:
-- F03: boat capacity = 10
-- F05: demand = 300
-- F07: minimum canoe share = 0.60
-Expected style:
+R3_TESTS_FEWSHOT = """Example A (vitamin capsules minimization)
+Task description:
+Kevin needs vitamins to supplement his diet. He needs to get at least 25 units of vitamin A and 40 units of vitamin B everyday. In order to do so, he can buy capsules named Special Formula and One Daily. Each capsule of Special Formula contains 4 units of vitamin A and 5 units of vitamin B. Each capsule of One Daily contains 3 units of vitamin A and 7 units of vitamin B. If the cost per Special Formula capsule is $0.50 and the cost per One Daily capsule is $0.20, how many of each should he buy to minimize his cost?
+Ground-truth objective (reference only): 1.8
+Feature catalog snippet (illustrative):
+- F01: min vitamin A requirement
+- F02: min vitamin B requirement
+- F03: A units in Special Formula
+- F04: B units in Special Formula
+- F05: A units in One Daily
+- F06: B units in One Daily
+- F07: cost of Special Formula
+- F08: cost of One Daily
+Expected output:
 <analysis>
-Use realistic harder and easier cases. Prefer coordinated multi-patch edits when one scenario naturally changes several related quantities.
+Create both harder and easier realistic perturbation cases. Keep nutritional semantics coherent and avoid unrealistic large jumps. Objective should remain positive and usually in low single-digit cost range.
 </analysis>
-<tests>[{"case_id":"demand_up_capacity_tighten","patches":[{"fid":"F05","new_value":360},{"fid":"F03","new_value":9}],"obj_scale":{"kind":"interval","lower":800,"upper":4200,"sign_relation":"positive","magnitude":{"min_order":2,"max_order":4,"use_abs":true},"reject_exact":[0]},"rationale":"Higher demand with tighter fast-boat capacity is one coherent harder case."},{"case_id":"storm_rule_stress","patches":[{"fid":"F05","new_value":330},{"fid":"F03","new_value":9},{"fid":"F07","new_value":0.7}],"obj_scale":{"kind":"interval","lower":900,"upper":5200,"sign_relation":"positive","magnitude":{"min_order":2,"max_order":4,"use_abs":true},"reject_exact":[0]},"rationale":"A weather stress case can jointly raise demand pressure, reduce effective capacity, and tighten the canoe-share rule."}]</tests>
+<tests>[
+    {"case_id":"higher_requirements_and_cost_pressure","patches":[{"fid":"F01","new_value":30},{"fid":"F02","new_value":45},{"fid":"F08","new_value":0.25}],"obj_scale":{"kind":"interval","lower":2.1,"upper":3.6,"sign_relation":"positive","magnitude":{"min_order":0,"max_order":1,"use_abs":true},"reject_exact":[0]},"rationale":"Higher vitamin requirements and more expensive One Daily should increase the optimal daily cost."},
+    {"case_id":"milder_requirements_and_cheaper_one_daily","patches":[{"fid":"F01","new_value":22},{"fid":"F02","new_value":36},{"fid":"F08","new_value":0.18}],"obj_scale":{"kind":"interval","lower":1.2,"upper":2.2,"sign_relation":"positive","magnitude":{"min_order":0,"max_order":1,"use_abs":true},"reject_exact":[0]},"rationale":"Lower requirements and cheaper One Daily should reduce total cost while preserving model structure."}
+]
+</tests>
 
-Example B (production planning)
-Task sketch:
-- Multi-week demand with training, overtime, wages, inventory, and delay penalties
-Feature catalog snippet:
-- F12: one late-week demand entry
-- F18: overtime wage
-- F21: regular-time weekly capacity
-Expected style:
+Example B (5-city TSP minimization)
+Task description:
+Imagine a scenario where a salesperson has to visit five different cities, labeled as City 1, City 2, City 3, City 4, and City 5. The objective for the salesperson is to minimize the travel costs associated with visiting each city exactly once and then returning to the starting city. The salesperson can begin their journey from any of the cities.
+Here are the travel costs between the cities:
+- Traveling from City 1 to City 2 costs 46 units, to City 3 costs 63 units, to City 4 costs 54 units, and to City 5 costs 45 units.
+- From City 2, it costs 46 units to reach City 1, 48 units to get to City 3, 50 units to reach City 4, and 51 units to travel to City 5.
+- From City 3, the travel costs are 63 units to City 1, 48 units to City 2, 31 units to City 4, and 64 units to City 5.
+- From City 4, the expenses are 54 units to City 1, 50 units to City 2, 31 units to City 3, and 94 units to get to City 5.
+- Lastly, traveling from City 5 involves costs of 45 units to City 1, 51 units to City 2, 64 units to City 3, and 94 units to City 4.
+What is the minimum total travel cost for the salesperson to visit each city exactly once and return to the starting point?
+Ground-truth objective (reference only): 229.0
+Feature catalog snippet (illustrative):
+- F01..F10: selected directed/symmetric edge costs among city pairs
+Expected output:
 <analysis>
-Perturb demand-like, cost-like, and capacity-like numbers in plausible business combinations. Keep obj_scale positive and in the same broad order family unless the case is intentionally extreme.
+Use coherent edge-cost perturbations to create one harder and one easier routing scenario. Keep all travel costs positive and preserve TSP semantics. Objective should remain in the 10^2 scale.
 </analysis>
-<tests>[{"case_id":"rush_week_tighter_capacity","patches":[{"fid":"F12","op":"scale","value":1.12},{"fid":"F18","op":"scale","value":1.05},{"fid":"F21","op":"scale","value":0.92}],"obj_scale":{"kind":"interval","lower":150000,"upper":900000,"sign_relation":"positive","magnitude":{"min_order":5,"max_order":6,"use_abs":true},"reject_exact":[0]},"rationale":"A rush-week scenario can combine higher late demand, costlier overtime, and tighter regular capacity."},{"case_id":"demand_relief_and_capacity_ease","patches":[{"fid":"F12","op":"scale","value":0.94},{"fid":"F21","op":"scale","value":1.06}],"obj_scale":{"kind":"interval","lower":90000,"upper":520000,"sign_relation":"positive","magnitude":{"min_order":5,"max_order":6,"use_abs":true},"reject_exact":[0]},"rationale":"Lower late demand with easier capacity is one coherent relief case."}]</tests>
+<tests>[
+    {"case_id":"harder_route_key_edges_up","patches":[{"fid":"F04","new_value":58},{"fid":"F08","new_value":42},{"fid":"F07","new_value":60}],"obj_scale":{"kind":"interval","lower":245,"upper":340,"sign_relation":"positive","magnitude":{"min_order":2,"max_order":3,"use_abs":true},"reject_exact":[0]},"rationale":"Increasing several low-impact bridge edges should push the best Hamiltonian cycle cost upward."},
+    {"case_id":"easier_route_key_edges_down","patches":[{"fid":"F04","new_value":38},{"fid":"F08","new_value":24},{"fid":"F05","new_value":42}],"obj_scale":{"kind":"interval","lower":180,"upper":245,"sign_relation":"positive","magnitude":{"min_order":2,"max_order":3,"use_abs":true},"reject_exact":[0]},"rationale":"Reducing selected key edges should create cheaper tours and lower the optimum."}
+]
+</tests>
 """
 
 @dataclass(slots=True)
