@@ -88,13 +88,13 @@ class DatasetConfig:
     max_numeric_features: int = 16
     key_param_top_k: int = 8
     mapping_extractor: str = "rule"
-    mapping_llm_max_new_tokens: int = 1024
-    mapping_llm_temperature: float = 0.0
+    mapping_llm_max_new_tokens: int = 2048
+    mapping_llm_temperature: float = 0.3
     mapping_llm_top_p: float = 1.0
 
-    r3_plan_max_new_tokens: int = 1024
-    r3_plan_temperature: float = 0.0
-    r3_plan_top_p: float = 0.3
+    r3_plan_max_new_tokens: int = 2048
+    r3_plan_temperature: float = 0.3
+    r3_plan_top_p: float = 0.7
 
 
 @dataclass(slots=True)
