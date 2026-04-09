@@ -886,12 +886,59 @@ class TTRLRewardCalculator(RewardCalculator):
         if sign_relation == "nonzero" and abs(val) <= eps:
             return False
 
+        kind = str(scale.get("kind") or "interval").strip().lower()
+        has_explicit_bounds = False
+        if kind == "point":
+            point = scale.get("point")
+            if not isinstance(point, (int, float)):
+                has_explicit_bounds = False
+            else:
+                has_explicit_bounds = True
+                tol_abs = scale.get("tol_abs") if isinstance(scale.get("tol_abs"), (int, float)) else 0.0
+                tol_rel = scale.get("tol_rel") if isinstance(scale.get("tol_rel"), (int, float)) else 0.0
+                tol = max(float(tol_abs), abs(float(point)) * float(tol_rel))
+                if abs(val - float(point)) > tol + eps:
+                    return False
+        elif kind == "union":
+            intervals = scale.get("intervals") if isinstance(scale.get("intervals"), list) else []
+            has_numeric_interval_bound = False
+            matched = False
+            for item in intervals:
+                if not isinstance(item, dict):
+                    continue
+                lo = item.get("lower")
+                hi = item.get("upper")
+                if isinstance(lo, (int, float)) or isinstance(hi, (int, float)):
+                    has_numeric_interval_bound = True
+                ok = True
+                if isinstance(lo, (int, float)) and val < float(lo) - eps:
+                    ok = False
+                if isinstance(hi, (int, float)) and val > float(hi) + eps:
+                    ok = False
+                if ok:
+                    matched = True
+                    break
+            has_explicit_bounds = has_numeric_interval_bound
+            if intervals and not matched:
+                return False
+        else:
+            lo = scale.get("lower")
+            hi = scale.get("upper")
+            has_explicit_bounds = isinstance(lo, (int, float)) or isinstance(hi, (int, float))
+            if isinstance(lo, (int, float)) and val < float(lo) - eps:
+                return False
+            if isinstance(hi, (int, float)) and val > float(hi) + eps:
+                return False
+
+        # Magnitude acts as a fallback prior when explicit numeric bounds are
+        # absent. If lower/upper (or point/union numeric bounds) are provided,
+        # avoid contradictory double-gating.
         magnitude = scale.get("magnitude") if isinstance(scale.get("magnitude"), dict) else {}
         min_order = magnitude.get("min_order") if isinstance(magnitude.get("min_order"), int) else None
         max_order = magnitude.get("max_order") if isinstance(magnitude.get("max_order"), int) else None
         use_abs = bool(magnitude.get("use_abs", True))
         magnitude_val = abs_val if use_abs else val
-        if min_order is not None or max_order is not None:
+        if (not has_explicit_bounds) and (min_order is not None or max_order is not None):
             if magnitude_val <= eps:
                 return False
             # Use integer order buckets (floor(log10(|x|))) to match the scale
@@ -903,38 +950,10 @@ class TTRLRewardCalculator(RewardCalculator):
             if max_order is not None and order_bucket > int(max_order):
                 return False
 
-        kind = str(scale.get("kind") or "interval").strip().lower()
         if kind == "point":
-            point = scale.get("point")
-            if not isinstance(point, (int, float)):
-                return True
-            tol_abs = scale.get("tol_abs") if isinstance(scale.get("tol_abs"), (int, float)) else 0.0
-            tol_rel = scale.get("tol_rel") if isinstance(scale.get("tol_rel"), (int, float)) else 0.0
-            tol = max(float(tol_abs), abs(float(point)) * float(tol_rel))
-            return abs(val - float(point)) <= tol + eps
-
+            return True
         if kind == "union":
-            intervals = scale.get("intervals") if isinstance(scale.get("intervals"), list) else []
-            for item in intervals:
-                if not isinstance(item, dict):
-                    continue
-                lo = item.get("lower")
-                hi = item.get("upper")
-                ok = True
-                if isinstance(lo, (int, float)) and val < float(lo) - eps:
-                    ok = False
-                if isinstance(hi, (int, float)) and val > float(hi) + eps:
-                    ok = False
-                if ok:
-                    return True
-            return False if intervals else True
-
-        lo = scale.get("lower")
-        hi = scale.get("upper")
-        if isinstance(lo, (int, float)) and val < float(lo) - eps:
-            return False
-        if isinstance(hi, (int, float)) and val > float(hi) + eps:
-            return False
+            return True
         return True
 
     def _objective_within_bounds(self, obj_answer: float | None, bounds: dict[str, Any] | None) -> bool:
