@@ -146,6 +146,9 @@ algorithm:
       # Code execution timeout in seconds.
       code_timeout_sec: 30
 
+      # Gurobi optimize time limit in seconds, auto-injected by executor.
+      gurobi_time_limit_sec: 30
+
       # Number of robustness cases per sample.
       robustness_cases: 3
 

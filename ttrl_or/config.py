@@ -15,6 +15,7 @@ class MCTSConfig:
 @dataclass(slots=True)
 class RewardConfig:
     code_timeout_sec: int = 30
+    gurobi_time_limit_sec: float = 30.0
     robustness_cases: int = 3
     global_consensus_rel_tol: float = 0.005
     code_executor_mode: str = "sandbox"  # sandbox or subprocess

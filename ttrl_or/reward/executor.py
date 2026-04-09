@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import glob
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from ttrl_or.types import ExecutionResult, ModelInfo
 _RUNNER_CODE = """
 import importlib.util
 import json
+import os
 import sys
 import traceback
 
@@ -37,10 +39,52 @@ def _pick_script_result(module):
     return None
 
 
+def _install_gurobi_timelimit():
+    raw = str(os.getenv("TTRL_OR_GUROBI_TIMELIMIT_SEC", "") or "").strip()
+    if not raw:
+        return
+    try:
+        limit = float(raw)
+    except Exception:
+        return
+    if not (limit > 0.0):
+        return
+
+    try:
+        import gurobipy as gp
+    except Exception:
+        return
+
+    optimize = getattr(gp.Model, "optimize", None)
+    if optimize is None:
+        return
+    if bool(getattr(optimize, "_ttrl_or_time_limit_wrapped", False)):
+        return
+
+    original_optimize = optimize
+
+    def _wrapped_optimize(self, *args, **kwargs):
+        try:
+            current = float(getattr(self.Params, "TimeLimit", 0.0))
+            if current <= 0.0 or current > limit:
+                self.setParam("TimeLimit", float(limit))
+        except Exception:
+            try:
+                self.setParam("TimeLimit", float(limit))
+            except Exception:
+                pass
+        return original_optimize(self, *args, **kwargs)
+
+    _wrapped_optimize._ttrl_or_time_limit_wrapped = True
+    gp.Model.optimize = _wrapped_optimize
+
+
 def main():
     target = sys.argv[1]
     payload = json.loads(sys.argv[2])
     try:
+        _install_gurobi_timelimit()
+
         spec = importlib.util.spec_from_file_location("candidate_solution_runtime", target)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -72,9 +116,22 @@ class PythonCodeExecutor:
     - sandbox: one persistent temp workspace reused across runs (faster I/O setup).
     """
 
-    def __init__(self, timeout_sec: int = 6, mode: str = "subprocess") -> None:
+    def __init__(
+        self,
+        timeout_sec: int = 6,
+        mode: str = "subprocess",
+        gurobi_time_limit_sec: float | None = 30.0,
+    ) -> None:
         self.timeout_sec = timeout_sec
         self.mode = mode
+        self.gurobi_time_limit_sec: float | None = None
+        try:
+            if gurobi_time_limit_sec is not None:
+                limit = float(gurobi_time_limit_sec)
+                if limit > 0.0:
+                    self.gurobi_time_limit_sec = limit
+        except Exception:
+            self.gurobi_time_limit_sec = None
 
         self._sandbox_dir: Path | None = None
         self._runner_file: Path | None = None
@@ -266,6 +323,9 @@ class PythonCodeExecutor:
         start: float,
         lp_injection_applied: bool = False,
     ) -> ExecutionResult:
+        env = os.environ.copy()
+        if isinstance(self.gurobi_time_limit_sec, (int, float)) and float(self.gurobi_time_limit_sec) > 0.0:
+            env["TTRL_OR_GUROBI_TIMELIMIT_SEC"] = str(float(self.gurobi_time_limit_sec))
         try:
             proc = subprocess.run(
                 [sys.executable, str(runner_path), str(solution_path), json.dumps(instance)],
@@ -273,6 +333,7 @@ class PythonCodeExecutor:
                 text=True,
                 timeout=self.timeout_sec,
                 cwd=str(cwd),
+                env=env,
             )
         except subprocess.TimeoutExpired as exc:
             elapsed = time.perf_counter() - start

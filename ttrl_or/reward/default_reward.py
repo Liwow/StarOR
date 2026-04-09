@@ -40,6 +40,7 @@ class TTRLRewardCalculator(RewardCalculator):
         self.executor = PythonCodeExecutor(
             timeout_sec=self.config.code_timeout_sec,
             mode=self.config.code_executor_mode,
+            gurobi_time_limit_sec=getattr(self.config, "gurobi_time_limit_sec", 30.0),
         )
         self._semantic_cluster = SemanticCluster(
             rel_tol=self.config.global_consensus_rel_tol,

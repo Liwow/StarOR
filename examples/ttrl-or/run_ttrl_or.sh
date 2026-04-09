@@ -24,6 +24,7 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.mcts.solverllm_compare_mode=False \
     algorithm.ttrl_or.reward.enable_r3_reward=True \
     algorithm.ttrl_or.reward.enable_r4_reward=True \
+    algorithm.ttrl_or.reward.gurobi_time_limit_sec=30 \
     algorithm.ttrl_or.reward.robustness_cases=3 \
     algorithm.ttrl_or.reward.cluster_scope=local \
     algorithm.ttrl_or.reward.r1_weight=0.6 \

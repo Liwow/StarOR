@@ -260,6 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--robustness-cases", type=int, default=defaults.reward.robustness_cases)
     parser.add_argument("--code-timeout-sec", type=int, default=defaults.reward.code_timeout_sec)
+    parser.add_argument("--gurobi-time-limit-sec", type=float, default=defaults.reward.gurobi_time_limit_sec)
     parser.add_argument(
         "--code-executor-mode",
         type=str,
@@ -353,6 +354,7 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
 
     config.reward.robustness_cases = args.robustness_cases
     config.reward.code_timeout_sec = args.code_timeout_sec
+    config.reward.gurobi_time_limit_sec = args.gurobi_time_limit_sec
     config.reward.code_executor_mode = args.code_executor_mode
     config.reward.global_consensus_rel_tol = args.global_consensus_rel_tol
     config.reward.cluster_scope = args.reward_cluster_scope
