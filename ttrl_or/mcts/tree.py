@@ -206,9 +206,9 @@ class FourStageMCTS:
                             completion_texts = list(
                                 batch_method(
                                     prompts,
-                                    max_new_tokens=int(getattr(self.backend, "max_new_tokens", 2048) or 2048),
-                                    temperature=float(getattr(self.backend, "temperature", 0.0) or 0.0),
-                                    top_p=float(getattr(self.backend, "top_p", 1.0) or 1.0),
+                                    max_new_tokens=int(_none_to_default(getattr(self.backend, "max_new_tokens", None), 2048)),
+                                    temperature=float(_none_to_default(getattr(self.backend, "temperature", None), 0.0)),
+                                    top_p=float(_none_to_default(getattr(self.backend, "top_p", None), 1.0)),
                                     prefer_vllm=bool(self._active_grpo_config.use_vllm) if self._active_grpo_config is not None else False,
                                     vllm_mode=str(self._active_grpo_config.vllm_mode) if self._active_grpo_config is not None else "",
                                 )
@@ -864,9 +864,9 @@ class FourStageMCTS:
             completion_text = str(
                 self.backend.generate_auxiliary_text(
                     completion_prompt,
-                    max_new_tokens=int(getattr(self.backend, "max_new_tokens", 2048) or 2048),
-                    temperature=float(getattr(self.backend, "temperature", 0.0) or 0.0),
-                    top_p=float(getattr(self.backend, "top_p", 1.0) or 1.0),
+                    max_new_tokens=int(_none_to_default(getattr(self.backend, "max_new_tokens", None), 2048)),
+                    temperature=float(_none_to_default(getattr(self.backend, "temperature", None), 0.0)),
+                    top_p=float(_none_to_default(getattr(self.backend, "top_p", None), 1.0)),
                     prefer_vllm=bool(self._active_grpo_config.use_vllm) if self._active_grpo_config is not None else False,
                     vllm_mode=str(self._active_grpo_config.vllm_mode) if self._active_grpo_config is not None else "",
                 )
@@ -1033,7 +1033,7 @@ class FourStageMCTS:
         return False
 
     def _blocked_sibling_threshold(self) -> int:
-        group_k = max(2, int(getattr(self._active_grpo_config, 'num_generations', 0) or 0)) if self._active_grpo_config is not None else 1
+        group_k = max(2, int(_none_to_default(getattr(self._active_grpo_config, 'num_generations', None), 0))) if self._active_grpo_config is not None else 1
         return max(2, group_k // 2)
 
     @staticmethod
@@ -1186,7 +1186,7 @@ class FourStageMCTS:
         if len(iteration_logs) < 3:
             return None
         recent = iteration_logs[-3:]
-        configured_k = max(1, int(getattr(self._active_grpo_config, 'num_generations', 0) or 0)) if self._active_grpo_config is not None else 0
+        configured_k = max(1, int(_none_to_default(getattr(self._active_grpo_config, 'num_generations', None), 0))) if self._active_grpo_config is not None else 0
         total_rollouts = max(1, configured_k * 3) if configured_k > 0 else 0
         observed_rollouts = 0
         clusters: list[dict[str, Any]] = []
@@ -1417,4 +1417,11 @@ class FourStageMCTS:
 
 
 
+
+
+
+
+
+def _none_to_default(value: Any, default: Any) -> Any:
+    return default if value is None else value
 

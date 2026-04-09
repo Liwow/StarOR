@@ -57,8 +57,17 @@ The current DEFAULT Code-stage rules are:
 """.strip()
 
 
+class VerificationError(RuntimeError):
+    """Raised when generated code fails verification with full context payload."""
+
+    def __init__(self, message: str, *, detail: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.detail = detail or {}
+
+
 def iter_jsonl(path: Path):
-    with path.open("r", encoding="utf-8") as fh:
+    # Use utf-8-sig to tolerate BOM-prefixed JSONL files.
+    with path.open("r", encoding="utf-8-sig") as fh:
         for idx, line in enumerate(fh):
             line = line.strip()
             if not line:
@@ -293,6 +302,20 @@ def extract_type_and_python(response_text: str) -> tuple[str, str]:
     return type_block, python_block
 
 
+def extract_python_block_from_record(record: dict[str, Any]) -> str:
+    direct = str(record.get("python_block", "") or "").strip()
+    if direct:
+        return direct
+    output_text = str(record.get("output", "") or "")
+    py = extract_tag_block(output_text, "python")
+    if py:
+        return py
+    raise VerificationError(
+        "missing <python> block in existing record",
+        detail={"stage": "extract_existing_python"},
+    )
+
+
 def gurobipy_available() -> bool:
     return importlib.util.find_spec("gurobipy") is not None
 
@@ -300,10 +323,24 @@ def gurobipy_available() -> bool:
 def verify_python_block(python_block: str, *, mode: str, timeout: int) -> dict[str, Any]:
     py_match = PYTHON_BLOCK_RE.search(python_block)
     if not py_match:
-        raise ValueError("missing <python> block during verification")
+        raise VerificationError(
+            "missing <python> block during verification",
+            detail={"stage": "extract_python", "mode": mode},
+        )
     code = py_match.group(1).strip()
-    ast.parse(code)
-    compile(code, "<generated_gurobi>", "exec")
+    try:
+        ast.parse(code)
+        compile(code, "<generated_gurobi>", "exec")
+    except Exception as exc:
+        raise VerificationError(
+            f"syntax verification failed: {exc}",
+            detail={
+                "stage": "syntax",
+                "mode": mode,
+                "error": repr(exc),
+                "python_code": code,
+            },
+        ) from exc
     result: dict[str, Any] = {"syntax_ok": True, "run_ok": None, "mode": mode}
     if mode == "syntax":
         result["run_ok"] = False
@@ -315,29 +352,86 @@ def verify_python_block(python_block: str, *, mode: str, timeout: int) -> dict[s
     with tempfile.TemporaryDirectory(prefix="verify_gurobi_") as tmpdir:
         tmp_path = Path(tmpdir) / "candidate.py"
         tmp_path.write_text(code, encoding="utf-8")
-        proc = subprocess.run(
-            [sys.executable, str(tmp_path)],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(tmp_path)],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise VerificationError(
+                f"runtime verification timeout ({timeout}s)",
+                detail={
+                    "stage": "runtime",
+                    "mode": mode,
+                    "timeout_sec": int(timeout),
+                    "stdout": str(exc.stdout or ""),
+                    "stderr": str(exc.stderr or ""),
+                    "python_code": code,
+                },
+            ) from exc
     result.update(
         {
             "run_ok": proc.returncode == 0,
             "returncode": proc.returncode,
-            "stdout_tail": proc.stdout[-2000:],
-            "stderr_tail": proc.stderr[-2000:],
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
         }
     )
     if proc.returncode != 0:
-        raise RuntimeError(f"runtime verification failed with return code {proc.returncode}: {proc.stderr[-500:]}")
+        raise VerificationError(
+            f"runtime verification failed with return code {proc.returncode}",
+            detail={
+                "stage": "runtime",
+                "mode": mode,
+                "returncode": int(proc.returncode),
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+                "python_code": code,
+            },
+        )
     return result
+
+
+def build_retry_feedback(
+    *,
+    task_text: str,
+    canonical_blocks: str,
+    previous_type_block: str,
+    previous_python_block: str,
+    verification_error: Exception,
+) -> str:
+    detail: dict[str, Any] = {}
+    if isinstance(verification_error, VerificationError):
+        detail = dict(verification_error.detail or {})
+
+    error_block = {
+        "error_class": type(verification_error).__name__,
+        "error_message": str(verification_error),
+        "detail": detail,
+    }
+    return (
+        "Your previous answer was rejected. Regenerate from scratch and fix all issues.\n\n"
+        "=== FULL CONTEXT ===\n"
+        f"[Task]\n{task_text.strip()}\n\n"
+        f"[Canonical Modeling Blocks]\n{canonical_blocks.strip()}\n\n"
+        f"[Previous <Type>]\n{previous_type_block.strip() or '<empty>'}\n\n"
+        f"[Previous <python>]\n{previous_python_block.strip() or '<empty>'}\n\n"
+        "[Verification Error]\n"
+        f"{json.dumps(error_block, ensure_ascii=False, indent=2)}\n\n"
+        "Regeneration requirements:\n"
+        "- Keep canonical modeling semantics unchanged.\n"
+        "- Output exactly two blocks in order: <Type> then <python>.\n"
+        "- Do not output <thought>.\n"
+    )
 
 
 def build_generation_record(
     *,
     source_record: dict[str, Any],
     source_index: int,
+    record_id: str | None,
     tagged_output: str,
     type_block: str,
     python_block: str,
@@ -352,7 +446,7 @@ def build_generation_record(
         ]
     )
     return {
-        "record_id": stable_record_id(source_record, source_index),
+        "record_id": str(record_id or stable_record_id(source_record, source_index)),
         "source_index": source_index,
         "input": source_record.get("input", ""),
         "output": combined_output,
@@ -377,6 +471,7 @@ def _generate_one_record(
     retry_sleep: float,
     verification_mode: str,
     run_timeout: int,
+    retry_until_success: bool,
 ) -> dict[str, Any]:
     try:
         tagged_output = build_tagged_sections(record)
@@ -399,10 +494,14 @@ def _generate_one_record(
     feedback = ""
     last_exc: Exception | None = None
     attempt_errors: list[str] = []
-    for attempt in range(1, max_retries + 1):
+    attempt = 0
+    while True:
+        attempt += 1
+        if (not retry_until_success) and attempt > max_retries:
+            break
         user_prompt = build_generation_prompt(str(record.get("input", "")), tagged_output)
         if feedback:
-            user_prompt += "\n\nYour previous answer was rejected. Fix this issue and regenerate from scratch:\n" + feedback + "\n"
+            user_prompt += "\n\n" + feedback + "\n"
         try:
             response_text = client.chat(system_prompt=system_prompt, user_prompt=user_prompt, temperature=temperature)
             type_block, python_block = extract_type_and_python(response_text)
@@ -412,6 +511,7 @@ def _generate_one_record(
             payload = build_generation_record(
                 source_record=record,
                 source_index=source_index,
+                record_id=rid,
                 tagged_output=tagged_output,
                 type_block=type_block,
                 python_block=python_block,
@@ -429,8 +529,17 @@ def _generate_one_record(
             }
         except Exception as exc:
             last_exc = exc
-            feedback = str(exc)
-            attempt_errors.append(f"attempt={attempt}/{max_retries}: {exc}")
+            previous_type = locals().get("type_block", "")
+            previous_python = locals().get("python_block", "")
+            feedback = build_retry_feedback(
+                task_text=str(record.get("input", "")),
+                canonical_blocks=tagged_output,
+                previous_type_block=str(previous_type or ""),
+                previous_python_block=str(previous_python or ""),
+                verification_error=exc,
+            )
+            attempt_total = ("inf" if retry_until_success else str(max_retries))
+            attempt_errors.append(f"attempt={attempt}/{attempt_total}: {exc}")
             time.sleep(retry_sleep)
 
     return {
@@ -505,6 +614,7 @@ def process_generate(args: argparse.Namespace) -> None:
     source_iter = iter_jsonl(input_path)
     exhausted = False
     system_prompt = SYSTEM_INSTRUCTION.strip() + "\nOnly output the requested final tagged blocks. Do not output <thought>."
+    retry_until_success = bool(args.retry_until_success) or int(args.max_retries) <= 0
 
     def next_candidate() -> tuple[int, dict[str, Any], str] | None:
         nonlocal skipped, exhausted
@@ -545,6 +655,7 @@ def process_generate(args: argparse.Namespace) -> None:
                     retry_sleep=args.retry_sleep,
                     verification_mode=args.verification_mode,
                     run_timeout=args.run_timeout,
+                    retry_until_success=retry_until_success,
                 )
                 inflight[fut] = (source_index, rid)
 
@@ -596,6 +707,102 @@ def process_generate(args: argparse.Namespace) -> None:
     print(f"[generate] done processed={processed} skipped={skipped} output={output_path}", flush=True)
 
 
+def process_repair(args: argparse.Namespace) -> None:
+    input_path = Path(args.input)
+    output_path = Path(args.output)
+    error_path = output_path.with_suffix(output_path.suffix + ".errors.jsonl")
+    seen = load_seen_record_ids(output_path) if args.resume else set()
+
+    system_prompt = SYSTEM_INSTRUCTION.strip() + "\nOnly output the requested final tagged blocks. Do not output <thought>."
+    retry_until_success = bool(args.retry_until_success) or int(args.max_retries) <= 0
+    processed = 0
+    skipped = 0
+    repaired = 0
+    verified_ok = 0
+    client: OpenAICompatClient | None = None
+
+    def _get_client() -> OpenAICompatClient:
+        nonlocal client
+        if client is not None:
+            return client
+        api_key = os.getenv(args.api_key_env, "")
+        if not api_key:
+            raise SystemExit(f"missing API key env: {args.api_key_env}")
+        model = args.model or os.getenv(args.model_env, "")
+        if not model:
+            raise SystemExit("missing model: pass --model or set the model env")
+        base_url = os.getenv(args.base_url_env, args.base_url)
+        client = OpenAICompatClient(model=model, api_key=api_key, base_url=base_url, timeout=args.request_timeout)
+        return client
+
+    for source_index, record in iter_jsonl(input_path):
+        rid = str(record.get("record_id", "") or stable_record_id(record, source_index))
+        if rid in seen:
+            skipped += 1
+            continue
+        if args.limit is not None and processed >= args.limit:
+            break
+
+        try:
+            existing_python = extract_python_block_from_record(record)
+            verification = verify_python_block(existing_python, mode=args.verification_mode, timeout=args.run_timeout)
+            payload = dict(record)
+            payload["record_id"] = rid
+            payload["python_block"] = existing_python
+            payload["verification_recheck"] = verification
+            append_jsonl(output_path, payload)
+            verified_ok += 1
+            processed += 1
+            seen.add(rid)
+            print(f"[repair] verified source_index={source_index} record_id={rid}", flush=True)
+            continue
+        except Exception as verify_exc:
+            print(f"[repair] need_regen source_index={source_index} record_id={rid}: {verify_exc}", flush=True)
+
+        result = _generate_one_record(
+            source_index=source_index,
+            record=record,
+            rid=rid,
+            client=_get_client(),
+            system_prompt=system_prompt,
+            temperature=args.temperature,
+            max_retries=args.max_retries,
+            retry_sleep=args.retry_sleep,
+            verification_mode=args.verification_mode,
+            run_timeout=args.run_timeout,
+            retry_until_success=retry_until_success,
+        )
+        for retry_msg in result.get("attempt_errors", []):
+            print(
+                f"[repair] retry source_index={result.get('source_index', source_index)} "
+                f"record_id={result.get('record_id', rid)} {retry_msg}",
+                flush=True,
+            )
+
+        if bool(result.get("ok")):
+            append_jsonl(output_path, result["payload"])
+            seen.add(rid)
+            processed += 1
+            repaired += 1
+            print(
+                f"[repair] repaired source_index={result['source_index']} record_id={result['record_id']} "
+                f"attempt={result.get('attempt')} verification={result.get('verification_mode')}",
+                flush=True,
+            )
+        else:
+            append_jsonl(error_path, result["error_payload"])
+            print(
+                f"[repair] failed source_index={result['source_index']} record_id={result['record_id']}: "
+                f"{result['error_payload'].get('error')}",
+                flush=True,
+            )
+
+    print(
+        f"[repair] done processed={processed} skipped={skipped} verified_ok={verified_ok} repaired={repaired} output={output_path}",
+        flush=True,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare TTRL-OR training data with tag formatting and Type/Python generation.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -604,7 +811,8 @@ def build_parser() -> argparse.ArgumentParser:
     format_parser.add_argument("--input", default="data/train/train_data.jsonl")
     format_parser.add_argument("--output", default="data/train/train_data.tagged.jsonl")
     format_parser.add_argument("--limit", type=int, default=None)
-    format_parser.add_argument("--resume", action="store_true", default=True)
+    format_parser.add_argument("--resume", dest="resume", action="store_true", default=True)
+    format_parser.add_argument("--no-resume", dest="resume", action="store_false")
     format_parser.set_defaults(func=process_format)
 
     generate_parser = subparsers.add_parser("generate", help="Call an LLM to generate <Type> and <python> blocks.")
@@ -620,11 +828,46 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--run-timeout", type=int, default=30)
     generate_parser.add_argument("--verification-mode", choices=["syntax", "run", "run-if-available"], default="run-if-available")
     generate_parser.add_argument("--max-retries", type=int, default=4)
+    generate_parser.add_argument(
+        "--retry-until-success",
+        action="store_true",
+        default=False,
+        help="Keep retrying a sample until verification succeeds. If set, --max-retries is ignored.",
+    )
     generate_parser.add_argument("--retry-sleep", type=float, default=1.5)
     generate_parser.add_argument("--parallel", type=int, default=4, help="Number of concurrent generation workers.")
     generate_parser.add_argument("--limit", type=int, default=None)
-    generate_parser.add_argument("--resume", action="store_true", default=True)
+    generate_parser.add_argument("--resume", dest="resume", action="store_true", default=True)
+    generate_parser.add_argument("--no-resume", dest="resume", action="store_false")
     generate_parser.set_defaults(func=process_generate)
+
+    repair_parser = subparsers.add_parser(
+        "repair",
+        help="Re-verify existing generated <python> blocks, keep valid records, and regenerate failed ones.",
+    )
+    repair_parser.add_argument("--input", default="data/train/train_data.type_python.jsonl")
+    repair_parser.add_argument("--output", default="data/train/train_data.type_python.repaired.jsonl")
+    repair_parser.add_argument("--model", default="")
+    repair_parser.add_argument("--base-url", default=os.getenv("IDEALAB_BASE_URL", ""))
+    repair_parser.add_argument("--api-key-env", default="IDEALAB_API_KEY")
+    repair_parser.add_argument("--base-url-env", default="IDEALAB_BASE_URL")
+    repair_parser.add_argument("--model-env", default="OPENAI_MODEL")
+    repair_parser.add_argument("--temperature", type=float, default=0.2)
+    repair_parser.add_argument("--request-timeout", type=int, default=120)
+    repair_parser.add_argument("--run-timeout", type=int, default=30)
+    repair_parser.add_argument("--verification-mode", choices=["syntax", "run", "run-if-available"], default="run")
+    repair_parser.add_argument("--max-retries", type=int, default=8)
+    repair_parser.add_argument(
+        "--retry-until-success",
+        action="store_true",
+        default=False,
+        help="Keep retrying a sample until verification succeeds.",
+    )
+    repair_parser.add_argument("--retry-sleep", type=float, default=1.5)
+    repair_parser.add_argument("--limit", type=int, default=None)
+    repair_parser.add_argument("--resume", dest="resume", action="store_true", default=True)
+    repair_parser.add_argument("--no-resume", dest="resume", action="store_false")
+    repair_parser.set_defaults(func=process_repair)
     return parser
 
 

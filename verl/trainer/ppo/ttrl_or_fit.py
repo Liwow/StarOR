@@ -148,6 +148,10 @@ def _sample_result_path(log_dir: str | os.PathLike[str], sample_id: str) -> Path
     return _sample_run_dir(log_dir, sample_id) / "result.json"
 
 
+def _none_to_default(value: Any, default: Any) -> Any:
+    return default if value is None else value
+
+
 def _prompt_to_messages(prompt: Any) -> list[dict[str, str]]:
     if isinstance(prompt, list):
         out: list[dict[str, str]] = []
@@ -211,11 +215,18 @@ class VerlRayPolicyBackend:
         self.pipeline_config = pipeline_config
         self.tokenizer = trainer.tokenizer
         self._current_task_id = ""
-        self._prior_temperature = float(getattr(self.pipeline_config.mcts, "prior_temperature", 0.8) or 0.8)
-        self._prior_tail_tokens = int(getattr(self.pipeline_config.mcts, "prior_tail_tokens", 64) or 64)
-        self._prior_standardize = bool(getattr(self.pipeline_config.mcts, "prior_standardize", True))
-        self._prior_use_ref = bool(getattr(self.pipeline_config.mcts, "prior_use_ref", False))
-        self._prior_min_std = float(getattr(self.pipeline_config.mcts, "prior_min_std", 1e-4) or 1e-4)
+        mcts_cfg = self.pipeline_config.mcts
+        prior_temperature = _none_to_default(getattr(mcts_cfg, "prior_temperature", None), 0.6)
+        prior_tail_tokens = _none_to_default(getattr(mcts_cfg, "prior_tail_tokens", None), 0)
+        prior_standardize = _none_to_default(getattr(mcts_cfg, "prior_standardize", None), True)
+        prior_use_ref = _none_to_default(getattr(mcts_cfg, "prior_use_ref", None), False)
+        prior_min_std = _none_to_default(getattr(mcts_cfg, "prior_min_std", None), 1e-4)
+
+        self._prior_temperature = float(prior_temperature)
+        self._prior_tail_tokens = max(0, int(prior_tail_tokens))
+        self._prior_standardize = bool(prior_standardize)
+        self._prior_use_ref = bool(prior_use_ref)
+        self._prior_min_std = float(prior_min_std)
 
     def _sample_reset_enabled(self) -> bool:
         return bool(self.pipeline_config.backend.reset_lora_on_begin_episode)

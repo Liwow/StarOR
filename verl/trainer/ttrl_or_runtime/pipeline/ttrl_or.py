@@ -486,6 +486,10 @@ class TTRLORRunner:
         best = payload.get("best_rollout", {}) if isinstance(payload, dict) else {}
         timing = payload.get("timing", {}) if isinstance(payload, dict) else {}
         reward = best.get("reward", {}) if isinstance(best, dict) else {}
+        best_r3_debug = (
+            (reward.get("r3_debug", {}) if isinstance(reward.get("r3_debug", {}), dict) else {})
+            or (reward.get("r3", {}) if isinstance(reward.get("r3", {}), dict) else {})
+        )
         parent = best.get("parent_node", {}) if isinstance(best, dict) else {}
         leaf_candidates = selection.get("leaf_candidates", []) if isinstance(selection, dict) else []
         selection_path = selection.get("selection_path", []) if isinstance(selection, dict) else []
@@ -556,6 +560,12 @@ class TTRLORRunner:
                     f"structure_gate={r4_debug_i.get('structure_gate', '')} r3_source={r3_debug_i.get('source', '')} "
                     f"r3_pass={r3_debug_i.get('passed_cases', '')}/{r3_debug_i.get('num_cases', '')}"
                 )
+                lines.append(
+                    f"  r4_lp_ready={r4_debug_i.get('lp_model_ready', '')} "
+                    f"r4_lp_reason={((r4_debug_i.get('lp_model_debug', {}) or {}).get('reason', ''))} "
+                    f"r4_lp_vars={((r4_debug_i.get('lp_model_debug', {}) or {}).get('num_vars', ''))} "
+                    f"r4_lp_constrs={((r4_debug_i.get('lp_model_debug', {}) or {}).get('num_constrs', ''))}"
+                )
         else:
             lines.append("- none")
 
@@ -571,8 +581,9 @@ class TTRLORRunner:
                 f"- reward: r1={reward.get('r1', '')}, r2={reward.get('r2', '')}, r3={reward.get('r3', '')}, r4={reward.get('r4', '')}, total={reward.get('total', '')}",
                 f"- r1_debug: eligible={((reward.get('r1_debug', {}) or {}).get('r1_eligible', ''))}, valid_obj={((reward.get('r1_debug', {}) or {}).get('has_valid_obj', ''))}, in_bounds={((reward.get('r1_debug', {}) or {}).get('obj_in_bounds', ''))}, code_len={((reward.get('r1_debug', {}) or {}).get('code_len', ''))}",
                 f"- r4_debug: structure_gate={((reward.get('r4_debug', {}) or {}).get('structure_gate', ''))}, extracted={(((reward.get('r4_debug', {}) or {}).get('structure_gate_debug', {}) or {}).get('extracted', ''))}, structural_pass={(((reward.get('r4_debug', {}) or {}).get('structure_gate_debug', {}) or {}).get('passes', ''))}",
+                f"- r4_lp_debug: ready={((reward.get('r4_debug', {}) or {}).get('lp_model_ready', ''))}, reason={(((reward.get('r4_debug', {}) or {}).get('lp_model_debug', {}) or {}).get('reason', ''))}, vars={(((reward.get('r4_debug', {}) or {}).get('lp_model_debug', {}) or {}).get('num_vars', ''))}, constrs={(((reward.get('r4_debug', {}) or {}).get('lp_model_debug', {}) or {}).get('num_constrs', ''))}",
                 f"- code_execution: success={((best.get('code_execution', {}) or {}).get('success', ''))}, effective_success={((best.get('code_execution', {}) or {}).get('effective_success', ''))}, parsed_obj={((best.get('code_execution', {}) or {}).get('parsed_obj_answer', ''))}",
-                f"- r3_debug: source={(((best.get('reward', {}) or {}).get('r3_debug', {}) or {}).get('source', ''))}, reason={(((best.get('reward', {}) or {}).get('r3_debug', {}) or {}).get('reason', ''))}, pass={(((best.get('reward', {}) or {}).get('r3_debug', {}) or {}).get('passed_cases', ''))}/{(((best.get('reward', {}) or {}).get('r3_debug', {}) or {}).get('num_cases', ''))}",
+                f"- r3_debug: source={best_r3_debug.get('source', '')}, reason={best_r3_debug.get('reason', '')}, pass={best_r3_debug.get('passed_cases', '')}/{best_r3_debug.get('num_cases', '')}, weighted={best_r3_debug.get('weighted_pass_sum', '')}",
                 "",
                 "### Prompt",
                 "```text",

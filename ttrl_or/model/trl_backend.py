@@ -1030,13 +1030,13 @@ class TRLPolicyBackend(PolicyBackend):
         if bool(getattr(config, "sync_ref_model", False)):
             if "sync_ref_model" in init_sig.parameters:
                 kwargs["sync_ref_model"] = True
-            sync_steps = int(getattr(config, "ref_model_sync_steps", 0) or 0)
+            sync_steps = int(_none_to_default(getattr(config, "ref_model_sync_steps", None), 0))
             if sync_steps > 0:
                 for key in ("ref_model_sync_steps",):
                     if key in init_sig.parameters:
                         kwargs[key] = sync_steps
                         break
-            mixup_alpha = float(getattr(config, "ref_model_mixup_alpha", 0.0) or 0.0)
+            mixup_alpha = float(_none_to_default(getattr(config, "ref_model_mixup_alpha", None), 0.0))
             if mixup_alpha > 0.0:
                 for key in ("ref_model_mixup_alpha",):
                     if key in init_sig.parameters:
@@ -1259,7 +1259,7 @@ class TRLPolicyBackend(PolicyBackend):
         prefix_text = prompt_text.rstrip() + '\n'
         prefix_ids = self._tokenizer(prefix_text, add_special_tokens=False, return_tensors='pt')['input_ids'][0]
         prefix_len_raw = int(prefix_ids.shape[0])
-        max_ctx = int(getattr(getattr(self._model, 'config', None), 'max_position_embeddings', 32768) or 32768)
+        max_ctx = int(_none_to_default(getattr(getattr(self._model, 'config', None), 'max_position_embeddings', None), 32768))
         full_tensors: list[torch.Tensor] = []
         prefix_lens: list[int] = []
         scores = [float('-inf')] * len(action_blocks)
@@ -1365,6 +1365,9 @@ def _normalize_text(value: Any) -> str:
                 chunks.append(str(item))
         return "\n".join(chunks).strip()
     return str(value).strip()
+def _none_to_default(value: Any, default: Any) -> Any:
+    return default if value is None else value
+
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name, "")
     if not raw:
@@ -1455,6 +1458,8 @@ def _looks_like_vllm_comm_error(exc: Exception) -> bool:
         "close_communicator first",
     )
     return any(k in text for k in keys)
+
+
 
 
 

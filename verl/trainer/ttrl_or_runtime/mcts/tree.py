@@ -349,6 +349,7 @@ class FourStageMCTS:
 
             hit_reward_one = False
             reward_one_payload: dict[str, Any] = {}
+            reward_one_candidates: list[dict[str, Any]] = []
             rollout_summaries: list[dict[str, Any]] = []
             processed_group_rollouts: list[dict[str, Any]] = []
             pending_record_inputs: list[dict[str, Any]] = []
@@ -377,7 +378,7 @@ class FourStageMCTS:
                 rollout_timing["child_backprop_sec"] = child_backprop_sec
                 rollout["timing"] = rollout_timing
 
-                current_hit_reward_one = bool(self.config.stop_on_reward_one and reward_total >= 1.0)
+                current_hit_reward_one = bool(self.config.stop_on_reward_one and reward_total >= 0.9)
 
                 pending_record_inputs.append(
                     {
@@ -423,19 +424,34 @@ class FourStageMCTS:
                     best_trajectory = completed
 
                 if current_hit_reward_one:
-                    hit_reward_one = True
-                    reward_one_payload = {
-                        "reason": "reward_one",
-                        "iteration": iter_idx,
-                        "stage": next_stage.value,
-                        "node_id": child.node_id,
-                        "trajectory_id": completed.trajectory_id,
-                        "reward_total": reward_total,
-                    }
-                    break
+                    reward_one_candidates.append(
+                        {
+                            "node_id": child.node_id,
+                            "trajectory_id": completed.trajectory_id,
+                            "reward_total": reward_total,
+                            "prior": float(child.prior),
+                        }
+                    )
 
             if not processed_group_rollouts:
                 continue
+
+            if reward_one_candidates:
+                chosen_reward_one = max(
+                    reward_one_candidates,
+                    key=lambda item: (float(item.get("reward_total", 0.0)), float(item.get("prior", 0.0))),
+                )
+                hit_reward_one = True
+                reward_one_payload = {
+                    "reason": "reward_one",
+                    "iteration": iter_idx,
+                    "stage": next_stage.value,
+                    "node_id": str(chosen_reward_one.get("node_id", "")),
+                    "trajectory_id": str(chosen_reward_one.get("trajectory_id", "")),
+                    "reward_total": float(chosen_reward_one.get("reward_total", 0.0)),
+                    "threshold": 0.9,
+                    "tie_breaker": "prior_when_reward_equal",
+                }
 
             group_reward_mean = float(
                 sum(float(rollout.get("reward_total", 0.0)) for rollout in processed_group_rollouts)
@@ -538,7 +554,13 @@ class FourStageMCTS:
                     rollout_summaries[ridx]["group_reward_mean"] = float(group_reward_mean)
                     rollout_summaries[ridx]["parent_visits_after_group"] = int(selected.visits)
                     rollout_summaries[ridx]["parent_value_after_group"] = float(selected.q_value)
-            best_rollout = max(processed_group_rollouts, key=lambda x: float(x.get("reward_total", float("-inf"))))
+            best_rollout = max(
+                processed_group_rollouts,
+                key=lambda x: (
+                    float(x.get("reward_total", float("-inf"))),
+                    float((x.get("child").prior if x.get("child") is not None else 0.0)),
+                ),
+            )
             best_rollout_obj = best_rollout["reward_obj"]
             best_rollout_child = best_rollout["child"]
             best_rollout_traj = best_rollout["trajectory"]
@@ -622,6 +644,7 @@ class FourStageMCTS:
                         "total": float(best_rollout_obj.total),
                         "obj_answer": (best_rollout_obj.metadata or {}).get("obj_answer"),
                         "r1_debug": (best_rollout_obj.metadata or {}).get("r1_debug", {}),
+                        "r3_debug": (best_rollout_obj.metadata or {}).get("r3", {}),
                         "r4_debug": (best_rollout_obj.metadata or {}).get("r4_debug", {}),
                     },
                     "prior": {
@@ -652,19 +675,50 @@ class FourStageMCTS:
             if iteration_callback is not None:
                 iteration_callback(iter_payload)
 
-            recent_consensus_stop = self._check_recent_obj_consensus(iteration_logs)
+            if next_stage == Stage.CODE:
+                code_consensus_stop = self._check_code_stage_consensus(records=records, current_iter=iter_idx)
+                if code_consensus_stop is not None:
+                    stop_info = {
+                        "reason": "expanded_to_code",
+                        "iteration": iter_idx,
+                        "stage": next_stage.value,
+                        "node_id": selected.node_id,
+                        "trajectory_id": str(code_consensus_stop.get("trajectory_id", "")),
+                        "reward_total": code_consensus_stop.get("reward_total"),
+                        "obj_leader": code_consensus_stop.get("obj_leader"),
+                        "count": code_consensus_stop.get("count"),
+                        "eligible_count": code_consensus_stop.get("eligible_count"),
+                        "ratio": code_consensus_stop.get("ratio"),
+                        "obj_scale_mode": "expanded",
+                        "obj_scale_expand_ratio": code_consensus_stop.get("obj_scale_expand_ratio"),
+                        "tie_breaker": "prior_when_reward_equal",
+                    }
+                    return self._finalize_result(
+                        root=root,
+                        records=records,
+                        stop_info=stop_info,
+                        iteration_logs=iteration_logs,
+                    )
+                # Reaching CODE without consensus should continue MCTS exploration.
+                continue
+
+            recent_consensus_stop = self._check_recent_obj_consensus(records=records, current_iter=iter_idx)
             if recent_consensus_stop is not None:
                 stop_info = {
                     "reason": "recent_obj_consensus",
                     "iteration": iter_idx,
                     "stage": next_stage.value,
                     "node_id": selected.node_id,
-                    "trajectory_id": best_trajectory.trajectory_id if best_trajectory else "",
-                    "reward_total": (best_trajectory.reward.total if best_trajectory and best_trajectory.reward else None),
+                    "trajectory_id": str(recent_consensus_stop.get("trajectory_id", "")),
+                    "reward_total": recent_consensus_stop.get("reward_total"),
                     "obj_leader": recent_consensus_stop.get("obj_leader"),
                     "count": recent_consensus_stop.get("count"),
                     "window_rollouts": recent_consensus_stop.get("window_rollouts"),
                     "ratio": recent_consensus_stop.get("ratio"),
+                    "selected_iteration": recent_consensus_stop.get("selected_iteration"),
+                    "obj_scale_mode": "expanded",
+                    "obj_scale_expand_ratio": recent_consensus_stop.get("obj_scale_expand_ratio"),
+                    "tie_breaker": "prior_when_reward_equal",
                 }
                 return self._finalize_result(
                     root=root,
@@ -681,17 +735,6 @@ class FourStageMCTS:
                     stop_info=stop_info,
                     iteration_logs=iteration_logs,
                 )
-
-            if next_stage == Stage.CODE:
-                stop_info = {
-                    "reason": "expanded_to_code",
-                    "iteration": iter_idx,
-                    "stage": next_stage.value,
-                    "node_id": selected.node_id,
-                    "trajectory_id": best_trajectory.trajectory_id if best_trajectory else "",
-                    "reward_total": (best_trajectory.reward.total if best_trajectory and best_trajectory.reward else None),
-                }
-                break
 
         return self._finalize_result(
             root=root,
@@ -1111,7 +1154,12 @@ class FourStageMCTS:
         stop_info: dict[str, Any],
         iteration_logs: list[dict[str, Any]],
     ) -> SearchRunResult:
-        best_trajectory, best_reward = self._resolve_best_trajectory(records, iteration_logs)
+        best_trajectory, best_reward = self._resolve_best_trajectory(
+            root=root,
+            records=records,
+            iteration_logs=iteration_logs,
+            stop_info=stop_info,
+        )
         return SearchRunResult(
             root=root,
             records=records,
@@ -1124,9 +1172,55 @@ class FourStageMCTS:
 
     def _resolve_best_trajectory(
         self,
+        *,
+        root: SearchNode,
         records: list[StageExpansionRecord],
         iteration_logs: list[dict[str, Any]],
+        stop_info: dict[str, Any],
     ) -> tuple[Trajectory | None, float]:
+        stop_reason = str((stop_info or {}).get("reason", "") or "").strip()
+        explicit_tid = str((stop_info or {}).get("trajectory_id", "") or "").strip()
+
+        if explicit_tid:
+            explicit_record = self._record_by_trajectory_id(records, explicit_tid)
+            if explicit_record is not None:
+                chosen_reward = self._record_reward_total(explicit_record)
+                self._annotate_final_selection(
+                    explicit_record.trajectory,
+                    reason_code=f"stop_reason_{stop_reason or 'explicit_trajectory'}",
+                    reason="selected trajectory provided by stop_info",
+                    judgement_condition={
+                        "stop_reason": stop_reason,
+                        "trajectory_id": explicit_tid,
+                        "selection_mode": "explicit_stop_info_trajectory",
+                    },
+                )
+                return explicit_record.trajectory, chosen_reward
+
+        if stop_reason in {"max_iterations", "no_expandable_leaf"}:
+            chosen = self._choose_for_exhaustive_stop(root=root, records=records)
+            if chosen is not None:
+                chosen_reward = self._record_reward_total(chosen)
+                node_visits = self._node_visits_from_root(root)
+                visit_count = int(node_visits.get(str(chosen.node_id), int(chosen.child_visits_after)))
+                self._annotate_final_selection(
+                    chosen.trajectory,
+                    reason_code="obj_scale_majority_visit",
+                    reason=(
+                        "stop at max_iterations/no_expandable_leaf: choose strict obj-scale majority cluster "
+                        "(by cluster size), then choose highest-visit record in that cluster; tie-break by reward then prior"
+                    ),
+                    judgement_condition={
+                        "stop_reason": stop_reason,
+                        "obj_scale_mode": "strict",
+                        "cluster_choice": "majority_by_count",
+                        "record_choice": "max_visit_then_reward_then_prior",
+                        "selected_node_visits": visit_count,
+                        "tie_breaker": "prior_when_reward_equal",
+                    },
+                )
+                return chosen.trajectory, chosen_reward
+
         eligible_records: list[StageExpansionRecord] = []
         clusters: list[dict[str, Any]] = []
 
@@ -1172,7 +1266,7 @@ class FourStageMCTS:
                 chosen_cluster = qualified_clusters[0]
                 ordered_cluster_records = sorted(
                     list(chosen_cluster["records"]),
-                    key=self._record_reward_total,
+                    key=lambda rec: (float(self._record_reward_total(rec)), float(self._record_prior(rec))),
                     reverse=True,
                 )
                 chosen, obj_scale_meta = self._pick_with_obj_scale_preference(ordered_cluster_records)
@@ -1208,7 +1302,7 @@ class FourStageMCTS:
                 if last_iter_records:
                     ordered_last_iter_records = sorted(
                         list(last_iter_records),
-                        key=self._record_reward_total,
+                        key=lambda rec: (float(self._record_reward_total(rec)), float(self._record_prior(rec))),
                         reverse=True,
                     )
                     chosen, obj_scale_meta = self._pick_with_obj_scale_preference(ordered_last_iter_records)
@@ -1229,7 +1323,11 @@ class FourStageMCTS:
                         },
                     )
                     return chosen.trajectory, chosen_reward
-            ordered_records = sorted(list(records), key=self._record_reward_total, reverse=True)
+            ordered_records = sorted(
+                list(records),
+                key=lambda rec: (float(self._record_reward_total(rec)), float(self._record_prior(rec))),
+                reverse=True,
+            )
             chosen, obj_scale_meta = self._pick_with_obj_scale_preference(ordered_records)
             chosen_reward = self._record_reward_total(chosen)
             self._annotate_final_selection(
@@ -1253,6 +1351,104 @@ class FourStageMCTS:
     @staticmethod
     def _record_reward_total(rec: StageExpansionRecord) -> float:
         return float(rec.trajectory.reward.total if rec.trajectory.reward is not None else rec.reward)
+
+    @staticmethod
+    def _record_prior(rec: StageExpansionRecord) -> float:
+        return float(rec.prior)
+
+    @staticmethod
+    def _record_obj_answer(rec: StageExpansionRecord) -> float | None:
+        reward = rec.trajectory.reward
+        meta = (reward.metadata or {}) if reward is not None else {}
+        obj = meta.get("obj_answer")
+        if isinstance(obj, (int, float)) and math.isfinite(float(obj)):
+            return float(obj)
+        return None
+
+    @staticmethod
+    def _record_effective_success(rec: StageExpansionRecord) -> bool:
+        reward = rec.trajectory.reward
+        meta = (reward.metadata or {}) if reward is not None else {}
+        execution_meta = meta.get("execution", {}) if isinstance(meta.get("execution", {}), dict) else {}
+        return bool(execution_meta.get("effective_success", False))
+
+    @staticmethod
+    def _record_by_trajectory_id(records: list[StageExpansionRecord], trajectory_id: str) -> StageExpansionRecord | None:
+        target = str(trajectory_id or "")
+        for rec in records:
+            if str(rec.trajectory.trajectory_id) == target:
+                return rec
+        return None
+
+    def _cluster_records_by_obj(self, records: list[StageExpansionRecord]) -> list[dict[str, Any]]:
+        clusters: list[dict[str, Any]] = []
+        for rec in records:
+            obj = self._record_obj_answer(rec)
+            if obj is None:
+                continue
+            matched = None
+            for cluster in clusters:
+                if self._within_rel_tol(float(obj), float(cluster["leader"])):
+                    matched = cluster
+                    break
+            if matched is None:
+                matched = {"leader": float(obj), "records": []}
+                clusters.append(matched)
+            matched["records"].append(rec)
+        return clusters
+
+    @staticmethod
+    def _pick_record_max_reward_prior(records: list[StageExpansionRecord]) -> StageExpansionRecord | None:
+        if not records:
+            return None
+        return max(records, key=lambda rec: (float(FourStageMCTS._record_reward_total(rec)), float(FourStageMCTS._record_prior(rec))))
+
+    @staticmethod
+    def _node_visits_from_root(root: SearchNode) -> dict[str, int]:
+        visits: dict[str, int] = {}
+        stack: list[SearchNode] = [root]
+        while stack:
+            cur = stack.pop()
+            visits[str(cur.node_id)] = int(cur.visits)
+            stack.extend(cur.children)
+        return visits
+
+    def _choose_for_exhaustive_stop(self, *, root: SearchNode, records: list[StageExpansionRecord]) -> StageExpansionRecord | None:
+        in_scale_records: list[StageExpansionRecord] = []
+        for rec in records:
+            in_bounds, _ = self._record_obj_in_expanded_scale(rec, expand_ratio=0.0)
+            if not in_bounds:
+                continue
+            if self._record_obj_answer(rec) is None:
+                continue
+            in_scale_records.append(rec)
+
+        if not in_scale_records:
+            return None
+
+        clusters = self._cluster_records_by_obj(in_scale_records)
+        if not clusters:
+            return None
+
+        clusters.sort(
+            key=lambda cluster: (
+                int(len(cluster["records"])),
+                max(float(self._record_reward_total(rec)) for rec in cluster["records"]),
+            ),
+            reverse=True,
+        )
+        chosen_cluster = clusters[0]
+        node_visits = self._node_visits_from_root(root)
+        chosen_cluster_records = list(chosen_cluster["records"])
+        chosen_cluster_records.sort(
+            key=lambda rec: (
+                int(node_visits.get(str(rec.node_id), int(rec.child_visits_after))),
+                float(self._record_reward_total(rec)),
+                float(self._record_prior(rec)),
+            ),
+            reverse=True,
+        )
+        return chosen_cluster_records[0]
 
     def _pick_with_obj_scale_preference(
         self,
@@ -1443,58 +1639,137 @@ class FourStageMCTS:
         }
         trajectory.metadata = metadata
 
-    def _check_recent_obj_consensus(self, iteration_logs: list[dict[str, Any]]) -> dict[str, Any] | None:
-        if len(iteration_logs) < 3:
-            return None
-        recent = iteration_logs[-3:]
-        configured_k = max(1, int(getattr(self._active_grpo_config, 'num_generations', 0) or 0)) if self._active_grpo_config is not None else 0
-        total_rollouts = max(1, configured_k * 3) if configured_k > 0 else 0
-        observed_rollouts = 0
-        clusters: list[dict[str, Any]] = []
-
-        for item in recent:
-            rollout_group = item.get('rollout_group', []) if isinstance(item.get('rollout_group', []), list) else []
-            observed_rollouts += len(rollout_group)
-            for rollout in rollout_group:
-                if not isinstance(rollout, dict):
-                    continue
-                obj = rollout.get('obj_answer')
-                if not isinstance(obj, (int, float)) or not math.isfinite(float(obj)):
-                    continue
-                if not bool(rollout.get('effective_success', False)):
-                    continue
-                matched = None
-                for cluster in clusters:
-                    if self._within_rel_tol(float(obj), float(cluster['leader'])):
-                        matched = cluster
-                        break
-                if matched is None:
-                    matched = {'leader': float(obj), 'count': 0}
-                    clusters.append(matched)
-                matched['count'] += 1
-
-        if total_rollouts <= 0:
-            total_rollouts = observed_rollouts
-        if total_rollouts <= 0:
+    def _check_recent_obj_consensus(
+        self,
+        *,
+        records: list[StageExpansionRecord],
+        current_iter: int,
+    ) -> dict[str, Any] | None:
+        if current_iter < 2:
             return None
 
-        best_cluster = None
-        best_ratio = 0.0
-        for cluster in clusters:
-            ratio = float(cluster['count']) / float(total_rollouts)
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best_cluster = cluster
+        min_iter = max(0, int(current_iter) - 2)
+        recent_records = [rec for rec in records if int(rec.iteration) >= min_iter and int(rec.iteration) <= int(current_iter)]
+        if not recent_records:
+            return None
 
-        if best_cluster is not None and best_ratio >= 0.6:
-            return {
-                'obj_leader': float(best_cluster['leader']),
-                'count': int(best_cluster['count']),
-                'window_rollouts': int(total_rollouts),
-                'observed_rollouts': int(observed_rollouts),
-                'ratio': float(best_ratio),
-            }
-        return None
+        ratio_raw = getattr(self.config, "final_select_obj_scale_expand_ratio", 0.10)
+        try:
+            expand_ratio = max(0.0, float(ratio_raw))
+        except Exception:
+            expand_ratio = 0.10
+
+        eligible: list[StageExpansionRecord] = []
+        for rec in recent_records:
+            if self._record_obj_answer(rec) is None:
+                continue
+            if not self._record_effective_success(rec):
+                continue
+            in_scale, _ = self._record_obj_in_expanded_scale(rec, expand_ratio=expand_ratio)
+            if not in_scale:
+                continue
+            eligible.append(rec)
+
+        total_eligible = len(eligible)
+        if total_eligible <= 0:
+            return None
+
+        clusters = self._cluster_records_by_obj(eligible)
+        if not clusters:
+            return None
+
+        clusters.sort(
+            key=lambda cluster: (
+                float(len(cluster["records"])) / float(total_eligible),
+                int(len(cluster["records"])),
+                max(float(self._record_reward_total(rec)) for rec in cluster["records"]),
+            ),
+            reverse=True,
+        )
+        chosen_cluster = clusters[0]
+        ratio = float(len(chosen_cluster["records"])) / float(total_eligible)
+        if ratio < 0.5:
+            return None
+
+        latest_iter = max(int(rec.iteration) for rec in chosen_cluster["records"])
+        latest_records = [rec for rec in chosen_cluster["records"] if int(rec.iteration) == int(latest_iter)]
+        chosen = self._pick_record_max_reward_prior(latest_records)
+        if chosen is None:
+            return None
+
+        return {
+            "obj_leader": float(chosen_cluster["leader"]),
+            "count": int(len(chosen_cluster["records"])),
+            "window_rollouts": int(total_eligible),
+            "ratio": float(ratio),
+            "selected_iteration": int(latest_iter),
+            "trajectory_id": str(chosen.trajectory.trajectory_id),
+            "reward_total": float(self._record_reward_total(chosen)),
+            "obj_scale_expand_ratio": float(expand_ratio),
+        }
+
+    def _check_code_stage_consensus(
+        self,
+        *,
+        records: list[StageExpansionRecord],
+        current_iter: int,
+    ) -> dict[str, Any] | None:
+        current_code_records = [
+            rec
+            for rec in records
+            if rec.stage == Stage.CODE and int(rec.iteration) == int(current_iter)
+        ]
+        if not current_code_records:
+            return None
+
+        ratio_raw = getattr(self.config, "final_select_obj_scale_expand_ratio", 0.10)
+        try:
+            expand_ratio = max(0.0, float(ratio_raw))
+        except Exception:
+            expand_ratio = 0.10
+
+        eligible: list[StageExpansionRecord] = []
+        for rec in current_code_records:
+            if self._record_obj_answer(rec) is None:
+                continue
+            in_bounds, _ = self._record_obj_in_expanded_scale(rec, expand_ratio=expand_ratio)
+            if not in_bounds:
+                continue
+            eligible.append(rec)
+
+        if len(eligible) < 2:
+            return None
+
+        clusters = self._cluster_records_by_obj(eligible)
+        if not clusters:
+            return None
+
+        clusters.sort(
+            key=lambda cluster: (
+                float(len(cluster["records"])) / float(len(eligible)),
+                int(len(cluster["records"])),
+                max(float(self._record_reward_total(rec)) for rec in cluster["records"]),
+            ),
+            reverse=True,
+        )
+        chosen_cluster = clusters[0]
+        ratio = float(len(chosen_cluster["records"])) / float(len(eligible))
+        if ratio < 0.5:
+            return None
+
+        chosen = self._pick_record_max_reward_prior(chosen_cluster["records"])
+        if chosen is None:
+            return None
+
+        return {
+            "obj_leader": float(chosen_cluster["leader"]),
+            "count": int(len(chosen_cluster["records"])),
+            "eligible_count": int(len(eligible)),
+            "ratio": float(ratio),
+            "trajectory_id": str(chosen.trajectory.trajectory_id),
+            "reward_total": float(self._record_reward_total(chosen)),
+            "obj_scale_expand_ratio": float(expand_ratio),
+        }
 
     def _semantic_rel_tol(self) -> float:
         reward_cfg = getattr(self.rewarder, 'config', None)
