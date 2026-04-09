@@ -103,15 +103,27 @@ def build_r3_base_scale_prompt(
     return (
         "You are an OR objective-scale analyst. Return exactly two tagged blocks and nothing else:\n"
         "<analysis>...</analysis>\n<base_scale>{...JSON...}</base_scale>\n\n"
-        "Goal: produce a runtime filter(obj, scale) for the ORIGINAL sample.\n"
-        "base_scale should capture: bounds, sign_relation, magnitude, and obvious exact rejects.\n"
-        "Schema keys: kind(interval|point|union), sign_relation(positive|nonnegative|negative|nonpositive|nonzero|any), magnitude({min_order,max_order,use_abs:true}), reject_exact(list).\n"
-        "Keep the scale informative: broad enough for modeling variation, narrow enough to reject absurd objectives.\n\n"
+
+        "Goal: Produce a runtime filter(obj, scale) for the ORIGINAL sample.\n"
+        "Priority: PRIORITIZE CORRECTNESS OVER PRECISION. The range should be wide enough to encompass all mathematically plausible optimal solutions, while narrow enough to reject 'absurd' or 'dimensionally impossible' values (e.g., a cost of 10^15 for a 10-item knapsack).\n\n"
+
+        "Analysis logic in <analysis>:\n"
+        "1. Identify the objective type (Min/Max) and its physical meaning.\n"
+        "2. Calculate the 'Theoretical Floor' and 'Theoretical Ceiling' using extreme values(e.g., sum of all max costs, or min possible demand).\n"
+        "3. Justify why the chosen scale is 'Safe' (won't reject the true optimum).\n"
+        "4. While being conservative, ensure that any logically impossible values are strictly excluded from the scale.\n\n"
+
+        "base_scale schema constraints:\n"
+        "- kind: 'interval' (preferred for robustness), 'point', or 'union'.\n"
+        "- sign_relation: Use 'nonnegative' or 'nonpositive' unless the math strictly forbids zero or specific signs.\n"
+        "- magnitude: Use {min_order, max_order} to define a 'safety envelope'.\n"
+        "- reject_exact: Only include values that are mathematically impossible (e.g., 0 in a strictly positive cost sum).\n\n"
+
         "Task description:\n"
         f"{description}\n\n"
         "Numeric snapshot:\n"
         f"{_compact_json_text(instance_view)}\n\n"
-        "Feature catalog (context only, no patches needed here):\n"
+        "Feature catalog (context only):\n"
         f"{_compact_json_text(feature_catalog)}\n\n"
         "Output skeleton:\n"
         f"{_compact_json_text(skeleton)}\n"
@@ -130,17 +142,30 @@ def build_r3_tests_prompt(
     instance_view = _compact_instance(instance)
     skeleton = _tests_skeleton(num_tests=num_tests, feature_catalog=feature_catalog)
     return (
-        "You are an OR robustness test designer. Return exactly two tagged blocks and nothing else:\n"
+        "You are an expert Operations Research (OR) Stress-Test Engineer. Your goal is to design robustness tests that challenge a model's sensitivity and feasibility limits. Return exactly two tagged blocks and nothing else:\n"
         "<analysis>...</analysis>\n<tests>[...JSON list...]</tests>\n\n"
-        "Each test must include case_id, patches, obj_scale, rationale. Use feature ids only.\n"
-        "Each case may use 1 to 3 patches; prefer coordinated edits when they describe one plausible scenario.\n"
-        "Include a mix of harder and easier cases when possible, keep units/semantics consistent, and make obj_scale describe bounds, sign_relation, and magnitude.\n"
-        "Prefer small but meaningful perturbations.\n\n"
+
+        "Analysis Logic in <analysis>:\n"
+        "1. Identify Sensitive Parameters: Which features (fid) impact the objective or feasibility most (e.g., bottleneck capacities, high-cost coefficients)?\n"
+        "2. Scenario Design: Plan 3-5 scenarios (e.g., 'Resource Scarcity', 'Extreme Cost Variation', 'Boundary Feasibility').\n"
+        "3. Objective Forecasting: For each scenario, estimate the new objective's range. Define a 'Safe Envelope' that is wide enough to be correct but strictly excludes logically impossible values (e.g., negative distances, zero cost when a base fee exists).\n\n"
+
+        "Requirements for <tests>:\n"
+        "- case_id: Descriptive (e.g., 'tight_capacity_limit_01').\n"
+        "- patches: 1-3 coordinated edits using fids. Ensure edits are realistic (e.g., increasing demand while tightening supply).\n"
+        "- obj_scale: Must be a robust interval. Use the schema: {kind, sign_relation, magnitude:{min_order, max_order}, reject_exact:[...]} to capture the 'Safe Envelope'.\n"
+        "- rationale: Explain the 'Why' (e.g., 'Testing if the model handles 95% utilization without crashing').\n\n"
+
+        "Principles:\n"
+        "- Prefer small, meaningful perturbations over random massive changes.\n"
+        "- Ensure unit consistency and semantic integrity across all patches.\n"
+        "- EXCLUDE IMPOSSIBLE VALUES: The obj_scale must reflect physical reality (e.g., non-negative costs).\n\n"
+
         "Task description:\n"
         f"{description}\n\n"
         "Numeric snapshot:\n"
         f"{_compact_json_text(instance_view)}\n\n"
-        "Feature catalog (use fid only in patches):\n"
+        "Feature catalog (context only):\n"
         f"{_compact_json_text(feature_catalog)}\n\n"
         "Output skeleton:\n"
         f"{_compact_json_text(skeleton)}\n"
