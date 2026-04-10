@@ -53,7 +53,7 @@ Rules:
 - Identify the optimization type and the closest classical OR family.
 - Focus on how the problem should be structured, not on solving details.
 - When dealing with distinct food servings (e.g., "a chicken costs 6" rather than a cost per weight unit), these are considered indivisible servings and must be modeled as NONNEGATIVE INTEGER variables. This automatically classifies the problem as MILP (or MINLP if non-linearities are present), not a standard LP.
-Ambiguity Tip: If the problem states "Food X costs $Y" without a weight unit (like 'per kg'), assume it is an indivisible serving and use NONNEGATIVE INTEGER. So, this problem exists INTEGER variables (LP / NLP).
+Ambiguity Tip: If the problem states "Food X costs $Y" without a weight unit (like 'per kg') or "vegetables sold in 100g packs", assume it is an indivisible serving and use NONNEGATIVE INTEGER. So, this problem exists INTEGER variables (LP / NLP).
 
 2. Sets Definition
 Define all necessary sets that index objects, resources, time periods, locations, or categories.
@@ -144,7 +144,7 @@ Rules:
 - Variable names should be consistent with sets and parameters.
 - Counts/Units -> NONNEGATIVE INTEGER: Use this for items with a fixed cost per unit/serving (e.g., "Chicken costs 6","an Apple costs 1") or distinct entities (people, machines, shifts).
 
-Ambiguity Tip: If the problem states "Food X costs $Y" without a weight unit (like 'per kg'), assume it is an indivisible serving and use NONNEGATIVE INTEGER.
+Ambiguity Tip: If the problem states "Food X costs $Y" without a weight unit (like 'per kg') or "vegetables sold in 100g packs", assume it is an indivisible serving and use NONNEGATIVE INTEGER.
 
 Examples:
 - x_p: Production quantity of product p (NONNEGATIVE CONTINUOUS)
@@ -440,15 +440,7 @@ The generated code must:
    - GRB.CONTINUOUS
    - GRB.INTEGER
    - GRB.BINARY
-6. include error handling with try/except
-7. call model.optimize()
-8. assign:
-   - status = model.status
-9. after optimization, assign:
-   - optimal = model.objVal
-   when an optimal/feasible objective value is available
-10. include exactly this print statement in the code:
-   print(f"Optimal value: {{optimal}}")
+6. call model.optimize()
    
 For example:
 <python>
