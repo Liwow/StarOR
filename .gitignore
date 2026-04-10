@@ -10,3 +10,4 @@ outputs/
 *.egg-info
 wandb/
 train_data.mcts_stage.jsonl
+paper/
