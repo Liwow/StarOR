@@ -43,7 +43,7 @@ model_name='Qwen/Qwen3-4B-Instruct-2507'
 MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
 # MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_or_qwen3_4b_int_cp150_v1"
 
-dataset="NL4OPT.jsonl"
+dataset="ComplexOR.jsonl"
 # dataset="MAMO_EasyLP_fixed.jsonl" #sample
 # dataset="OptiBench.jsonl"
 
