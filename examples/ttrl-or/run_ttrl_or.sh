@@ -1,5 +1,5 @@
 set -x
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 # export RAY_DEBUG_POST_MORTEM=1
 DATA_ROOT="${HOME}/code/TTRL-OR/data"
 
@@ -40,10 +40,10 @@ fi
 
 # model_name='Qwen/Qwen2.5-7B-Instruct'
 model_name='Qwen/Qwen3-4B-Instruct-2507'
-MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
-# MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_or_qwen3_4b_int_cp150_v1"
-dataset="NLP4OPT.jsonl"
-# dataset="ComplexOR.jsonl"
+# MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
+MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_or_qwen3_4b_int_cp513_v1"
+# dataset="NLP4OPT.jsonl"
+dataset="IndustryOR_fixedV2.jsonl"
 # dataset="MAMO_EasyLP_fixed.jsonl" #sample
 # dataset="OptiBench.jsonl"
 
@@ -86,7 +86,7 @@ python -m verl.trainer.main_ppo \
     data.ttrl_or_key_param_top_k=16 \
     data.train_batch_size=1 \
     data.max_prompt_length=5120 \
-    data.max_response_length=4096 \
+    data.max_response_length=6144 \
     data.filter_overlong_prompts=False \
     data.truncation='error' \
     data.shuffle=False \
@@ -110,7 +110,7 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.prompt_length=8196 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.42 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.45 \
     actor_rollout_ref.rollout.free_cache_engine=False \
     actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.rollout.temperature=1.0 \

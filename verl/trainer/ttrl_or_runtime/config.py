@@ -66,7 +66,7 @@ class GRPOConfig:
     num_generations: int = 3
     generation_batch_size: int = 0
     max_prompt_length: int = 10240
-    max_completion_length: int = 4096
+    max_completion_length: int = 6144
 
     use_vllm: bool = False
     vllm_mode: str = "server"
