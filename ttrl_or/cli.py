@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -81,18 +82,49 @@ def _resolve_model_name_or_path(value: str) -> str:
 
 
 def _parse_dataset_jsonls(value: str | list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+    def _strip_wrapping_quotes(text: str) -> str:
+        out = str(text or "").strip()
+        if len(out) >= 2 and out[0] == out[-1] and out[0] in {"'", '"'}:
+            return out[1:-1].strip()
+        return out
+
+    def _from_iterable(items: Any) -> tuple[str, ...]:
+        out: list[str] = []
+        for item in items:
+            path = _strip_wrapping_quotes(str(item or "").strip())
+            if path:
+                out.append(path)
+        return tuple(out)
+
     if value is None:
         return ()
+
     if isinstance(value, (list, tuple)):
-        items = value
-    else:
-        raw = str(value).replace("\r", "\n")
-        for sep in [";", "|"]:
-            raw = raw.replace(sep, "\n")
-        raw = raw.replace(",", "\n")
-        items = raw.split("\n")
-    paths = tuple(str(item).strip() for item in items if str(item).strip())
-    return paths
+        return _from_iterable(value)
+
+    raw = str(value or "").strip()
+    if not raw:
+        return ()
+
+    probe = raw
+    for _ in range(2):
+        try:
+            parsed = ast.literal_eval(probe)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, (list, tuple, set)):
+            return _from_iterable(parsed)
+        if len(probe) >= 2 and probe[0] == probe[-1] and probe[0] in {"'", '"'}:
+            probe = probe[1:-1].strip()
+            continue
+        break
+
+    normalized = raw.replace("\r", "\n")
+    for sep in [";", "|"]:
+        normalized = normalized.replace(sep, "\n")
+    if "," in normalized:
+        normalized = normalized.replace(",", "\n")
+    return _from_iterable(normalized.split("\n"))
 
 
 def _resolve_dataset_paths(dataset_cfg) -> tuple[str, ...]:

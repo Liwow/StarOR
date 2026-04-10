@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import ast
 import json
 import re
 from dataclasses import asdict, dataclass, field
@@ -67,6 +68,58 @@ class RawTaskSample:
     tables: list[dict[str, Any]] = field(default_factory=list)
     inline_numbers: list[float] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
+
+
+def normalize_dataset_paths(value: Any) -> tuple[str, ...]:
+    def _strip_wrapping_quotes(text: str) -> str:
+        out = text.strip()
+        if len(out) >= 2 and out[0] == out[-1] and out[0] in {"'", '"'}:
+            return out[1:-1].strip()
+        return out
+
+    def _to_clean_path(item: Any) -> str:
+        return _strip_wrapping_quotes(str(item or "").strip())
+
+    def _from_iterable(items: Any) -> tuple[str, ...]:
+        out: list[str] = []
+        for item in items:
+            path = _to_clean_path(item)
+            if path:
+                out.append(path)
+        return tuple(out)
+
+    if value is None:
+        return ()
+
+    if isinstance(value, (list, tuple, set)):
+        return _from_iterable(value)
+
+    raw = str(value or "").strip()
+    if not raw:
+        return ()
+
+    # Try list-literal parsing first:
+    # "['a', 'b']", "[\"a\", \"b\"]", "('a','b')"
+    probe = raw
+    for _ in range(2):
+        try:
+            parsed = ast.literal_eval(probe)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, (list, tuple, set)):
+            return _from_iterable(parsed)
+        if len(probe) >= 2 and probe[0] == probe[-1] and probe[0] in {"'", '"'}:
+            probe = probe[1:-1].strip()
+            continue
+        break
+
+    # Fallback separators for plain text forms.
+    normalized = raw.replace("\r", "\n")
+    for sep in (";", "|"):
+        normalized = normalized.replace(sep, "\n")
+    if "," in normalized:
+        normalized = normalized.replace(",", "\n")
+    return _from_iterable(normalized.split("\n"))
 
 
 def load_jsonl_dataset(path: str | Path) -> list[UnifiedSample]:

@@ -8,7 +8,7 @@ from omegaconf import DictConfig
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizer, ProcessorMixin
 
-from verl.trainer.ttrl_or_runtime.dataset.loader import RawTaskSample, load_raw_task_dataset
+from verl.trainer.ttrl_or_runtime.dataset.loader import RawTaskSample, load_raw_task_dataset, normalize_dataset_paths
 
 
 class TTRLORDataset(Dataset):
@@ -26,14 +26,9 @@ class TTRLORDataset(Dataset):
     ) -> None:
         del tokenizer, processor
 
-        if isinstance(data_files, (list, tuple)):
-            data_file_list = [str(item) for item in data_files if str(item).strip()]
-            if not data_file_list:
-                raise ValueError("TTRLORDataset requires at least one data file.")
-        else:
-            data_file_list = [str(data_files)] if str(data_files).strip() else []
-            if not data_file_list:
-                raise ValueError("TTRLORDataset requires at least one data file.")
+        data_file_list = list(normalize_dataset_paths(data_files))
+        if not data_file_list:
+            raise ValueError("TTRLORDataset requires at least one data file.")
 
         dataset_limit = int(max_samples) if int(max_samples) > 0 else None
         remaining = dataset_limit

@@ -19,6 +19,7 @@ from verl.utils.metric import reduce_metrics
 from verl.utils.model import compute_position_id_with_mask
 
 from verl.trainer.ttrl_or_runtime.config import PipelineConfig
+from verl.trainer.ttrl_or_runtime.dataset.loader import normalize_dataset_paths
 from verl.trainer.ttrl_or_runtime.pipeline.ttrl_or import TTRLORRunner
 from verl.trainer.ttrl_or_runtime.reward.r3_batch_planner import (
     attach_r3_plan_to_instance,
@@ -117,19 +118,9 @@ def _write_run_config(config: PipelineConfig, model_root: Path) -> Path:
 
 
 def _normalize_dataset_paths(value: Any) -> tuple[str, ...]:
-    if value is None:
-        return ()
     if OmegaConf is not None and DictConfig is not None and ListConfig is not None and isinstance(value, ListConfig):
         value = list(value)
-    if isinstance(value, (list, tuple)):
-        items = value
-    else:
-        raw = str(value or "").replace("\r", "\n")
-        for sep in [";", "|"]:
-            raw = raw.replace(sep, "\n")
-        raw = raw.replace(",", "\n")
-        items = raw.split("\n")
-    return tuple(str(item).strip() for item in items if str(item).strip())
+    return normalize_dataset_paths(value)
 
 
 def _resolve_dataset_paths_from_pipeline_config(pipeline_config: PipelineConfig) -> tuple[str, ...]:
