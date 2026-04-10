@@ -42,13 +42,16 @@ fi
 model_name='Qwen/Qwen3-4B-Instruct-2507'
 MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
 # MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_or_qwen3_4b_int_cp150_v1"
+
 dataset="NL4OPT.jsonl"
-# dataset="MAMO_EasyLP_fixed.jsonl"
+# dataset="MAMO_EasyLP_fixed.jsonl" #sample
 # dataset="OptiBench.jsonl"
+
 DATA_PATH="$DATA_ROOT/$dataset"
 # For multiple datasets, uncomment and edit the list below.
-# TRAIN_FILES="[$DATA_ROOT/IndustryOR_fixedV2.jsonl, $DATA_ROOT/"MAMO_ComplexLP_fixed.jsonl",$DATA_ROOT/OptMATH_Bench_166.jsonl]"
-# TRAIN_FILES="$DATA_PATH"
+DATA_SETS="[$DATA_ROOT/IndustryOR_fixedV2.jsonl, $DATA_ROOT/MAMO_ComplexLP_fixed.jsonl,$DATA_ROOT/OptMATH_Bench_166.jsonl, $DATA_ROOT/NL4OPT.jsonl, $DATA_ROOT/NL4LP.jsonl, $DATA_ROOT/ComplexOR.jsonl]"
+
+TRAIN_FILES="$DATA_PATH"
 
 python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
