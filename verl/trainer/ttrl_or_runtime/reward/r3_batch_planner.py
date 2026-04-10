@@ -253,7 +253,9 @@ def build_sample_r3_plan(
         sample_id=sample_id,
         source="disabled",
         analysis="r3 precompute disabled due to extraction failure",
-        base_obj_bounds=_expand_obj_scale_margin(_default_scale_from_context(description, instance, feature_catalog)),
+        base_obj_bounds=_force_open_interval_scale(
+            _expand_obj_scale_margin(_default_scale_from_context(description, instance, feature_catalog))
+        ),
         test_cases=[],
         mapping=[],
         feature_catalog=feature_catalog,
@@ -296,7 +298,7 @@ def _normalize_llm_plan(
     base_bounds = _coerce_scale(parsed.get("base_scale"))
     if not _has_valid_scale(base_bounds):
         base_bounds = _default_scale_from_context(description, base_instance, feature_catalog)
-    base_bounds = _expand_obj_scale_margin(base_bounds)
+    base_bounds = _force_open_interval_scale(_expand_obj_scale_margin(base_bounds))
     tests_raw = parsed.get("tests")
     if not isinstance(tests_raw, list):
         tests_raw = []
@@ -322,7 +324,7 @@ def _normalize_llm_plan(
         obj_scale = _coerce_scale(test.get("obj_scale") or test.get("obj_bounds"))
         if not _has_valid_scale(obj_scale):
             obj_scale = _expand_scale(base_bounds, factor=1.2)
-        obj_scale = _expand_obj_scale_margin(obj_scale)
+        obj_scale = _force_open_interval_scale(_expand_obj_scale_margin(obj_scale))
         case_instance["__perturbation__"] = {
             "strategy": "llm_r3_batch",
             "case_id": case_id,
@@ -371,14 +373,16 @@ def _heuristic_plan(
 ) -> R3SamplePlan:
     pmap = build_perturbation_map(base_instance)
     generated = generate_perturbed_instances_from_map(base_instance, pmap, max(1, robustness_cases))
-    base_bounds = _expand_obj_scale_margin(_default_scale_from_context(description, base_instance, feature_catalog))
+    base_bounds = _force_open_interval_scale(
+        _expand_obj_scale_margin(_default_scale_from_context(description, base_instance, feature_catalog))
+    )
     fid_lookup = _key_to_fid_map(feature_catalog)
     test_cases: list[dict[str, Any]] = []
     mapping: list[dict[str, Any]] = []
     for idx, case in enumerate(generated[: max(1, robustness_cases)]):
         meta = case.get("__perturbation__") if isinstance(case, dict) else {}
         case_id = str(meta.get("case_id") or f"heur_case_{idx + 1}") if isinstance(meta, dict) else f"heur_case_{idx + 1}"
-        obj_scale = _expand_obj_scale_margin(_expand_scale(base_bounds, factor=1.25))
+        obj_scale = _force_open_interval_scale(_expand_obj_scale_margin(_expand_scale(base_bounds, factor=1.25)))
         raw_changes = list(meta.get("changes", [])) if isinstance(meta, dict) else []
         patches = []
         for change in raw_changes:
@@ -717,19 +721,29 @@ def _expand_obj_scale_margin(scale: dict[str, Any], ratio: float = OBJ_SCALE_RAN
 
     if kind == "union":
         out = dict(normalized)
-        intervals_out: list[dict[str, float | None]] = []
+        intervals_out: list[dict[str, Any]] = []
         for item in normalized.get("intervals", []):
             if not isinstance(item, dict):
                 continue
             lo = _to_number(item.get("lower"))
             hi = _to_number(item.get("upper"))
+            lo_inc = bool(item.get("lower_inclusive", True))
+            hi_inc = bool(item.get("upper_inclusive", True))
             if lo is not None:
                 lo = float(lo) - abs(float(lo)) * margin_ratio
             if hi is not None:
                 hi = float(hi) + abs(float(hi)) * margin_ratio
             if lo is not None and hi is not None and lo > hi:
                 lo, hi = hi, lo
-            intervals_out.append({"lower": lo, "upper": hi})
+                lo_inc, hi_inc = hi_inc, lo_inc
+            intervals_out.append(
+                {
+                    "lower": lo,
+                    "upper": hi,
+                    "lower_inclusive": bool(lo_inc),
+                    "upper_inclusive": bool(hi_inc),
+                }
+            )
         out["intervals"] = intervals_out
         return out
 
@@ -745,6 +759,40 @@ def _expand_obj_scale_margin(scale: dict[str, Any], ratio: float = OBJ_SCALE_RAN
     out["lower"] = lo
     out["upper"] = hi
     return out
+
+
+def _force_open_interval_scale(scale: dict[str, Any]) -> dict[str, Any]:
+    normalized = _coerce_scale(scale)
+    kind = str(normalized.get("kind") or "interval").strip().lower()
+
+    if kind == "union":
+        out = dict(normalized)
+        intervals_out: list[dict[str, Any]] = []
+        for item in normalized.get("intervals", []):
+            if not isinstance(item, dict):
+                continue
+            lo = item.get("lower")
+            hi = item.get("upper")
+            lo_num = float(lo) if isinstance(lo, (int, float)) and math.isfinite(float(lo)) else None
+            hi_num = float(hi) if isinstance(hi, (int, float)) and math.isfinite(float(hi)) else None
+            intervals_out.append(
+                {
+                    "lower": lo_num,
+                    "upper": hi_num,
+                    "lower_inclusive": False,
+                    "upper_inclusive": False,
+                }
+            )
+        out["intervals"] = intervals_out
+        return out
+
+    if kind == "interval":
+        out = dict(normalized)
+        out["lower_inclusive"] = False
+        out["upper_inclusive"] = False
+        return out
+
+    return normalized
 def _expand_scale(scale: dict[str, Any], factor: float = 1.2) -> dict[str, Any]:
     normalized = _coerce_scale(scale)
     sign_relation = str(normalized.get("sign_relation") or "any")
@@ -872,6 +920,19 @@ def _parse_json_object(text: str | None) -> Any:
             pass
     return None
 def _coerce_scale(value: Any) -> dict[str, Any]:
+    def _coerce_inclusive(raw: Any, default: bool = True) -> bool:
+        if isinstance(raw, bool):
+            return bool(raw)
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            return bool(raw)
+        if isinstance(raw, str):
+            text = raw.strip().lower()
+            if text in {"1", "true", "t", "yes", "y", "inclusive", "closed"}:
+                return True
+            if text in {"0", "false", "f", "no", "n", "exclusive", "open"}:
+                return False
+        return bool(default)
+
     def _normalize_sign_relation(raw: Any) -> str:
         text = str(raw or "any").strip().lower()
         aliases = {
@@ -954,23 +1015,33 @@ def _coerce_scale(value: Any) -> dict[str, Any]:
                         continue
                     lo = _to_number(item.get("lower"))
                     hi = _to_number(item.get("upper"))
+                    lo_inc = _coerce_inclusive(item.get("lower_inclusive"), True)
+                    hi_inc = _coerce_inclusive(item.get("upper_inclusive"), True)
                     if lo is not None and hi is not None and lo > hi:
                         lo, hi = hi, lo
+                        lo_inc, hi_inc = hi_inc, lo_inc
                     if lo is None and hi is None:
                         continue
                     intervals.append({
                         "lower": (float(lo) if lo is not None and math.isfinite(lo) else None),
                         "upper": (float(hi) if hi is not None and math.isfinite(hi) else None),
+                        "lower_inclusive": bool(lo_inc),
+                        "upper_inclusive": bool(hi_inc),
                     })
             return {"kind": "union", "intervals": intervals, "sign_relation": sign_relation, "magnitude": magnitude, "reject_exact": reject_exact}
         lower = _to_number(value.get("lower"))
         upper = _to_number(value.get("upper"))
+        lower_inc = _coerce_inclusive(value.get("lower_inclusive"), True)
+        upper_inc = _coerce_inclusive(value.get("upper_inclusive"), True)
         if lower is not None and upper is not None and lower > upper:
             lower, upper = upper, lower
+            lower_inc, upper_inc = upper_inc, lower_inc
         return {
             "kind": "interval",
             "lower": (float(lower) if lower is not None and math.isfinite(lower) else None),
             "upper": (float(upper) if upper is not None and math.isfinite(upper) else None),
+            "lower_inclusive": bool(lower_inc),
+            "upper_inclusive": bool(upper_inc),
             "sign_relation": sign_relation,
             "magnitude": magnitude,
             "reject_exact": reject_exact,
@@ -1036,10 +1107,14 @@ def summarize_scale(scale: dict[str, Any] | None) -> dict[str, Any]:
         parts = []
         for item in intervals:
             if isinstance(item, dict):
-                parts.append(f"[{item.get('lower')}, {item.get('upper')}]")
+                left = "[" if bool(item.get("lower_inclusive", True)) else "("
+                right = "]" if bool(item.get("upper_inclusive", True)) else ")"
+                parts.append(f"{left}{item.get('lower')}, {item.get('upper')}{right}")
         range_text = " union ".join(parts) if parts else "unbounded"
     else:
-        range_text = f"[{scale.get('lower')}, {scale.get('upper')}]"
+        left = "[" if bool(scale.get("lower_inclusive", True)) else "("
+        right = "]" if bool(scale.get("upper_inclusive", True)) else ")"
+        range_text = f"{left}{scale.get('lower')}, {scale.get('upper')}{right}"
     return {
         "kind": kind,
         "range": range_text,

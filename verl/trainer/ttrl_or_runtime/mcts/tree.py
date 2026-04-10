@@ -1702,9 +1702,24 @@ class FourStageMCTS:
                     continue
                 lo = item.get("lower")
                 hi = item.get("upper")
-                if isinstance(lo, (int, float)) and obj_answer < float(lo) - eps:
-                    continue
-                if isinstance(hi, (int, float)) and obj_answer > float(hi) + eps:
+                lo_inc = bool(item.get("lower_inclusive", True))
+                hi_inc = bool(item.get("upper_inclusive", True))
+                ok = True
+                if isinstance(lo, (int, float)):
+                    lo_num = float(lo)
+                    if lo_inc:
+                        if obj_answer < lo_num - eps:
+                            ok = False
+                    elif obj_answer <= lo_num + eps:
+                        ok = False
+                if isinstance(hi, (int, float)):
+                    hi_num = float(hi)
+                    if hi_inc:
+                        if obj_answer > hi_num + eps:
+                            ok = False
+                    elif obj_answer >= hi_num - eps:
+                        ok = False
+                if not ok:
                     continue
                 return True
             return False if intervals else True
@@ -1720,10 +1735,22 @@ class FourStageMCTS:
 
         lo = scale.get("lower")
         hi = scale.get("upper")
-        if isinstance(lo, (int, float)) and obj_answer < float(lo) - eps:
-            return False
-        if isinstance(hi, (int, float)) and obj_answer > float(hi) + eps:
-            return False
+        lo_inc = bool(scale.get("lower_inclusive", True))
+        hi_inc = bool(scale.get("upper_inclusive", True))
+        if isinstance(lo, (int, float)):
+            lo_num = float(lo)
+            if lo_inc:
+                if obj_answer < lo_num - eps:
+                    return False
+            elif obj_answer <= lo_num + eps:
+                return False
+        if isinstance(hi, (int, float)):
+            hi_num = float(hi)
+            if hi_inc:
+                if obj_answer > hi_num + eps:
+                    return False
+            elif obj_answer >= hi_num - eps:
+                return False
         return True
 
     @staticmethod

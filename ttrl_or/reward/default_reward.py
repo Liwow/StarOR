@@ -754,6 +754,19 @@ class TTRLRewardCalculator(RewardCalculator):
                     return None
             return None
 
+        def _inclusive(raw: Any, default: bool = True) -> bool:
+            if isinstance(raw, bool):
+                return bool(raw)
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+                return bool(raw)
+            if isinstance(raw, str):
+                text = raw.strip().lower()
+                if text in {"1", "true", "t", "yes", "y", "inclusive", "closed"}:
+                    return True
+                if text in {"0", "false", "f", "no", "n", "exclusive", "open"}:
+                    return False
+            return bool(default)
+
         def _normalize_sign_relation(raw: Any) -> str:
             text = str(raw or "any").strip().lower()
             aliases = {
@@ -838,18 +851,40 @@ class TTRLRewardCalculator(RewardCalculator):
                         continue
                     lo = _num(item.get("lower"))
                     hi = _num(item.get("upper"))
+                    lo_inc = _inclusive(item.get("lower_inclusive"), True)
+                    hi_inc = _inclusive(item.get("upper_inclusive"), True)
                     if lo is not None and hi is not None and lo > hi:
                         lo, hi = hi, lo
+                        lo_inc, hi_inc = hi_inc, lo_inc
                     if lo is None and hi is None:
                         continue
-                    intervals.append({"lower": lo, "upper": hi})
+                    intervals.append(
+                        {
+                            "lower": lo,
+                            "upper": hi,
+                            "lower_inclusive": bool(lo_inc),
+                            "upper_inclusive": bool(hi_inc),
+                        }
+                    )
             return {"kind": "union", "intervals": intervals, "sign_relation": sign_relation, "magnitude": magnitude, "reject_exact": reject_exact}
 
         lo = _num(value.get("lower"))
         hi = _num(value.get("upper"))
+        lo_inc = _inclusive(value.get("lower_inclusive"), True)
+        hi_inc = _inclusive(value.get("upper_inclusive"), True)
         if lo is not None and hi is not None and lo > hi:
             lo, hi = hi, lo
-        return {"kind": "interval", "lower": lo, "upper": hi, "sign_relation": sign_relation, "magnitude": magnitude, "reject_exact": reject_exact}
+            lo_inc, hi_inc = hi_inc, lo_inc
+        return {
+            "kind": "interval",
+            "lower": lo,
+            "upper": hi,
+            "lower_inclusive": bool(lo_inc),
+            "upper_inclusive": bool(hi_inc),
+            "sign_relation": sign_relation,
+            "magnitude": magnitude,
+            "reject_exact": reject_exact,
+        }
 
     def _objective_matches_scale(self, obj_answer: float | None, scale: dict[str, Any] | None) -> bool:
         if not self._is_valid_objective(obj_answer):
@@ -900,13 +935,25 @@ class TTRLRewardCalculator(RewardCalculator):
                     continue
                 lo = item.get("lower")
                 hi = item.get("upper")
+                lo_inc = bool(item.get("lower_inclusive", True))
+                hi_inc = bool(item.get("upper_inclusive", True))
                 if isinstance(lo, (int, float)) or isinstance(hi, (int, float)):
                     has_numeric_interval_bound = True
                 ok = True
-                if isinstance(lo, (int, float)) and val < float(lo) - eps:
-                    ok = False
-                if isinstance(hi, (int, float)) and val > float(hi) + eps:
-                    ok = False
+                if isinstance(lo, (int, float)):
+                    lo_num = float(lo)
+                    if lo_inc:
+                        if val < lo_num - eps:
+                            ok = False
+                    elif val <= lo_num + eps:
+                        ok = False
+                if isinstance(hi, (int, float)):
+                    hi_num = float(hi)
+                    if hi_inc:
+                        if val > hi_num + eps:
+                            ok = False
+                    elif val >= hi_num - eps:
+                        ok = False
                 if ok:
                     matched = True
                     break
@@ -916,11 +963,23 @@ class TTRLRewardCalculator(RewardCalculator):
         else:
             lo = scale.get("lower")
             hi = scale.get("upper")
+            lo_inc = bool(scale.get("lower_inclusive", True))
+            hi_inc = bool(scale.get("upper_inclusive", True))
             has_explicit_bounds = isinstance(lo, (int, float)) or isinstance(hi, (int, float))
-            if isinstance(lo, (int, float)) and val < float(lo) - eps:
-                return False
-            if isinstance(hi, (int, float)) and val > float(hi) + eps:
-                return False
+            if isinstance(lo, (int, float)):
+                lo_num = float(lo)
+                if lo_inc:
+                    if val < lo_num - eps:
+                        return False
+                elif val <= lo_num + eps:
+                    return False
+            if isinstance(hi, (int, float)):
+                hi_num = float(hi)
+                if hi_inc:
+                    if val > hi_num + eps:
+                        return False
+                elif val >= hi_num - eps:
+                    return False
 
         # Magnitude acts as a fallback prior when explicit numeric bounds are
         # absent. If lower/upper (or point/union numeric bounds) are provided,
