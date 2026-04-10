@@ -342,102 +342,110 @@ def _find_dataset_dirs(log_root: Path, dataset_names: list[str]) -> list[Path]:
     return out
 
 
-def _print_table(models: list[dict[str, Any]]) -> None:
-    headers = [
-        "level",
-        "model_root",
-        "dataset",
-        "run_seed",
-        "tol",
-        "limit",
-        "num_samples",
-        "num_numeric_pairs",
-        "num_within_tol",
-        "acc_all",
-        "acc_numeric",
-    ]
-    print("\t".join(headers))
+def _format_metric_line(prefix: str, item: dict[str, Any]) -> str:
+    return (
+        f"{prefix} samples={int(item.get('num_samples', 0) or 0)} "
+        f"hits={int(item.get('num_within_tol', 0) or 0)} "
+        f"acc_all={float(item.get('accuracy_over_all', 0.0)):.4f} "
+        f"acc_numeric={float(item.get('accuracy_over_numeric', 0.0)):.4f}"
+    )
+
+
+def _print_console_summary(models: list[dict[str, Any]], overall: dict[str, Any], *, verbose: bool = False) -> None:
+    print(
+        _format_metric_line(
+            "[overall]",
+            {
+                "num_samples": overall.get("num_samples", 0),
+                "num_within_tol": overall.get("num_within_tol", 0),
+                "accuracy_over_all": overall.get("accuracy_over_all", 0.0),
+                "accuracy_over_numeric": overall.get("accuracy_over_numeric", 0.0),
+            },
+        )
+        + f" datasets={int(overall.get('num_datasets', 0) or 0)} tol={float(overall.get('tol', 0.0))}"
+    )
     for model in models:
         if not isinstance(model, dict):
             continue
-        print(
-            "\t".join(
-                [
-                    "model_total",
-                    str(model.get("model_root", "")),
-                    "-",
-                    "-",
-                    str(model.get("tol", "")),
-                    str(model.get("limit", "")),
-                    str(model.get("num_samples", 0)),
-                    str(model.get("num_numeric_pairs", 0)),
-                    str(model.get("num_within_tol", 0)),
-                    f"{float(model.get('accuracy_over_all', 0.0)):.4f}",
-                    f"{float(model.get('accuracy_over_numeric', 0.0)):.4f}",
-                ]
-            )
-        )
-        for s in (model.get("datasets", []) if isinstance(model.get("datasets", []), list) else []):
-            if not isinstance(s, dict):
+        model_name = str(model.get("model_root", "") or "(unknown_model)")
+        print(_format_metric_line(f"[model] {model_name}", model))
+        for ds in (model.get("datasets", []) if isinstance(model.get("datasets", []), list) else []):
+            if not isinstance(ds, dict):
                 continue
-            print(
-                "\t".join(
-                    [
-                        "dataset_total",
-                        str(s.get("model_root", "")),
-                        str(s["dataset"]),
-                        "-",
-                        str(s.get("tol", "")),
-                        str(s.get("limit", "")),
-                        str(s["num_samples"]),
-                        str(s["num_numeric_pairs"]),
-                        str(s["num_within_tol"]),
-                        f"{float(s['accuracy_over_all']):.4f}",
-                        f"{float(s['accuracy_over_numeric']):.4f}",
-                    ]
-                )
-            )
-
-            no_seed = s.get("no_run_seed", {}) if isinstance(s.get("no_run_seed", {}), dict) else {}
+            ds_name = str(ds.get("dataset", "") or "(unknown_dataset)")
+            print(_format_metric_line(f"  [dataset] {ds_name}", ds))
+            if not verbose:
+                continue
+            no_seed = ds.get("no_run_seed", {}) if isinstance(ds.get("no_run_seed", {}), dict) else {}
             if int(no_seed.get("num_samples", 0) or 0) > 0:
-                print(
-                    "\t".join(
-                        [
-                            "dataset_no_run_seed",
-                            str(s.get("model_root", "")),
-                            str(s["dataset"]),
-                            "(none)",
-                            str(no_seed.get("tol", s.get("tol", ""))),
-                            str(no_seed.get("limit", s.get("limit", ""))),
-                            str(no_seed.get("num_samples", 0)),
-                            str(no_seed.get("num_numeric_pairs", 0)),
-                            str(no_seed.get("num_within_tol", 0)),
-                            f"{float(no_seed.get('accuracy_over_all', 0.0)):.4f}",
-                            f"{float(no_seed.get('accuracy_over_numeric', 0.0)):.4f}",
-                        ]
-                    )
-                )
-
-            for run_info in (s.get("run_seeds", []) if isinstance(s.get("run_seeds", []), list) else []):
+                print(_format_metric_line("    [no_run_seed]", no_seed))
+            for run_info in (ds.get("run_seeds", []) if isinstance(ds.get("run_seeds", []), list) else []):
                 if not isinstance(run_info, dict):
                     continue
-                print(
-                    "\t".join(
-                        [
-                            "dataset_run_seed",
-                            str(s.get("model_root", "")),
-                            str(s["dataset"]),
-                            str(run_info.get("run_seed", "")),
-                            str(run_info.get("tol", s.get("tol", ""))),
-                            str(run_info.get("limit", s.get("limit", ""))),
-                            str(run_info.get("num_samples", 0)),
-                            str(run_info.get("num_numeric_pairs", 0)),
-                            str(run_info.get("num_within_tol", 0)),
-                            f"{float(run_info.get('accuracy_over_all', 0.0)):.4f}",
-                            f"{float(run_info.get('accuracy_over_numeric', 0.0)):.4f}",
-                        ]
-                    )
+                run_seed = str(run_info.get("run_seed", "") or "(empty)")
+                print(_format_metric_line(f"    [run_seed] {run_seed}", run_info))
+
+
+def _build_brief_summary(models: list[dict[str, Any]], overall: dict[str, Any]) -> dict[str, Any]:
+    model_items: list[dict[str, Any]] = []
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        ds_items: list[dict[str, Any]] = []
+        for ds in (model.get("datasets", []) if isinstance(model.get("datasets", []), list) else []):
+            if not isinstance(ds, dict):
+                continue
+            run_seed_items = []
+            for run_info in (ds.get("run_seeds", []) if isinstance(ds.get("run_seeds", []), list) else []):
+                if not isinstance(run_info, dict):
+                    continue
+                run_seed_items.append(
+                    {
+                        "run_seed": str(run_info.get("run_seed", "")),
+                        "num_samples": int(run_info.get("num_samples", 0) or 0),
+                        "num_within_tol": int(run_info.get("num_within_tol", 0) or 0),
+                        "accuracy_over_all": float(run_info.get("accuracy_over_all", 0.0)),
+                        "accuracy_over_numeric": float(run_info.get("accuracy_over_numeric", 0.0)),
+                    }
                 )
+            ds_items.append(
+                {
+                    "dataset": str(ds.get("dataset", "")),
+                    "num_samples": int(ds.get("num_samples", 0) or 0),
+                    "num_within_tol": int(ds.get("num_within_tol", 0) or 0),
+                    "accuracy_over_all": float(ds.get("accuracy_over_all", 0.0)),
+                    "accuracy_over_numeric": float(ds.get("accuracy_over_numeric", 0.0)),
+                    "no_run_seed": {
+                        "num_samples": int((ds.get("no_run_seed", {}) or {}).get("num_samples", 0) or 0),
+                        "num_within_tol": int((ds.get("no_run_seed", {}) or {}).get("num_within_tol", 0) or 0),
+                        "accuracy_over_all": float((ds.get("no_run_seed", {}) or {}).get("accuracy_over_all", 0.0)),
+                        "accuracy_over_numeric": float((ds.get("no_run_seed", {}) or {}).get("accuracy_over_numeric", 0.0)),
+                    },
+                    "run_seeds": run_seed_items,
+                }
+            )
+        model_items.append(
+            {
+                "model_root": str(model.get("model_root", "")),
+                "num_samples": int(model.get("num_samples", 0) or 0),
+                "num_within_tol": int(model.get("num_within_tol", 0) or 0),
+                "accuracy_over_all": float(model.get("accuracy_over_all", 0.0)),
+                "accuracy_over_numeric": float(model.get("accuracy_over_numeric", 0.0)),
+                "datasets": ds_items,
+            }
+        )
+    return {
+        "overall": {
+            "num_datasets": int(overall.get("num_datasets", 0) or 0),
+            "num_samples": int(overall.get("num_samples", 0) or 0),
+            "num_within_tol": int(overall.get("num_within_tol", 0) or 0),
+            "accuracy_over_all": float(overall.get("accuracy_over_all", 0.0)),
+            "accuracy_over_numeric": float(overall.get("accuracy_over_numeric", 0.0)),
+            "tol": float(overall.get("tol", 0.0)),
+            "limit": int(overall.get("limit", 0) or 0),
+        },
+        "models": model_items,
+    }
 
 
 def _group_by_model(summaries: list[dict[str, Any]], tol: float, limit: int) -> list[dict[str, Any]]:
@@ -498,6 +506,11 @@ def main() -> int:
         default="",
         help="Optional output json path (default: <log-root>/accuracy_summary.json)",
     )
+    parser.add_argument(
+        "--console-verbose",
+        action="store_true",
+        help="Print run-seed/no-run-seed lines in console output.",
+    )
     args = parser.parse_args()
 
     log_root = Path(args.log_root)
@@ -538,16 +551,12 @@ def main() -> int:
 
     payload = {
         "overall": overall,
+        "brief": _build_brief_summary(models, overall),
         "models": models,
         "datasets": summaries,
     }
 
-    _print_table(models)
-    print(
-        "overall\t-\t-\t-\t{tol}\t{limit}\t{num_samples}\t{num_numeric_pairs}\t{num_within_tol}\t{accuracy_over_all:.4f}\t{accuracy_over_numeric:.4f}".format(
-            **overall
-        )
-    )
+    _print_console_summary(models, overall, verbose=bool(args.console_verbose))
 
     out_path = Path(args.out) if args.out else (log_root / "accuracy_summary.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)

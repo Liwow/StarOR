@@ -334,6 +334,9 @@ class PythonCodeExecutor:
         env = os.environ.copy()
         if isinstance(self.gurobi_time_limit_sec, (int, float)) and float(self.gurobi_time_limit_sec) > 0.0:
             env["TTRL_OR_GUROBI_TIMELIMIT_SEC"] = str(float(self.gurobi_time_limit_sec))
+        # Sandbox workers are reused across runs; remove stale LP artifacts to
+        # avoid accidentally reusing previous sample structure in r4 scoring.
+        self._cleanup_lp_artifacts(cwd)
         try:
             proc = subprocess.run(
                 [sys.executable, str(runner_path), str(solution_path), str(instance_file)],
@@ -420,6 +423,17 @@ class PythonCodeExecutor:
             return {"ok": False, "error": "Last output is not a JSON object.", "type": "InvalidJSON"}
         except json.JSONDecodeError:
             return {"ok": False, "error": "Invalid JSON output.", "type": "InvalidJSON"}
+
+    @staticmethod
+    def _cleanup_lp_artifacts(cwd: Path) -> None:
+        try:
+            for lp_path in cwd.glob("*.lp"):
+                try:
+                    lp_path.unlink(missing_ok=True)
+                except Exception:
+                    continue
+        except Exception:
+            return
 
     @staticmethod
     def _signature(output: Any) -> str:

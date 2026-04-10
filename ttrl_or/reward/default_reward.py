@@ -92,7 +92,15 @@ class TTRLRewardCalculator(RewardCalculator):
             r1_eligible = bool(has_code and effective_success and has_valid_obj)
 
             model_info = execution.model_info
-            feature_tuple = model_info.feature_tuple() if model_info and model_info.extracted else None
+            r4_lp_model_ready_raw, r4_lp_model_debug = self._r4_lp_model_ready(model_info)
+            r4_lp_model_debug = dict(r4_lp_model_debug or {})
+            r4_lp_model_debug["has_code"] = bool(has_code)
+            if not bool(has_code):
+                r4_lp_model_ready = False
+                r4_lp_model_debug["reason"] = "no_code_generated"
+            else:
+                r4_lp_model_ready = bool(r4_lp_model_ready_raw)
+            feature_tuple = model_info.feature_tuple() if r4_lp_model_ready else None
 
             evals.append(
                 {
@@ -108,6 +116,8 @@ class TTRLRewardCalculator(RewardCalculator):
                     "r1_eligible": r1_eligible,
                     "model_info": model_info,
                     "feature_tuple": feature_tuple,
+                    "r4_lp_model_ready": bool(r4_lp_model_ready),
+                    "r4_lp_model_debug": r4_lp_model_debug,
                     "semantic_leader": None,
                 }
             )
@@ -171,8 +181,11 @@ class TTRLRewardCalculator(RewardCalculator):
                 "cluster_scope": self.config.cluster_scope,
                 "structure_gate": reward_gate,
                 "structure_gate_debug": structure_gate_debug,
+                "has_code": bool(e.get("has_code", False)),
+                "lp_model_ready": bool(e.get("r4_lp_model_ready", False)),
+                "lp_model_debug": (e.get("r4_lp_model_debug", {}) or {}),
             }
-            if self.config.enable_r4_reward and feature_tuple is not None:
+            if self.config.enable_r4_reward and bool(e.get("r4_lp_model_ready", False)) and feature_tuple is not None:
                 if local_scope:
                     r4, local_r4_debug = self._compute_local_r4(
                         feature_tuple=feature_tuple,
@@ -189,6 +202,13 @@ class TTRLRewardCalculator(RewardCalculator):
                         group_total_count=structural_group_total,
                     )
                 r4_debug.update(local_r4_debug)
+            elif self.config.enable_r4_reward:
+                # Hard rule: no valid LP structure or no code -> r4 must be 0.
+                r4 = 0.0
+                if not bool(e.get("has_code", False)):
+                    r4_debug["reason"] = "no_code_generated"
+                else:
+                    r4_debug["reason"] = "lp_model_missing_or_incomplete"
 
             r3 = 0.0
             r3_meta: dict[str, Any] = {"triggered": False}
@@ -1211,6 +1231,29 @@ class TTRLRewardCalculator(RewardCalculator):
             'num_constrs': num_constrs,
             'num_vars': num_vars,
             'passes': passes,
+        }
+
+    @staticmethod
+    def _r4_lp_model_ready(model_info: Any) -> tuple[bool, dict[str, Any]]:
+        extracted = bool(model_info is not None and bool(getattr(model_info, "extracted", False)))
+        num_vars = int(getattr(model_info, "num_vars", 0) or 0) if model_info is not None else 0
+        num_constrs = int(getattr(model_info, "num_constrs", 0) or 0) if model_info is not None else 0
+
+        ready = bool(extracted and num_vars > 0 and num_constrs > 0)
+        if not extracted:
+            reason = "lp_not_extracted"
+        elif num_vars <= 0:
+            reason = "num_vars_zero"
+        elif num_constrs <= 0:
+            reason = "num_constrs_zero"
+        else:
+            reason = "ready"
+
+        return ready, {
+            "extracted": bool(extracted),
+            "num_vars": int(num_vars),
+            "num_constrs": int(num_constrs),
+            "reason": str(reason),
         }
 
 

@@ -92,7 +92,14 @@ class TTRLRewardCalculator(RewardCalculator):
             r1_eligible = bool(has_code and effective_success and has_valid_obj)
 
             model_info = execution.model_info
-            r4_lp_model_ready, r4_lp_model_debug = self._r4_lp_model_ready(model_info)
+            r4_lp_model_ready_raw, r4_lp_model_debug = self._r4_lp_model_ready(model_info)
+            r4_lp_model_debug = dict(r4_lp_model_debug or {})
+            r4_lp_model_debug["has_code"] = bool(has_code)
+            if not bool(has_code):
+                r4_lp_model_ready = False
+                r4_lp_model_debug["reason"] = "no_code_generated"
+            else:
+                r4_lp_model_ready = bool(r4_lp_model_ready_raw)
             feature_tuple = model_info.feature_tuple() if r4_lp_model_ready else None
 
             evals.append(
@@ -174,6 +181,7 @@ class TTRLRewardCalculator(RewardCalculator):
                 "cluster_scope": self.config.cluster_scope,
                 "structure_gate": reward_gate,
                 "structure_gate_debug": structure_gate_debug,
+                "has_code": bool(e.get("has_code", False)),
                 "lp_model_ready": bool(e.get("r4_lp_model_ready", False)),
                 "lp_model_debug": (e.get("r4_lp_model_debug", {}) or {}),
             }
@@ -197,7 +205,10 @@ class TTRLRewardCalculator(RewardCalculator):
             elif self.config.enable_r4_reward:
                 # Hard rule: no valid LP structure -> r4 must be 0.
                 r4 = 0.0
-                r4_debug["reason"] = "lp_model_missing_or_incomplete"
+                if not bool(e.get("has_code", False)):
+                    r4_debug["reason"] = "no_code_generated"
+                else:
+                    r4_debug["reason"] = "lp_model_missing_or_incomplete"
 
             r3 = 0.0
             r3_meta: dict[str, Any] = {"triggered": False}
