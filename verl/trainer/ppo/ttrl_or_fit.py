@@ -839,9 +839,19 @@ def run_ttrl_or_fit(trainer, logger) -> None:
     sample_size = max(1, int(getattr(pipeline_config.dataset, "sample_size", 100) or 100))
     sample_seed = int(getattr(pipeline_config.dataset, "sample_seed", 0) or 0)
 
+    skipped_dataset_load_errors = 0
     for dataset_path in dataset_paths:
-        raw_samples = _resolve_raw_samples_for_path(trainer, pipeline_config, dataset_path)
-        dataset_name = Path(dataset_path).stem if str(dataset_path).strip() else "dataset"
+        dataset_path_str = str(dataset_path or "").strip()
+        dataset_name = Path(dataset_path_str).stem if dataset_path_str else "dataset"
+        try:
+            raw_samples = _resolve_raw_samples_for_path(trainer, pipeline_config, dataset_path_str)
+        except Exception as exc:  # noqa: BLE001
+            skipped_dataset_load_errors += 1
+            print(
+                f"[verl-or][dataset][skip] failed to load dataset={dataset_path_str or dataset_path!r}; "
+                f"error={exc.__class__.__name__}: {exc}"
+            )
+            continue
         dataset_log_dir = model_log_root / _safe_path_component(dataset_name)
         ordered_samples = list(raw_samples)
 
@@ -873,7 +883,7 @@ def run_ttrl_or_fit(trainer, logger) -> None:
 
         total_pending_samples += len(ordered_samples)
         dataset_runs.append({
-            "dataset_path": str(Path(dataset_path).resolve()),
+            "dataset_path": str(Path(dataset_path_str).resolve()),
             "dataset_name": dataset_name,
             "dataset_log_dir": str(dataset_log_dir),
             "raw_samples": raw_samples,
@@ -888,9 +898,16 @@ def run_ttrl_or_fit(trainer, logger) -> None:
         print(
             f"[verl-or][dataset] rank={rank}/{world_size} total_samples={len(raw_samples)} "
             f"pending_samples={len(ordered_samples)} skipped_completed={skipped_completed} "
-            f"dataset={Path(dataset_path).resolve()} log_root={dataset_log_dir.resolve()} "
+            f"dataset={Path(dataset_path_str).resolve()} log_root={dataset_log_dir.resolve()} "
             f"sample_run={sample_run_enabled} sampled_count={sampled_count} sample_seed={sampled_seed} run_tag={run_tag or '-'}"
         )
+
+    if not dataset_runs:
+        print(
+            f"[verl-or][dataset] no valid datasets loaded (paths={len(dataset_paths)}, "
+            f"load_errors={skipped_dataset_load_errors}), exiting."
+        )
+        return
 
     if total_pending_samples <= 0:
         print("[verl-or][dataset] no pending samples found across all datasets, exiting.")
