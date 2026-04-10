@@ -105,18 +105,34 @@ def _infer_model_root(dataset_dir: Path, log_root: Path) -> str:
     return ""
 
 
+def _iter_sample_result_dirs(dataset_dir: Path) -> list[tuple[str, Path]]:
+    out: list[tuple[str, Path]] = []
+    try:
+        for sample_dir in sorted(dataset_dir.iterdir()):
+            if not sample_dir.is_dir():
+                continue
+            direct_result = sample_dir / "result.json"
+            if direct_result.exists():
+                out.append((sample_dir.name, sample_dir))
+                continue
+            for run_dir in sorted(sample_dir.iterdir()):
+                if not run_dir.is_dir():
+                    continue
+                if (run_dir / "result.json").exists():
+                    out.append((f"{sample_dir.name}/{run_dir.name}", run_dir))
+    except Exception:
+        return out
+    return out
+
+
 def eval_dataset_dir(dataset_dir: Path, tol: float, log_root: Path, limit: int = 0) -> dict[str, Any]:
     rows: list[SampleEval] = []
 
-    sample_dirs = [
-        item
-        for item in sorted(dataset_dir.iterdir())
-        if item.is_dir() and (item / "result.json").exists()
-    ]
+    sample_dirs = _iter_sample_result_dirs(dataset_dir)
     if limit > 0:
         sample_dirs = sample_dirs[:limit]
 
-    for item in sample_dirs:
+    for sample_key, item in sample_dirs:
         if not item.is_dir():
             continue
         if not (item / "result.json").exists():
@@ -127,7 +143,7 @@ def eval_dataset_dir(dataset_dir: Path, tol: float, log_root: Path, limit: int =
         ok = bool(gt is not None and obj is not None and rel is not None and rel <= tol)
         rows.append(
             SampleEval(
-                sample_id=item.name,
+                sample_id=sample_key,
                 obj_answer=obj,
                 gold_answer=gt,
                 rel_error=rel,
@@ -179,7 +195,14 @@ def _dataset_names_from_args(dataset_json: list[str], dataset_jsons: str) -> lis
 
 
 def _looks_like_sample_dir(path: Path) -> bool:
-    return path.is_dir() and (path / "result.json").exists()
+    if not path.is_dir():
+        return False
+    if (path / "result.json").exists():
+        return True
+    try:
+        return any(x.is_dir() and (x / "result.json").exists() for x in path.iterdir())
+    except Exception:
+        return False
 
 
 def _looks_like_dataset_dir(path: Path) -> bool:

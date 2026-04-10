@@ -78,6 +78,14 @@ def _write_json_file(path: Path, payload: Any) -> Path:
     return path
 
 
+def _task_run_dir(log_dir: str | Path, task_id: str, run_tag: str = "") -> Path:
+    run_dir = Path(log_dir) / _safe_path_component(task_id)
+    run_tag_clean = str(run_tag or "").strip()
+    if run_tag_clean:
+        run_dir = run_dir / _safe_path_component(run_tag_clean)
+    return run_dir
+
+
 class TTRLORRunner:
     def __init__(self, backend: PolicyBackend, config: PipelineConfig | None = None) -> None:
         self.backend = backend
@@ -129,7 +137,11 @@ class TTRLORRunner:
             )
 
             if self.config.save_logs:
-                run_dir = Path(self.config.log_dir) / _safe_path_component(task.task_id)
+                run_dir = _task_run_dir(
+                    self.config.log_dir,
+                    task.task_id,
+                    run_tag=str(getattr(self.config, "run_tag", "") or ""),
+                )
                 run_dir.mkdir(parents=True, exist_ok=True)
                 iter_live_writer = (run_dir / "mcts_iterations.md").open("w", encoding="utf-8")
 
@@ -340,7 +352,11 @@ class TTRLORRunner:
         iteration_logs: list[dict[str, Any]],
         runtime_summary: dict[str, Any],
     ) -> dict[str, str]:
-        run_dir = Path(self.config.log_dir) / _safe_path_component(trace.task_id)
+        run_dir = _task_run_dir(
+            self.config.log_dir,
+            trace.task_id,
+            run_tag=str(getattr(self.config, "run_tag", "") or ""),
+        )
         run_dir.mkdir(parents=True, exist_ok=True)
 
         summary_path = run_dir / "run_summary.json"

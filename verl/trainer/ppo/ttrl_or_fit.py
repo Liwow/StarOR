@@ -66,6 +66,8 @@ def _model_identifier(config: PipelineConfig) -> str:
 def _verl_model_log_root(config: PipelineConfig) -> Path:
     base = Path(config.log_dir)
     folder = f"model_{_model_mode_label(config)}_{_model_identifier(config)}"
+    if bool(getattr(config.dataset, "sample_run", False)):
+        folder = f"{folder}_sample"
     return base / folder
 
 
@@ -131,12 +133,16 @@ def _resolve_dataset_paths_from_pipeline_config(pipeline_config: PipelineConfig)
     return (single,) if single else ()
 
 
-def _sample_run_dir(log_dir: str | os.PathLike[str], sample_id: str) -> Path:
-    return Path(log_dir) / _safe_path_component(sample_id)
+def _sample_run_dir(log_dir: str | os.PathLike[str], sample_id: str, run_tag: str = "") -> Path:
+    sample_dir = Path(log_dir) / _safe_path_component(sample_id)
+    run_tag_clean = str(run_tag or "").strip()
+    if run_tag_clean:
+        return sample_dir / _safe_path_component(run_tag_clean)
+    return sample_dir
 
 
-def _sample_result_path(log_dir: str | os.PathLike[str], sample_id: str) -> Path:
-    return _sample_run_dir(log_dir, sample_id) / "result.json"
+def _sample_result_path(log_dir: str | os.PathLike[str], sample_id: str, run_tag: str = "") -> Path:
+    return _sample_run_dir(log_dir, sample_id, run_tag=run_tag) / "result.json"
 
 
 def _none_to_default(value: Any, default: Any) -> Any:
@@ -763,7 +769,11 @@ def _prepare_r3_for_samples(raw_samples: list, runner: TTRLORRunner, rank: int, 
         )
 
         if cfg.save_logs:
-            sample_dir = Path(cfg.log_dir) / _safe_path_component(sample.sample_id)
+            sample_dir = _sample_run_dir(
+                cfg.log_dir,
+                str(sample.sample_id),
+                run_tag=str(getattr(cfg, "run_tag", "") or ""),
+            )
             sample_dir.mkdir(parents=True, exist_ok=True)
             payload = {
                 "sample_id": sample.sample_id,
@@ -825,22 +835,36 @@ def run_ttrl_or_fit(trainer, logger) -> None:
     dataset_runs: list[dict[str, Any]] = []
     total_pending_samples = 0
     max_iterations = int(max(1, pipeline_config.mcts.max_iterations))
+    sample_run_enabled = bool(getattr(pipeline_config.dataset, "sample_run", False))
+    sample_size = max(1, int(getattr(pipeline_config.dataset, "sample_size", 100) or 100))
+    sample_seed = int(getattr(pipeline_config.dataset, "sample_seed", 0) or 0)
 
     for dataset_path in dataset_paths:
         raw_samples = _resolve_raw_samples_for_path(trainer, pipeline_config, dataset_path)
         dataset_name = Path(dataset_path).stem if str(dataset_path).strip() else "dataset"
         dataset_log_dir = model_log_root / _safe_path_component(dataset_name)
         ordered_samples = list(raw_samples)
+
+        sampled_count = len(ordered_samples)
+        sampled_seed = sample_seed if sample_run_enabled else None
+        if sample_run_enabled and ordered_samples:
+            rng_sample = np.random.default_rng(sampled_seed)
+            if len(ordered_samples) > sample_size:
+                sampled_indices = rng_sample.choice(len(ordered_samples), size=sample_size, replace=False).tolist()
+                ordered_samples = [ordered_samples[int(i)] for i in sampled_indices]
+            sampled_count = len(ordered_samples)
+
         if bool(trainer.config.data.shuffle):
             seed = trainer.config.data.get("seed")
             rng = np.random.default_rng(seed if seed is not None else 0)
             rng.shuffle(ordered_samples)
 
+        run_tag = f"run_{sampled_seed}" if sample_run_enabled and sampled_seed is not None else ""
         skipped_completed = 0
         if bool(pipeline_config.dataset.resume_skip_completed):
             pending_samples = []
             for sample in ordered_samples:
-                result_path = _sample_result_path(dataset_log_dir, str(sample.sample_id))
+                result_path = _sample_result_path(dataset_log_dir, str(sample.sample_id), run_tag=run_tag)
                 if result_path.exists():
                     skipped_completed += 1
                     continue
@@ -855,11 +879,17 @@ def run_ttrl_or_fit(trainer, logger) -> None:
             "raw_samples": raw_samples,
             "ordered_samples": ordered_samples,
             "skipped_completed": skipped_completed,
+            "sample_run": bool(sample_run_enabled),
+            "sample_seed": sampled_seed,
+            "sample_size": int(sample_size),
+            "sampled_count": int(sampled_count),
+            "run_tag": str(run_tag),
         })
         print(
             f"[verl-or][dataset] rank={rank}/{world_size} total_samples={len(raw_samples)} "
             f"pending_samples={len(ordered_samples)} skipped_completed={skipped_completed} "
-            f"dataset={Path(dataset_path).resolve()} log_root={dataset_log_dir.resolve()}"
+            f"dataset={Path(dataset_path).resolve()} log_root={dataset_log_dir.resolve()} "
+            f"sample_run={sample_run_enabled} sampled_count={sampled_count} sample_seed={sampled_seed} run_tag={run_tag or '-'}"
         )
 
     if total_pending_samples <= 0:
@@ -877,10 +907,13 @@ def run_ttrl_or_fit(trainer, logger) -> None:
             continue
         pipeline_config.dataset.jsonl_path = str(dataset_run["dataset_path"])
         pipeline_config.log_dir = str(dataset_run["dataset_log_dir"])
+        pipeline_config.run_tag = str(dataset_run.get("run_tag", "") or "")
         runner.config.log_dir = str(dataset_run["dataset_log_dir"])
+        runner.config.run_tag = str(dataset_run.get("run_tag", "") or "")
         print(
             f"[verl-or][dataset-run] [{dataset_idx}/{len(dataset_runs)}] dataset={dataset_run['dataset_name']} "
-            f"pending_samples={len(ordered_samples)}"
+            f"pending_samples={len(ordered_samples)} run_tag={dataset_run.get('run_tag') or '-'} "
+            f"sample_run={dataset_run.get('sample_run')} sampled_count={dataset_run.get('sampled_count')}"
         )
 
         _prepare_r3_for_samples(ordered_samples, runner, rank, world_size)

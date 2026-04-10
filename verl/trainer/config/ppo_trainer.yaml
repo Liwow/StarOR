@@ -219,6 +219,15 @@ algorithm:
       start_index: 0
       limit: 0
 
+      # Whether to randomly sample a subset from each dataset before running.
+      sample_run: False
+
+      # RNG seed used when sample_run is enabled.
+      sample_seed: 0
+
+      # Number of samples to draw from each dataset when sample_run is enabled.
+      sample_size: 100
+
       # Max numeric features extracted from the raw OR sample.
       max_numeric_features: 256
 

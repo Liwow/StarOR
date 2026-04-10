@@ -86,6 +86,9 @@ class DatasetConfig:
     jsonl_paths: tuple[str, ...] = ()
     start_index: int = 0
     limit: int = 0
+    sample_run: bool = False
+    sample_seed: int = 0
+    sample_size: int = 100
     resume_skip_completed: bool = True
     max_numeric_features: int = 16
     key_param_top_k: int = 8
@@ -135,6 +138,7 @@ class PipelineConfig:
     backend: BackendConfig = field(default_factory=BackendConfig)
     save_logs: bool = True
     log_dir: str = "logs"
+    run_tag: str = ""
 
 
 

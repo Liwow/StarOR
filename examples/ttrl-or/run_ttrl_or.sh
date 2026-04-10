@@ -3,6 +3,41 @@ export CUDA_VISIBLE_DEVICES=0
 # export RAY_DEBUG_POST_MORTEM=1
 DATA_ROOT="${HOME}/code/TTRL-OR/data"
 
+SAMPLE_RUN=false
+SAMPLE_SEED=0
+EXTRA_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --sample_run)
+            SAMPLE_RUN="${2:-false}"
+            shift 2
+            ;;
+        --sample_seed)
+            SAMPLE_SEED="${2:-0}"
+            shift 2
+            ;;
+        --sample_run=*)
+            SAMPLE_RUN="${1#*=}"
+            shift
+            ;;
+        --sample_seed=*)
+            SAMPLE_SEED="${1#*=}"
+            shift
+            ;;
+        *)
+            EXTRA_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+SAMPLE_RUN="$(echo "${SAMPLE_RUN}" | tr '[:upper:]' '[:lower:]')"
+if [[ "${SAMPLE_RUN}" != "true" && "${SAMPLE_RUN}" != "false" ]]; then
+    echo "[run_ttrl_or.sh] --sample_run must be true or false, got: ${SAMPLE_RUN}"
+    exit 1
+fi
+
 # model_name='Qwen/Qwen2.5-7B-Instruct'
 model_name='Qwen/Qwen3-4B-Instruct-2507'
 MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
@@ -35,6 +70,9 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.reward.r3_weight=0.2 \
     algorithm.ttrl_or.reward.r4_weight=0.1 \
     algorithm.ttrl_or.reward.structure_gate_min=1.0 \
+    algorithm.ttrl_or.dataset.sample_run=${SAMPLE_RUN} \
+    algorithm.ttrl_or.dataset.sample_seed=${SAMPLE_SEED} \
+    algorithm.ttrl_or.dataset.sample_size=100 \
     algorithm.ttrl_or.dataset.resume_skip_completed=True \
     algorithm.ttrl_or.backend.reset_lora_on_begin_episode=True \
     data.train_files="$TRAIN_FILES" \
@@ -87,6 +125,6 @@ python -m verl.trainer.main_ppo \
     trainer.experiment_name="${model_name}_verl_ttrl_or" \
     trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
-    trainer.total_epochs=1 "$@"
+    trainer.total_epochs=1 "${EXTRA_ARGS[@]}"
 
 
