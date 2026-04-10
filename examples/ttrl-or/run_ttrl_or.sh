@@ -1,9 +1,9 @@
 set -x
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 # export RAY_DEBUG_POST_MORTEM=1
 DATA_ROOT="${HOME}/code/TTRL-OR/data"
 
-SAMPLE_RUN=true
+SAMPLE_RUN=false
 SAMPLE_SEED=42
 EXTRA_ARGS=()
 
@@ -41,12 +41,12 @@ fi
 # model_name='Qwen/Qwen2.5-7B-Instruct'
 model_name='Qwen/Qwen3-4B-Instruct-2507'
 MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
-# MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_or_qwen3_4b_int_cp400_v1"
+# MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_full_or_qwen3_4b_int_cp100_v1"
 # dataset="NLP4OPT.jsonl"
-# dataset="IndustryOR_fixedV2.jsonl"
+dataset="IndustryOR_fixedV2.jsonl"
 # dataset="MAMO_EasyLP_fixed.jsonl" #sample
-dataset="OptiBench.jsonl"
-
+# dataset="OptiBench.jsonl"
+r3_reward=True
 DATA_PATH="$DATA_ROOT/$dataset"
 # For multiple datasets, uncomment and edit the list below.
 DATA_SETS="[$DATA_ROOT/IndustryOR_fixedV2.jsonl, $DATA_ROOT/MAMO_ComplexLP_fixed.jsonl,$DATA_ROOT/OptMATH_Bench_166.jsonl, $DATA_ROOT/NL4OPT.jsonl, $DATA_ROOT/NL4LP.jsonl, $DATA_ROOT/ComplexOR.jsonl]"
@@ -62,7 +62,7 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.mcts.enable_prior=True \
     algorithm.ttrl_or.mcts.blocked_sibling_soft_weight=0.6 \
     algorithm.ttrl_or.mcts.solverllm_compare_mode=False \
-    algorithm.ttrl_or.reward.enable_r3_reward=True \
+    algorithm.ttrl_or.reward.enable_r3_reward=${r3_reward} \
     algorithm.ttrl_or.reward.enable_r4_reward=True \
     algorithm.ttrl_or.reward.gurobi_time_limit_sec=30 \
     algorithm.ttrl_or.reward.robustness_cases=3 \

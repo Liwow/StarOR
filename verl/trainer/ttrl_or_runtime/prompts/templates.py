@@ -6,6 +6,7 @@ from verl.trainer.ttrl_or_runtime.types import DEFAULT_STAGE_ORDER, SOLVERLLM_ST
 
 from .notice_prompts import CODE_NOTICE, OBJ_CON_NOTICE, PARA_VAR_NOTICE, SYSTEM_INSTRUCTION, TYPE_SET_NOTICE
 
+is_think = True
 
 SPLIT_COMPLETION_NOTICE = """
 Completion rules:
@@ -194,9 +195,123 @@ The required order from this point is:
 """.strip(),
 }
 
+if is_think:
+    DEFAULT_ROLLOUT_TEMPLATES: dict[Stage, str] = {
+        Stage.SCHEMA: f"""
+You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
 
-DEFAULT_ROLLOUT_TEMPLATES: dict[Stage, str] = {
-    Stage.SCHEMA: f"""
+Here is the specific description of the optimization problem:
+{{task_description}}
+
+1. You should first think step by step in <thought> and carefully analyze the problem structure.
+
+2. Then you should generate the TYPE and SETS components first and in order:
+<Type> ... </Type>
+<Sets> ... </Sets>
+
+3. After finishing the current stage, continue the formulation and finally provide the corresponding Gurobi Python code within <python> ... </python>.
+
+The required order from this point is:
+1. <thought>
+2. <Type>
+3. <Sets>
+4. <python>
+
+{TYPE_SET_NOTICE}
+
+{CODE_NOTICE}
+**NOTE**: You should output the problem type in <Type> and the Sets in <Sets>, and then MUST output the complete optimization problem modeling code in <python>.
+IMPORTANT: Do not skip any steps. AFTER the TYPE and SET sections are fully completed, you must output the full modeling and solving Python code inside <python>. Proceed with the task now.
+""".strip(),
+        Stage.SET_PARAM_VAR: f"""
+You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
+
+Here is the specific description of the optimization problem:
+{{task_description}}
+
+Here are the type analysis and sets that have already been defined:
+{{schema_skill_str}}
+
+1. You should first think step by step in <thought> and carefully analyze the parameters and decisions needed by the formulation.
+
+2. Then you should generate the PARAMETERS and VARIABLES components first and in order:
+<Parameters> ... </Parameters>
+<Variables> ... </Variables>
+
+3. After finishing the current stage, continue the formulation and finally provide the corresponding Gurobi Python code within <python> ... </python>.
+
+The required order from this point is:
+1. <thought>
+2. <Parameters>
+3. <Variables>
+4. <python>
+
+{PARA_VAR_NOTICE}
+
+{CODE_NOTICE}
+**NOTE**: You should output the problem Parameters in <Parameters> and the problem Variables in <Variables>, and then MUST output the complete optimization problem modeling code in <python>.
+IMPORTANT: Do not skip any steps. AFTER the Parameters and Variables sections are fully completed, you must output the full modeling and solving Python code inside <python>. Proceed with the task now.
+""".strip(),
+        Stage.OBJ_CONS: f"""
+You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
+
+Here is the specific description of the optimization problem:
+{{task_description}}
+
+Here are the type analysis and sets that have already been defined:
+{{schema_skill_str}}
+
+Here are the parameters and variables that have already been defined:
+{{set_param_var_str}}
+
+1. You should first think step by step in <thought> and carefully analyze the mathematical objective and constraints.
+
+2. Then you should generate the Objectives and Constraints components first and in order:
+<Objective> ... </Objective>
+<Constraints> ... </Constraints>
+
+3. After finishing the current stage, continue and provide the corresponding Gurobi Python code within <python> ... </python>.
+
+The required order from this point is:
+1. <thought>
+2. <Objective>
+3. <Constraints>
+4. <python>
+
+{OBJ_CON_NOTICE}
+
+{CODE_NOTICE}
+**NOTE**: You should output the problem Objective in <Objective> and the problem Constraints in <Variables>, and then MUST output the complete optimization problem modeling code in <python>.
+IMPORTANT: Do not skip any steps. AFTER the Objective and Constraints sections are fully completed, you must output the full modeling and solving Python code inside <python>. Proceed with the task now.
+""".strip(),
+        Stage.CODE: f"""
+You are an optimization expert. You should solve the optimization problem and only Provide the corresponding Gurobi Python code to implement the model within <python> and </python>
+
+Here is the specific description of the optimization problem:
+{{task_description}}
+
+Here are the type analysis and sets that have already been defined:
+{{schema_skill_str}}
+
+Here are the parameters and variables that have already been defined:
+{{set_param_var_str}}
+
+Here are the objective and constraints that have already been defined:
+{{obj_cons_str}}
+
+You should think first within <thought> and then only provide the executable Gurobi Python code needed for this optimization problem within <python>.
+Translate the finalized model faithfully and do not redesign it.
+The required order from this point is:
+1. <thought>
+2. <python>
+
+{CODE_NOTICE}
+""".strip(),
+}
+
+else:
+    DEFAULT_ROLLOUT_TEMPLATES: dict[Stage, str] = {
+        Stage.SCHEMA: f"""
 You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
 
 Here is the specific description of the optimization problem:
@@ -218,8 +333,8 @@ The required order from this point is:
 {CODE_NOTICE}
 **NOTE**: You should output the problem type in <Type> and the Sets in <Sets>, and then MUST output the complete optimization problem modeling code in <python>.
 IMPORTANT: Do not skip any steps. AFTER the TYPE and SET sections are fully completed, you must output the full modeling and solving Python code inside <python>. Proceed with the task now.
-""".strip(),
-    Stage.SET_PARAM_VAR: f"""
+    """.strip(),
+        Stage.SET_PARAM_VAR: f"""
 You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
 
 Here is the specific description of the optimization problem:
@@ -245,7 +360,7 @@ The required order from this point is:
 **NOTE**: You should output the problem Parameters in <Parameters> and the problem Variables in <Variables>, and then MUST output the complete optimization problem modeling code in <python>.
 IMPORTANT: Do not skip any steps. AFTER the Parameters and Variables sections are fully completed, you must output the full modeling and solving Python code inside <python>. Proceed with the task now.
 """.strip(),
-    Stage.OBJ_CONS: f"""
+        Stage.OBJ_CONS: f"""
 You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
 
 Here is the specific description of the optimization problem:
@@ -274,7 +389,7 @@ The required order from this point is:
 **NOTE**: You should output the problem Objective in <Objective> and the problem Constraints in <Variables>, and then MUST output the complete optimization problem modeling code in <python>.
 IMPORTANT: Do not skip any steps. AFTER the Objective and Constraints sections are fully completed, you must output the full modeling and solving Python code inside <python>. Proceed with the task now.
 """.strip(),
-    Stage.CODE: f"""
+        Stage.CODE: f"""
 You are an optimization expert. You should solve the optimization problem and only Provide the corresponding Gurobi Python code to implement the model within <python> and </python>
 
 Here is the specific description of the optimization problem:
@@ -294,60 +409,60 @@ Translate the finalized model faithfully and do not redesign it.
 
 {CODE_NOTICE}
 """.strip(),
-}
+    }
 
 
 DEFAULT_COMPLETION_TEMPLATES: dict[Stage, str] = {
-    Stage.SCHEMA: f"""
-You are an optimization expert. The current stage has already fixed the type analysis and sets for this optimization problem.
+        Stage.SCHEMA: f"""
+    You are an optimization expert. The current stage has already fixed the type analysis and sets for this optimization problem.
 
-Here is the specific description of the optimization problem:
-{{task_description}}
+    Here is the specific description of the optimization problem:
+    {{task_description}}
 
-Here are the type analysis and sets that have already been fixed:
-{{schema_skill_str}}
+    Here are the type analysis and sets that have already been fixed:
+    {{schema_skill_str}}
 
-Please complete the remaining formulation by defining parameters, variables, objective, constraints, and finally the executable Gurobi Python code within <python> ... </python>.
+    Please complete the remaining formulation by defining parameters, variables, objective, constraints, and finally the executable Gurobi Python code within <python> ... </python>.
 
-{CODE_NOTICE}
-""".strip(),
-    Stage.SET_PARAM_VAR: f"""
-You are an optimization expert. The current stage has already fixed the parameters and variables for this optimization problem.
+    {CODE_NOTICE}
+    """.strip(),
+        Stage.SET_PARAM_VAR: f"""
+    You are an optimization expert. The current stage has already fixed the parameters and variables for this optimization problem.
 
-Here is the specific description of the optimization problem:
-{{task_description}}
+    Here is the specific description of the optimization problem:
+    {{task_description}}
 
-Here are the type analysis and sets that have already been defined:
-{{schema_skill_str}}
+    Here are the type analysis and sets that have already been defined:
+    {{schema_skill_str}}
 
-Here are the parameters and variables that have already been fixed:
-{{set_param_var_str}}
+    Here are the parameters and variables that have already been fixed:
+    {{set_param_var_str}}
 
-Please complete the remaining formulation by defining the objective, constraints, and finally the executable Gurobi Python code within <python> ... </python>.
+    Please complete the remaining formulation by defining the objective, constraints, and finally the executable Gurobi Python code within <python> ... </python>.
 
-{CODE_NOTICE}
-""".strip(),
-    Stage.OBJ_CONS: f"""
-You are an optimization expert. The mathematical formulation has already been fixed.
+    {CODE_NOTICE}
+    """.strip(),
+        Stage.OBJ_CONS: f"""
+    You are an optimization expert. The mathematical formulation has already been fixed.
 
-Here is the specific description of the optimization problem:
-{{task_description}}
+    Here is the specific description of the optimization problem:
+    {{task_description}}
 
-Here are the type analysis and sets that have already been defined:
-{{schema_skill_str}}
+    Here are the type analysis and sets that have already been defined:
+    {{schema_skill_str}}
 
-Here are the parameters and variables that have already been defined:
-{{set_param_var_str}}
+    Here are the parameters and variables that have already been defined:
+    {{set_param_var_str}}
 
-Here are the objective and constraints that have already been fixed:
-{{obj_cons_str}}
+    Here are the objective and constraints that have already been fixed:
+    {{obj_cons_str}}
 
-Please provide the corresponding executable Gurobi Python code within <python> ... </python>.
+    Please provide the corresponding executable Gurobi Python code within <python> ... </python>.
 
-{CODE_NOTICE}
-""".strip(),
-    Stage.CODE: "",
-}
+    {CODE_NOTICE}
+    """.strip(),
+        Stage.CODE: "",
+    }
 
 
 SOLVERLLM_TEMPLATES: dict[Stage, str] = {
