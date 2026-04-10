@@ -328,8 +328,8 @@ def process(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Convert prepared TTRL-OR data into MCTS-stage or full-prompt SFT format.")
     parser.add_argument("--input", default="data/train/train_data.type_python.jsonl")
-    parser.add_argument("--output", default="")
-    parser.add_argument("--mcts", default="true")
+    parser.add_argument("--output", default="data/train/train_data_full.jsonl")
+    parser.add_argument("--mcts", default="false")
     parser.add_argument(
         "--code-stage-prob",
         type=float,

@@ -1,10 +1,10 @@
 set -x
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 # export RAY_DEBUG_POST_MORTEM=1
 DATA_ROOT="${HOME}/code/TTRL-OR/data"
 
-SAMPLE_RUN=false
-SAMPLE_SEED=2026
+SAMPLE_RUN=true
+SAMPLE_SEED=42
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -40,12 +40,12 @@ fi
 
 # model_name='Qwen/Qwen2.5-7B-Instruct'
 model_name='Qwen/Qwen3-4B-Instruct-2507'
-# MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
-MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_or_qwen3_4b_int_cp513_v1"
+MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
+# MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_or_qwen3_4b_int_cp400_v1"
 # dataset="NLP4OPT.jsonl"
-dataset="IndustryOR_fixedV2.jsonl"
+# dataset="IndustryOR_fixedV2.jsonl"
 # dataset="MAMO_EasyLP_fixed.jsonl" #sample
-# dataset="OptiBench.jsonl"
+dataset="OptiBench.jsonl"
 
 DATA_PATH="$DATA_ROOT/$dataset"
 # For multiple datasets, uncomment and edit the list below.
