@@ -140,6 +140,9 @@ algorithm:
       # Enable solverllm-style split completion flow.
       solverllm_compare_mode: False
 
+      # Soft penalty weight for repeatedly selected sibling group (range: 0~1).
+      blocked_sibling_soft_weight: 0.6
+
     # Reward settings migrated from TTRL-OR.
     reward:
 

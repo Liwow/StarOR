@@ -93,7 +93,7 @@ class FourStageMCTS:
         iteration_logs: list[dict[str, Any]] = []
         best_trajectory: Trajectory | None = None
         best_reward = float("-inf")
-        selection_history: list[tuple[str, str]] = []
+        selection_history: list[tuple[tuple[str, str], str]] = []
 
         stage_archives: dict[Stage, list[Trajectory]] = {stage: [] for stage in self.stage_order}
 
@@ -110,13 +110,32 @@ class FourStageMCTS:
             iter_t0 = time.perf_counter()
             selection_t0 = time.perf_counter()
             blocked_repeat_threshold = self._blocked_sibling_threshold()
-            blocked_group = self._blocked_sibling_group(selection_history, blocked_repeat_threshold)
-            ranked_leaves = self._rank_expandable_leaves(root, blocked_group=blocked_group)
-            block_applied = blocked_group is not None
-            if not ranked_leaves and blocked_group is not None:
-                ranked_leaves = self._rank_expandable_leaves(root, blocked_group=None)
-                blocked_group = None
-                block_applied = False
+            stuck_state = self._blocked_sibling_state(selection_history, blocked_repeat_threshold)
+            blocked_group = stuck_state["group"] if stuck_state is not None else None
+            soft_block_weight = self._blocked_sibling_soft_weight()
+            force_anchor_node_id = str(stuck_state.get("anchor_node_id", "")) if stuck_state is not None else ""
+
+            force_applied = False
+            selection_root = root
+            if force_anchor_node_id:
+                anchor_node = self._find_node_by_id(root, force_anchor_node_id)
+                if anchor_node is not None and self._subtree_has_expandable_leaf(anchor_node):
+                    selection_root = anchor_node
+                    force_applied = True
+
+            ranked_leaves = self._rank_expandable_leaves(
+                selection_root,
+                soft_block_group=blocked_group,
+                soft_block_weight=soft_block_weight,
+            )
+            if not ranked_leaves and force_applied:
+                selection_root = root
+                force_applied = False
+                ranked_leaves = self._rank_expandable_leaves(
+                    selection_root,
+                    soft_block_group=blocked_group,
+                    soft_block_weight=soft_block_weight,
+                )
             if not ranked_leaves:
                 stop_info = {
                     "reason": "no_expandable_leaf",
@@ -128,14 +147,18 @@ class FourStageMCTS:
                 }
                 break
 
-            selected, selected_score, selection_path = self._select_leaf_recursive(root, blocked_group=blocked_group)
+            selected, selected_score, selection_path = self._select_leaf_recursive(
+                selection_root,
+                soft_block_group=blocked_group,
+                soft_block_weight=soft_block_weight,
+            )
 
             next_stage = self._next_stage(selected.stage)
             if next_stage is None:
                 continue
             selected_group_key = self._selection_group_key(selected)
             if selected_group_key is not None:
-                selection_history.append(selected_group_key)
+                selection_history.append((selected_group_key, str(selected.node_id)))
             selection_sec = float(time.perf_counter() - selection_t0)
             selected_q_before_group = float(selected.q_value)
             selected_visits_before_group = int(selected.visits)
@@ -577,8 +600,12 @@ class FourStageMCTS:
                     "blocked_sibling_group": {
                         "parent_node_id": (blocked_group[0] if blocked_group else ""),
                         "stage": (blocked_group[1] if blocked_group else ""),
-                        "applied": bool(block_applied and blocked_group is not None),
+                        "applied": bool(blocked_group is not None),
                         "threshold": int(blocked_repeat_threshold),
+                        "mode": "soft_penalty",
+                        "soft_weight": float(soft_block_weight),
+                        "forced_anchor_node_id": force_anchor_node_id,
+                        "force_into_anchor_subtree_applied": bool(force_applied),
                     },
                     "selected_parent": {
                         "node_id": selected.node_id,
@@ -983,28 +1010,21 @@ class FourStageMCTS:
     def _select_leaf_recursive(
         self,
         root: SearchNode,
-        blocked_group: tuple[str, str] | None = None,
+        soft_block_group: tuple[str, str] | None = None,
+        soft_block_weight: float = 0.6,
     ) -> tuple[SearchNode, float, list[dict[str, Any]]]:
         cur = root
         selection_path: list[dict[str, Any]] = []
 
         while cur.children:
             candidate_scores: list[tuple[SearchNode, float]] = []
-            skipped_candidates: list[dict[str, Any]] = []
             for child in cur.children:
-                if self._node_matches_selection_group(child, blocked_group):
-                    skipped_candidates.append(
-                        {
-                            'node_id': child.node_id,
-                            'stage': child.stage.value if child.stage else '<ROOT>',
-                            'reason': 'blocked_same_parent_stage',
-                            'content': child.text,
-                        }
-                    )
+                if not self._subtree_has_expandable_leaf(child):
                     continue
-                if not self._subtree_has_expandable_leaf(child, blocked_group=blocked_group):
-                    continue
-                candidate_scores.append((child, float(self.selector.score(cur, child))))
+                score = float(self.selector.score(cur, child))
+                if self._node_matches_selection_group(child, soft_block_group):
+                    score *= float(max(0.0, soft_block_weight))
+                candidate_scores.append((child, score))
 
             if not candidate_scores:
                 break
@@ -1015,11 +1035,11 @@ class FourStageMCTS:
                 {
                     'parent_node_id': cur.node_id,
                     'parent_stage': cur.stage.value if cur.stage else '<ROOT>',
-                    'blocked_group': {
-                        'parent_node_id': (blocked_group[0] if blocked_group else ''),
-                        'stage': (blocked_group[1] if blocked_group else ''),
+                    'soft_block_group': {
+                        'parent_node_id': (soft_block_group[0] if soft_block_group else ''),
+                        'stage': (soft_block_group[1] if soft_block_group else ''),
+                        'soft_weight': float(max(0.0, soft_block_weight)),
                     },
-                    'skipped_candidates': skipped_candidates,
                     'candidates': [
                         {
                             'node_id': node.node_id,
@@ -1028,6 +1048,7 @@ class FourStageMCTS:
                             'value': float(node.q_value),
                             'visits': int(node.visits),
                             'prior': float(node.prior),
+                            'soft_block_applied': bool(self._node_matches_selection_group(node, soft_block_group)),
                             'content': node.text,
                         }
                         for node, score in candidate_scores
@@ -1043,25 +1064,34 @@ class FourStageMCTS:
     def _rank_expandable_leaves(
         self,
         root: SearchNode,
-        blocked_group: tuple[str, str] | None = None,
+        soft_block_group: tuple[str, str] | None = None,
+        soft_block_weight: float = 0.6,
     ) -> list[tuple[SearchNode, float]]:
         leaves = [
             node
             for node in self._iter_leaves(root)
-            if self._next_stage(node.stage) is not None and not self._leaf_is_under_blocked_group(node, blocked_group)
+            if self._next_stage(node.stage) is not None
         ]
-        return self._rank_leaves(leaves)
+        ranked = self._rank_leaves(leaves)
+        if soft_block_group is None:
+            return ranked
+        out: list[tuple[SearchNode, float]] = []
+        weight = float(max(0.0, soft_block_weight))
+        for node, score in ranked:
+            adjusted = float(score)
+            if self._leaf_is_under_soft_block_group(node, soft_block_group):
+                adjusted *= weight
+            out.append((node, adjusted))
+        out.sort(key=lambda item: item[1], reverse=True)
+        return out
 
     def _subtree_has_expandable_leaf(
         self,
         node: SearchNode,
-        blocked_group: tuple[str, str] | None = None,
     ) -> bool:
-        if self._node_matches_selection_group(node, blocked_group):
-            return False
         if not node.children:
             return self._next_stage(node.stage) is not None
-        return any(self._subtree_has_expandable_leaf(child, blocked_group=blocked_group) for child in node.children)
+        return any(self._subtree_has_expandable_leaf(child) for child in node.children)
 
     @staticmethod
     def _selection_group_key(node: SearchNode) -> tuple[str, str] | None:
@@ -1080,13 +1110,13 @@ class FourStageMCTS:
         return group_key == blocked_group
 
     @staticmethod
-    def _leaf_is_under_blocked_group(
+    def _leaf_is_under_soft_block_group(
         node: SearchNode,
-        blocked_group: tuple[str, str] | None,
+        soft_block_group: tuple[str, str] | None,
     ) -> bool:
         cur: SearchNode | None = node
         while cur is not None:
-            if FourStageMCTS._node_matches_selection_group(cur, blocked_group):
+            if FourStageMCTS._node_matches_selection_group(cur, soft_block_group):
                 return True
             cur = cur.parent
         return False
@@ -1096,16 +1126,47 @@ class FourStageMCTS:
         return max(2, group_k // 2)
 
     @staticmethod
-    def _blocked_sibling_group(
-        selection_history: list[tuple[str, str]],
+    def _blocked_sibling_state(
+        selection_history: list[tuple[tuple[str, str], str]],
         threshold: int,
-    ) -> tuple[str, str] | None:
+    ) -> dict[str, Any] | None:
         if threshold <= 0 or len(selection_history) < threshold:
             return None
-        recent = selection_history[-threshold:]
-        first = recent[0]
-        if all(item == first for item in recent):
-            return first
+        last_group = selection_history[-1][0]
+        run_len = 0
+        for group_key, _ in reversed(selection_history):
+            if group_key != last_group:
+                break
+            run_len += 1
+        if run_len < threshold:
+            return None
+
+        anchor_index = max(0, int(len(selection_history) - run_len))
+        anchor_node_id = str(selection_history[anchor_index][1]) if selection_history[anchor_index][1] else ""
+        return {
+            "group": last_group,
+            "run_len": int(run_len),
+            "anchor_node_id": anchor_node_id,
+        }
+
+    def _blocked_sibling_soft_weight(self) -> float:
+        raw = getattr(self.config, "blocked_sibling_soft_weight", 0.6)
+        try:
+            return max(0.0, min(1.0, float(raw)))
+        except Exception:
+            return 0.6
+
+    @staticmethod
+    def _find_node_by_id(root: SearchNode, node_id: str) -> SearchNode | None:
+        target = str(node_id or "").strip()
+        if not target:
+            return None
+        stack: list[SearchNode] = [root]
+        while stack:
+            cur = stack.pop()
+            if str(cur.node_id) == target:
+                return cur
+            stack.extend(cur.children)
         return None
 
     @staticmethod

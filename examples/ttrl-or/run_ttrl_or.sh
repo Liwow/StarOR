@@ -22,6 +22,7 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.mcts.max_iterations=16 \
     algorithm.ttrl_or.mcts.c_puct=1.414 \
     algorithm.ttrl_or.mcts.enable_prior=True \
+    algorithm.ttrl_or.mcts.blocked_sibling_soft_weight=0.6 \
     algorithm.ttrl_or.mcts.solverllm_compare_mode=False \
     algorithm.ttrl_or.reward.enable_r3_reward=True \
     algorithm.ttrl_or.reward.enable_r4_reward=True \

@@ -17,6 +17,7 @@ class MCTSConfig:
     solverllm_compare_mode: bool = False
     final_select_obj_scale_preference: bool = True
     final_select_obj_scale_expand_ratio: float = 0.10
+    blocked_sibling_soft_weight: float = 0.6
 
 
 @dataclass(slots=True)
