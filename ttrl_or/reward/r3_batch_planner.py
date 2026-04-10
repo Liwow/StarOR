@@ -219,7 +219,7 @@ def build_sample_r3_plan(
         sample_id=sample_id,
         source="disabled",
         analysis="r3 precompute disabled due to extraction failure",
-        base_obj_bounds=_force_open_interval_scale(
+        base_obj_bounds=_force_closed_interval_scale(
             _expand_obj_scale_margin(_default_scale_from_context(description, instance, feature_catalog))
         ),
         test_cases=[],
@@ -264,7 +264,7 @@ def _normalize_llm_plan(
     base_bounds = _coerce_scale(parsed.get("base_scale"))
     if not _has_valid_scale(base_bounds):
         base_bounds = _default_scale_from_context(description, base_instance, feature_catalog)
-    base_bounds = _force_open_interval_scale(_expand_obj_scale_margin(base_bounds))
+    base_bounds = _force_closed_interval_scale(_expand_obj_scale_margin(base_bounds))
     tests_raw = parsed.get("tests")
     if not isinstance(tests_raw, list):
         tests_raw = []
@@ -290,7 +290,7 @@ def _normalize_llm_plan(
         obj_scale = _coerce_scale(test.get("obj_scale") or test.get("obj_bounds"))
         if not _has_valid_scale(obj_scale):
             obj_scale = _expand_scale(base_bounds, factor=1.2)
-        obj_scale = _force_open_interval_scale(_expand_obj_scale_margin(obj_scale))
+        obj_scale = _force_closed_interval_scale(_expand_obj_scale_margin(obj_scale))
         case_instance["__perturbation__"] = {
             "strategy": "llm_r3_batch",
             "case_id": case_id,
@@ -339,7 +339,7 @@ def _heuristic_plan(
 ) -> R3SamplePlan:
     pmap = build_perturbation_map(base_instance)
     generated = generate_perturbed_instances_from_map(base_instance, pmap, max(1, robustness_cases))
-    base_bounds = _force_open_interval_scale(
+    base_bounds = _force_closed_interval_scale(
         _expand_obj_scale_margin(_default_scale_from_context(description, base_instance, feature_catalog))
     )
     fid_lookup = _key_to_fid_map(feature_catalog)
@@ -348,7 +348,7 @@ def _heuristic_plan(
     for idx, case in enumerate(generated[: max(1, robustness_cases)]):
         meta = case.get("__perturbation__") if isinstance(case, dict) else {}
         case_id = str(meta.get("case_id") or f"heur_case_{idx + 1}") if isinstance(meta, dict) else f"heur_case_{idx + 1}"
-        obj_scale = _force_open_interval_scale(_expand_obj_scale_margin(_expand_scale(base_bounds, factor=1.25)))
+        obj_scale = _force_closed_interval_scale(_expand_obj_scale_margin(_expand_scale(base_bounds, factor=1.25)))
         raw_changes = list(meta.get("changes", [])) if isinstance(meta, dict) else []
         patches = []
         for change in raw_changes:
@@ -735,7 +735,7 @@ def _expand_obj_scale_margin(scale: dict[str, Any], ratio: float = OBJ_SCALE_RAN
     return out
 
 
-def _force_open_interval_scale(scale: dict[str, Any]) -> dict[str, Any]:
+def _force_closed_interval_scale(scale: dict[str, Any]) -> dict[str, Any]:
     normalized = _coerce_scale(scale)
     kind = str(normalized.get("kind") or "interval").strip().lower()
 
@@ -753,8 +753,8 @@ def _force_open_interval_scale(scale: dict[str, Any]) -> dict[str, Any]:
                 {
                     "lower": lo_num,
                     "upper": hi_num,
-                    "lower_inclusive": False,
-                    "upper_inclusive": False,
+                    "lower_inclusive": True,
+                    "upper_inclusive": True,
                 }
             )
         out["intervals"] = intervals_out
@@ -762,8 +762,8 @@ def _force_open_interval_scale(scale: dict[str, Any]) -> dict[str, Any]:
 
     if kind == "interval":
         out = dict(normalized)
-        out["lower_inclusive"] = False
-        out["upper_inclusive"] = False
+        out["lower_inclusive"] = True
+        out["upper_inclusive"] = True
         return out
 
     return normalized

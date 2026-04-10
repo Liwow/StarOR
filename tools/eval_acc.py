@@ -17,6 +17,7 @@ NUM_RE = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
 @dataclass
 class SampleEval:
     sample_id: str
+    run_seed: str
     obj_answer: float | None
     gold_answer: float | None
     rel_error: float | None
@@ -105,24 +106,41 @@ def _infer_model_root(dataset_dir: Path, log_root: Path) -> str:
     return ""
 
 
-def _iter_sample_result_dirs(dataset_dir: Path) -> list[tuple[str, Path]]:
-    out: list[tuple[str, Path]] = []
+def _iter_sample_result_dirs(dataset_dir: Path) -> list[tuple[str, str, Path]]:
+    out: list[tuple[str, str, Path]] = []
     try:
         for sample_dir in sorted(dataset_dir.iterdir()):
             if not sample_dir.is_dir():
                 continue
             direct_result = sample_dir / "result.json"
             if direct_result.exists():
-                out.append((sample_dir.name, sample_dir))
+                out.append((sample_dir.name, "", sample_dir))
                 continue
             for run_dir in sorted(sample_dir.iterdir()):
                 if not run_dir.is_dir():
                     continue
+                if not run_dir.name.startswith("run_"):
+                    continue
                 if (run_dir / "result.json").exists():
-                    out.append((f"{sample_dir.name}/{run_dir.name}", run_dir))
+                    out.append((sample_dir.name, run_dir.name, run_dir))
     except Exception:
         return out
     return out
+
+
+def _compute_metrics(rows: list[SampleEval], tol: float, limit: int = 0) -> dict[str, Any]:
+    total = len(rows)
+    numeric = sum(1 for r in rows if r.gold_answer is not None)
+    hits = sum(1 for r in rows if r.within_tol)
+    return {
+        "tol": float(tol),
+        "limit": int(limit),
+        "num_samples": int(total),
+        "num_numeric_pairs": int(numeric),
+        "num_within_tol": int(hits),
+        "accuracy_over_all": (hits / total if total else 0.0),
+        "accuracy_over_numeric": (hits / numeric if numeric else 0.0),
+    }
 
 
 def eval_dataset_dir(dataset_dir: Path, tol: float, log_root: Path, limit: int = 0) -> dict[str, Any]:
@@ -132,7 +150,7 @@ def eval_dataset_dir(dataset_dir: Path, tol: float, log_root: Path, limit: int =
     if limit > 0:
         sample_dirs = sample_dirs[:limit]
 
-    for sample_key, item in sample_dirs:
+    for sample_id, run_seed, item in sample_dirs:
         if not item.is_dir():
             continue
         if not (item / "result.json").exists():
@@ -143,7 +161,8 @@ def eval_dataset_dir(dataset_dir: Path, tol: float, log_root: Path, limit: int =
         ok = bool(gt is not None and obj is not None and rel is not None and rel <= tol)
         rows.append(
             SampleEval(
-                sample_id=sample_key,
+                sample_id=sample_id,
+                run_seed=run_seed,
                 obj_answer=obj,
                 gold_answer=gt,
                 rel_error=rel,
@@ -151,24 +170,65 @@ def eval_dataset_dir(dataset_dir: Path, tol: float, log_root: Path, limit: int =
             )
         )
 
-    total = len(rows)
-    numeric = sum(1 for r in rows if r.gold_answer is not None)
-    hits = sum(1 for r in rows if r.within_tol)
+    metrics_all = _compute_metrics(rows, tol=tol, limit=limit)
+    rows_no_seed = [r for r in rows if not r.run_seed]
+    metrics_no_seed = _compute_metrics(rows_no_seed, tol=tol, limit=limit)
+
+    run_seed_groups: dict[str, list[SampleEval]] = {}
+    for row in rows:
+        if not row.run_seed:
+            continue
+        run_seed_groups.setdefault(row.run_seed, []).append(row)
+    run_seed_summaries = []
+    for run_seed in sorted(run_seed_groups.keys()):
+        seed_rows = run_seed_groups[run_seed]
+        seed_metrics = _compute_metrics(seed_rows, tol=tol, limit=limit)
+        run_seed_summaries.append(
+            {
+                "run_seed": run_seed,
+                **seed_metrics,
+                "samples": [
+                    {
+                        "sample_id": r.sample_id,
+                        "sample_key": f"{r.sample_id}/{run_seed}",
+                        "run_seed": run_seed,
+                        "obj_answer": r.obj_answer,
+                        "gold_answer": r.gold_answer,
+                        "rel_error": r.rel_error,
+                        "within_tol": r.within_tol,
+                    }
+                    for r in seed_rows
+                ],
+            }
+        )
 
     return {
         "dataset": dataset_dir.name,
         "model_root": _infer_model_root(dataset_dir, log_root),
         "dataset_dir": str(dataset_dir.resolve()),
-        "tol": tol,
-        "limit": int(limit),
-        "num_samples": total,
-        "num_numeric_pairs": numeric,
-        "num_within_tol": hits,
-        "accuracy_over_all": (hits / total if total else 0.0),
-        "accuracy_over_numeric": (hits / numeric if numeric else 0.0),
+        **metrics_all,
+        "has_run_seed": bool(run_seed_summaries),
+        "no_run_seed": {
+            **metrics_no_seed,
+            "samples": [
+                {
+                    "sample_id": r.sample_id,
+                    "sample_key": r.sample_id,
+                    "run_seed": "",
+                    "obj_answer": r.obj_answer,
+                    "gold_answer": r.gold_answer,
+                    "rel_error": r.rel_error,
+                    "within_tol": r.within_tol,
+                }
+                for r in rows_no_seed
+            ],
+        },
+        "run_seeds": run_seed_summaries,
         "samples": [
             {
                 "sample_id": r.sample_id,
+                "sample_key": (f"{r.sample_id}/{r.run_seed}" if r.run_seed else r.sample_id),
+                "run_seed": r.run_seed,
                 "obj_answer": r.obj_answer,
                 "gold_answer": r.gold_answer,
                 "rel_error": r.rel_error,
@@ -200,7 +260,10 @@ def _looks_like_sample_dir(path: Path) -> bool:
     if (path / "result.json").exists():
         return True
     try:
-        return any(x.is_dir() and (x / "result.json").exists() for x in path.iterdir())
+        return any(
+            x.is_dir() and x.name.startswith("run_") and (x / "result.json").exists()
+            for x in path.iterdir()
+        )
     except Exception:
         return False
 
@@ -279,10 +342,12 @@ def _find_dataset_dirs(log_root: Path, dataset_names: list[str]) -> list[Path]:
     return out
 
 
-def _print_table(summaries: list[dict[str, Any]]) -> None:
+def _print_table(models: list[dict[str, Any]]) -> None:
     headers = [
+        "level",
         "model_root",
         "dataset",
+        "run_seed",
         "tol",
         "limit",
         "num_samples",
@@ -292,22 +357,115 @@ def _print_table(summaries: list[dict[str, Any]]) -> None:
         "acc_numeric",
     ]
     print("\t".join(headers))
-    for s in summaries:
+    for model in models:
+        if not isinstance(model, dict):
+            continue
         print(
             "\t".join(
                 [
-                    str(s.get("model_root", "")),
-                    str(s["dataset"]),
-                    str(s.get("tol", "")),
-                    str(s.get("limit", "")),
-                    str(s["num_samples"]),
-                    str(s["num_numeric_pairs"]),
-                    str(s["num_within_tol"]),
-                    f"{float(s['accuracy_over_all']):.4f}",
-                    f"{float(s['accuracy_over_numeric']):.4f}",
+                    "model_total",
+                    str(model.get("model_root", "")),
+                    "-",
+                    "-",
+                    str(model.get("tol", "")),
+                    str(model.get("limit", "")),
+                    str(model.get("num_samples", 0)),
+                    str(model.get("num_numeric_pairs", 0)),
+                    str(model.get("num_within_tol", 0)),
+                    f"{float(model.get('accuracy_over_all', 0.0)):.4f}",
+                    f"{float(model.get('accuracy_over_numeric', 0.0)):.4f}",
                 ]
             )
         )
+        for s in (model.get("datasets", []) if isinstance(model.get("datasets", []), list) else []):
+            if not isinstance(s, dict):
+                continue
+            print(
+                "\t".join(
+                    [
+                        "dataset_total",
+                        str(s.get("model_root", "")),
+                        str(s["dataset"]),
+                        "-",
+                        str(s.get("tol", "")),
+                        str(s.get("limit", "")),
+                        str(s["num_samples"]),
+                        str(s["num_numeric_pairs"]),
+                        str(s["num_within_tol"]),
+                        f"{float(s['accuracy_over_all']):.4f}",
+                        f"{float(s['accuracy_over_numeric']):.4f}",
+                    ]
+                )
+            )
+
+            no_seed = s.get("no_run_seed", {}) if isinstance(s.get("no_run_seed", {}), dict) else {}
+            if int(no_seed.get("num_samples", 0) or 0) > 0:
+                print(
+                    "\t".join(
+                        [
+                            "dataset_no_run_seed",
+                            str(s.get("model_root", "")),
+                            str(s["dataset"]),
+                            "(none)",
+                            str(no_seed.get("tol", s.get("tol", ""))),
+                            str(no_seed.get("limit", s.get("limit", ""))),
+                            str(no_seed.get("num_samples", 0)),
+                            str(no_seed.get("num_numeric_pairs", 0)),
+                            str(no_seed.get("num_within_tol", 0)),
+                            f"{float(no_seed.get('accuracy_over_all', 0.0)):.4f}",
+                            f"{float(no_seed.get('accuracy_over_numeric', 0.0)):.4f}",
+                        ]
+                    )
+                )
+
+            for run_info in (s.get("run_seeds", []) if isinstance(s.get("run_seeds", []), list) else []):
+                if not isinstance(run_info, dict):
+                    continue
+                print(
+                    "\t".join(
+                        [
+                            "dataset_run_seed",
+                            str(s.get("model_root", "")),
+                            str(s["dataset"]),
+                            str(run_info.get("run_seed", "")),
+                            str(run_info.get("tol", s.get("tol", ""))),
+                            str(run_info.get("limit", s.get("limit", ""))),
+                            str(run_info.get("num_samples", 0)),
+                            str(run_info.get("num_numeric_pairs", 0)),
+                            str(run_info.get("num_within_tol", 0)),
+                            f"{float(run_info.get('accuracy_over_all', 0.0)):.4f}",
+                            f"{float(run_info.get('accuracy_over_numeric', 0.0)):.4f}",
+                        ]
+                    )
+                )
+
+
+def _group_by_model(summaries: list[dict[str, Any]], tol: float, limit: int) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for s in summaries:
+        model = str(s.get("model_root", "") or "")
+        grouped.setdefault(model, []).append(s)
+
+    out: list[dict[str, Any]] = []
+    for model in sorted(grouped.keys()):
+        items = grouped[model]
+        model_total_samples = sum(int(x.get("num_samples", 0) or 0) for x in items)
+        model_total_numeric = sum(int(x.get("num_numeric_pairs", 0) or 0) for x in items)
+        model_total_hits = sum(int(x.get("num_within_tol", 0) or 0) for x in items)
+        model_payload = {
+            "model_root": model,
+            "tol": float(tol),
+            "limit": int(limit),
+            "num_datasets": len(items),
+            "num_samples": int(model_total_samples),
+            "num_numeric_pairs": int(model_total_numeric),
+            "num_within_tol": int(model_total_hits),
+            "accuracy_over_all": (model_total_hits / model_total_samples if model_total_samples else 0.0),
+            "accuracy_over_numeric": (model_total_hits / model_total_numeric if model_total_numeric else 0.0),
+            "datasets": sorted(items, key=lambda x: str(x.get("dataset", ""))),
+        }
+        out.append(model_payload)
+    return out
 
 
 def main() -> int:
@@ -376,14 +534,17 @@ def main() -> int:
         "accuracy_over_numeric": (total_hits / total_numeric if total_numeric else 0.0),
     }
 
+    models = _group_by_model(summaries, tol=float(args.tol), limit=max(0, int(args.limit)))
+
     payload = {
         "overall": overall,
+        "models": models,
         "datasets": summaries,
     }
 
-    _print_table(summaries)
+    _print_table(models)
     print(
-        "overall\t-\t{tol}\t{limit}\t{num_samples}\t{num_numeric_pairs}\t{num_within_tol}\t{accuracy_over_all:.4f}\t{accuracy_over_numeric:.4f}".format(
+        "overall\t-\t-\t-\t{tol}\t{limit}\t{num_samples}\t{num_numeric_pairs}\t{num_within_tol}\t{accuracy_over_all:.4f}\t{accuracy_over_numeric:.4f}".format(
             **overall
         )
     )

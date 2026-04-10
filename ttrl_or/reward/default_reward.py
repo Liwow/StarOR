@@ -935,25 +935,13 @@ class TTRLRewardCalculator(RewardCalculator):
                     continue
                 lo = item.get("lower")
                 hi = item.get("upper")
-                lo_inc = bool(item.get("lower_inclusive", True))
-                hi_inc = bool(item.get("upper_inclusive", True))
                 if isinstance(lo, (int, float)) or isinstance(hi, (int, float)):
                     has_numeric_interval_bound = True
                 ok = True
-                if isinstance(lo, (int, float)):
-                    lo_num = float(lo)
-                    if lo_inc:
-                        if val < lo_num - eps:
-                            ok = False
-                    elif val <= lo_num + eps:
-                        ok = False
-                if isinstance(hi, (int, float)):
-                    hi_num = float(hi)
-                    if hi_inc:
-                        if val > hi_num + eps:
-                            ok = False
-                    elif val >= hi_num - eps:
-                        ok = False
+                if isinstance(lo, (int, float)) and val < float(lo) - eps:
+                    ok = False
+                if isinstance(hi, (int, float)) and val > float(hi) + eps:
+                    ok = False
                 if ok:
                     matched = True
                     break
@@ -963,23 +951,11 @@ class TTRLRewardCalculator(RewardCalculator):
         else:
             lo = scale.get("lower")
             hi = scale.get("upper")
-            lo_inc = bool(scale.get("lower_inclusive", True))
-            hi_inc = bool(scale.get("upper_inclusive", True))
             has_explicit_bounds = isinstance(lo, (int, float)) or isinstance(hi, (int, float))
-            if isinstance(lo, (int, float)):
-                lo_num = float(lo)
-                if lo_inc:
-                    if val < lo_num - eps:
-                        return False
-                elif val <= lo_num + eps:
-                    return False
-            if isinstance(hi, (int, float)):
-                hi_num = float(hi)
-                if hi_inc:
-                    if val > hi_num + eps:
-                        return False
-                elif val >= hi_num - eps:
-                    return False
+            if isinstance(lo, (int, float)) and val < float(lo) - eps:
+                return False
+            if isinstance(hi, (int, float)) and val > float(hi) + eps:
+                return False
 
         # Magnitude acts as a fallback prior when explicit numeric bounds are
         # absent. If lower/upper (or point/union numeric bounds) are provided,
