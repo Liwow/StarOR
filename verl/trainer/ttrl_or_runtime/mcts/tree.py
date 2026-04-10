@@ -1265,16 +1265,24 @@ class FourStageMCTS:
                 chosen_reward = self._record_reward_total(chosen)
                 node_visits = self._node_visits_from_root(root)
                 visit_count = int(node_visits.get(str(chosen.node_id), int(chosen.child_visits_after)))
+                ratio_raw = getattr(self.config, "final_select_obj_scale_expand_ratio", 0.10)
+                try:
+                    expand_ratio = max(0.0, float(ratio_raw))
+                except Exception:
+                    expand_ratio = 0.10
                 self._annotate_final_selection(
                     chosen.trajectory,
                     reason_code="obj_scale_majority_visit",
                     reason=(
-                        "stop at max_iterations/no_expandable_leaf: choose strict obj-scale majority cluster "
-                        "(by cluster size), then choose highest-visit record in that cluster; tie-break by reward then prior"
+                        "stop at max_iterations/no_expandable_leaf: keep only records within expanded obj-scale, "
+                        "cluster by objective, choose largest cluster (tie with size>2 uses cluster average prior; "
+                        "if all clusters are singletons choose global max prior), then choose highest-visit record "
+                        "in selected cluster; tie-break by reward then prior"
                     ),
                     judgement_condition={
                         "stop_reason": stop_reason,
-                        "obj_scale_mode": "strict",
+                        "obj_scale_mode": "expanded",
+                        "obj_scale_expand_ratio": float(expand_ratio),
                         "cluster_choice": "majority_by_count",
                         "record_choice": "max_visit_then_reward_then_prior",
                         "selected_node_visits": visit_count,
@@ -1476,9 +1484,15 @@ class FourStageMCTS:
         return visits
 
     def _choose_for_exhaustive_stop(self, *, root: SearchNode, records: list[StageExpansionRecord]) -> StageExpansionRecord | None:
+        ratio_raw = getattr(self.config, "final_select_obj_scale_expand_ratio", 0.10)
+        try:
+            expand_ratio = max(0.0, float(ratio_raw))
+        except Exception:
+            expand_ratio = 0.10
+
         in_scale_records: list[StageExpansionRecord] = []
         for rec in records:
-            in_bounds, _ = self._record_obj_in_expanded_scale(rec, expand_ratio=0.0)
+            in_bounds, _ = self._record_obj_in_expanded_scale(rec, expand_ratio=expand_ratio)
             if not in_bounds:
                 continue
             if self._record_obj_answer(rec) is None:
@@ -1492,15 +1506,46 @@ class FourStageMCTS:
         if not clusters:
             return None
 
-        clusters.sort(
-            key=lambda cluster: (
-                int(len(cluster["records"])),
-                max(float(self._record_reward_total(rec)) for rec in cluster["records"]),
-            ),
-            reverse=True,
-        )
-        chosen_cluster = clusters[0]
         node_visits = self._node_visits_from_root(root)
+        max_cluster_size = max(int(len(cluster["records"])) for cluster in clusters)
+        top_clusters = [cluster for cluster in clusters if int(len(cluster["records"])) == max_cluster_size]
+
+        if max_cluster_size == 1:
+            # All clusters are singletons: choose highest-prior record directly.
+            return max(
+                in_scale_records,
+                key=lambda rec: (
+                    float(self._record_prior(rec)),
+                    float(self._record_reward_total(rec)),
+                    int(node_visits.get(str(rec.node_id), int(rec.child_visits_after))),
+                ),
+            )
+
+        def _cluster_avg_prior(cluster: dict[str, Any]) -> float:
+            recs = list(cluster["records"])
+            if not recs:
+                return float("-inf")
+            return float(sum(float(self._record_prior(rec)) for rec in recs) / max(1, len(recs)))
+
+        if len(top_clusters) > 1 and max_cluster_size > 2:
+            top_clusters.sort(
+                key=lambda cluster: (
+                    float(_cluster_avg_prior(cluster)),
+                    max(float(self._record_reward_total(rec)) for rec in cluster["records"]),
+                ),
+                reverse=True,
+            )
+            chosen_cluster = top_clusters[0]
+        else:
+            top_clusters.sort(
+                key=lambda cluster: (
+                    max(float(self._record_reward_total(rec)) for rec in cluster["records"]),
+                    float(_cluster_avg_prior(cluster)),
+                ),
+                reverse=True,
+            )
+            chosen_cluster = top_clusters[0]
+
         chosen_cluster_records = list(chosen_cluster["records"])
         chosen_cluster_records.sort(
             key=lambda rec: (
