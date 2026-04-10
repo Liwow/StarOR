@@ -314,7 +314,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Compute per-dataset accuracy from TTRL-OR logs: |obj-gt|/|gt| <= tol"
     )
-    parser.add_argument("--log-root", type=str, default="logs/run", help="Root log directory")
+    parser.add_argument("--log-root", type=str, default="logs/run/model_default_Qwen3-4B-Instruct-2507", help="Root log directory")
     parser.add_argument(
         "--dataset-json",
         action="append",
