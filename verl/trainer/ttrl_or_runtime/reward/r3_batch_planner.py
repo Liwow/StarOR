@@ -128,7 +128,8 @@ def build_r3_base_scale_prompt(
         "Output skeleton:\n"
         f"{_compact_json_text(skeleton)}\n"
         "Few-shot reference:\n"
-        f"{R3_BASE_SCALE_FEWSHOT}\n\n"
+        f"{R3_BASE_SCALE_FEWSHOT}\n"
+        "You should think frist and Thoroughly analyze and comprehend the problem description and associated data. Now, begin your task!"
     )
 
 

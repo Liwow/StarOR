@@ -3,8 +3,9 @@ export CUDA_VISIBLE_DEVICES=1
 # export RAY_DEBUG_POST_MORTEM=1
 DATA_ROOT="${HOME}/code/TTRL-OR/data"
 
-SAMPLE_RUN=false
-SAMPLE_SEED=42
+SAMPLE_RUN=true
+SAMPLE_SEED=2026
+sample_size=150
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -42,10 +43,15 @@ fi
 model_name='Qwen/Qwen3-4B-Instruct-2507'
 MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
 # MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_full_or_qwen3_4b_int_cp100_v1"
-# dataset="NLP4OPT.jsonl"
-dataset="IndustryOR_fixedV2.jsonl"
+# dataset="NL4OPT.jsonl"
+# dataset="NL4LP.jsonl"
+# dataset="MAMO_ComplexLP_fixed.jsonl"
+# dataset="IndustryOR_fixedV2.jsonl"
+# dataset="OptMATH_Bench_166.jsonl"
+
 # dataset="MAMO_EasyLP_fixed.jsonl" #sample
-# dataset="OptiBench.jsonl"
+dataset="OptiBench.jsonl"
+
 r3_reward=True
 DATA_PATH="$DATA_ROOT/$dataset"
 # For multiple datasets, uncomment and edit the list below.
@@ -69,13 +75,13 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.reward.cluster_scope=local \
     algorithm.ttrl_or.reward.r1_weight=0.6 \
     algorithm.ttrl_or.reward.r2_weight=0.1 \
-    algorithm.ttrl_or.reward.r1_obj_scale_fail_multiplier=0.4 \
+    algorithm.ttrl_or.reward.r1_obj_scale_fail_multiplier=0.5 \
     algorithm.ttrl_or.reward.r3_weight=0.2 \
     algorithm.ttrl_or.reward.r4_weight=0.1 \
     algorithm.ttrl_or.reward.structure_gate_min=1.0 \
     algorithm.ttrl_or.dataset.sample_run=${SAMPLE_RUN} \
     algorithm.ttrl_or.dataset.sample_seed=${SAMPLE_SEED} \
-    algorithm.ttrl_or.dataset.sample_size=100 \
+    algorithm.ttrl_or.dataset.sample_size=${sample_size} \
     algorithm.ttrl_or.dataset.resume_skip_completed=True \
     algorithm.ttrl_or.backend.reset_lora_on_begin_episode=True \
     data.train_files="$TRAIN_FILES" \
@@ -85,8 +91,8 @@ python -m verl.trainer.main_ppo \
     data.ttrl_or_max_numeric_features=256 \
     data.ttrl_or_key_param_top_k=16 \
     data.train_batch_size=1 \
-    data.max_prompt_length=5120 \
-    data.max_response_length=6144 \
+    data.max_prompt_length=5000 \
+    data.max_response_length=7000 \
     data.filter_overlong_prompts=False \
     data.truncation='error' \
     data.shuffle=False \
@@ -110,7 +116,7 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.prompt_length=8196 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.45 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
     actor_rollout_ref.rollout.free_cache_engine=False \
     actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.rollout.temperature=1.0 \
