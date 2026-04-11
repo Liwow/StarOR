@@ -480,7 +480,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Compute per-dataset accuracy from TTRL-OR logs: |obj-gt|/|gt| <= tol"
     )
-    parser.add_argument("--log-root", type=str, default="logs/run", help="Root log directory")
+    parser.add_argument("--log-root", type=str, default="outputs/ttrl_or_logs", help="Root log directory")
     parser.add_argument(
         "--dataset-json",
         action="append",
@@ -493,7 +493,7 @@ def main() -> int:
         default="",
         help="Comma-separated dataset json/jsonl paths.",
     )
-    parser.add_argument("--tol", type=float, default=0.01, help="Relative error threshold")
+    parser.add_argument("--tol", type=float, default=0.001, help="Relative error threshold")
     parser.add_argument(
         "--limit",
         type=int,
