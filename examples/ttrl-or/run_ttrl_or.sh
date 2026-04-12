@@ -49,8 +49,8 @@ MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
 # dataset="NL4OPT.jsonl"
 # dataset="NL4LP.jsonl"
 # dataset="MAMO_ComplexLP_fixed.jsonl"
-dataset="IndustryOR_fixedV2.jsonl"
-# dataset="OptMATH_Bench_166.jsonl"
+# dataset="IndustryOR_fixedV2.jsonl"
+dataset="OptMATH_Bench_166.jsonl"
 
 # dataset="MAMO_EasyLP_fixed.jsonl" #sample
 # dataset="OptiBench.jsonl"
@@ -94,13 +94,13 @@ python -m verl.trainer.main_ppo \
     data.val_files="$TRAIN_FILES" \
     data.custom_cls.path='pkg://verl.utils.dataset.ttrl_or_dataset' \
     data.custom_cls.name=TTRLORDataset \
-    data.ttrl_or_max_numeric_features=256 \
-    data.ttrl_or_key_param_top_k=16 \
+    data.ttrl_or_max_numeric_features=32 \
+    data.ttrl_or_key_param_top_k=8 \
     data.train_batch_size=1 \
-    data.max_prompt_length=4000 \
+    data.max_prompt_length=3000 \
     data.max_response_length=7000 \
     data.filter_overlong_prompts=False \
-    data.truncation='error' \
+    data.truncation='right' \
     data.shuffle=False \
     actor_rollout_ref.model.path=${MODEL_NAME_OR_PATH} \
     actor_rollout_ref.model.use_shm=False \
@@ -119,7 +119,7 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
-    actor_rollout_ref.rollout.prompt_length=6144 \
+    actor_rollout_ref.rollout.prompt_length=8196 \
     actor_rollout_ref.rollout.max_model_len=16384 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
