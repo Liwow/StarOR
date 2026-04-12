@@ -1,9 +1,9 @@
 set -x
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0,1
 # export RAY_DEBUG_POST_MORTEM=1
 DATA_ROOT="${HOME}/code/TTRL-OR/data"
 
-SAMPLE_RUN=true
+SAMPLE_RUN=false
 SAMPLE_SEED=2026
 sample_size=150
 EXTRA_ARGS=()
@@ -47,10 +47,10 @@ MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
 # dataset="NL4LP.jsonl"
 # dataset="MAMO_ComplexLP_fixed.jsonl"
 # dataset="IndustryOR_fixedV2.jsonl"
-# dataset="OptMATH_Bench_166.jsonl"
+dataset="OptMATH_Bench_166.jsonl"
 
 # dataset="MAMO_EasyLP_fixed.jsonl" #sample
-dataset="OptiBench.jsonl"
+# dataset="OptiBench.jsonl"
 
 r3_reward=True
 DATA_PATH="$DATA_ROOT/$dataset"
