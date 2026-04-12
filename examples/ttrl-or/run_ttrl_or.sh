@@ -1,8 +1,8 @@
 set -x
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 # export RAY_DEBUG_POST_MORTEM=1
 DATA_ROOT="${HOME}/code/TTRL-OR/data"
-log_dir="outputs/ttrl_or_logs_new_main"
+log_dir="outputs/ttrl_or_logs_new_main_branch"
 SAMPLE_RUN=false
 SAMPLE_SEED=2026
 sample_size=150
