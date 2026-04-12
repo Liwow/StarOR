@@ -616,6 +616,33 @@ class AgentLoopWorker:
         """Perform post-processing operations on the output of each individual agent loop."""
         output.extra_fields["raw_prompt"] = kwargs["raw_prompt"]
 
+        # Enforce fixed-width tensors before batch concat:
+        # tokenizer.pad(..., max_length=...) does not truncate overlong sequences.
+        max_prompt_len = int(self.rollout_config.prompt_length)
+        max_response_len = int(self.rollout_config.response_length)
+        prompt_ids = list(output.prompt_ids or [])
+        response_ids = list(output.response_ids or [])
+        response_mask_ids = list(output.response_mask or [])
+        response_logprobs_ids = list(output.response_logprobs or []) if output.response_logprobs is not None else None
+
+        if max_prompt_len > 0 and len(prompt_ids) > max_prompt_len:
+            # Keep the right side of prompt to preserve most recent context.
+            prompt_ids = prompt_ids[-max_prompt_len:]
+
+        if max_response_len > 0 and len(response_ids) > max_response_len:
+            response_ids = response_ids[:max_response_len]
+        if max_response_len > 0 and len(response_mask_ids) > max_response_len:
+            response_mask_ids = response_mask_ids[:max_response_len]
+        if response_logprobs_ids is not None and max_response_len > 0 and len(response_logprobs_ids) > max_response_len:
+            response_logprobs_ids = response_logprobs_ids[:max_response_len]
+
+        # Keep these fields aligned with truncated sequences for all downstream computations.
+        output.prompt_ids = prompt_ids
+        output.response_ids = response_ids
+        output.response_mask = response_mask_ids
+        if response_logprobs_ids is not None:
+            output.response_logprobs = response_logprobs_ids
+
         # Some AgentLoop may have already computed the reward score, e.g SWE-agent.
 
         # NOTE: consistent with the legacy batch version of generate_sequences that existed in the
