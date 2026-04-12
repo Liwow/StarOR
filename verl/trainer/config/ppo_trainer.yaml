@@ -270,6 +270,9 @@ algorithm:
     # Node-step GRPO generation config used by the migrated backend.
     grpo:
 
+      # Master switch: True uses GRPO+LoRA updates; False runs pure MCTS (no LoRA, no GRPO update).
+      use_ttrl: True
+
       # Optimizer learning rate mirrored into the runtime config.
       learning_rate: 5.0e-5
 

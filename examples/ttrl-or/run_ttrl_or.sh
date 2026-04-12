@@ -11,6 +11,7 @@ CODE_REFINE=true
 CODE_REPAIR=1
 CODE_ENTRY_SECOND_ATTEMPT=true
 CODE_ENTRY_SAME_CLUSTER_SUPPRESS_WEIGHT=0.7
+USE_TTRL=true
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -77,6 +78,7 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.mcts.code_entry_second_attempt=${CODE_ENTRY_SECOND_ATTEMPT} \
     algorithm.ttrl_or.mcts.code_entry_same_cluster_suppress_weight=${CODE_ENTRY_SAME_CLUSTER_SUPPRESS_WEIGHT} \
     algorithm.ttrl_or.mcts.mcts_cluster_update=${MCTS_CLUSTER_UPDATE} \
+    algorithm.ttrl_or.grpo.use_ttrl=${USE_TTRL} \
     algorithm.ttrl_or.mcts.solverllm_compare_mode=False \
     algorithm.ttrl_or.reward.enable_r3_reward=${r3_reward} \
     algorithm.ttrl_or.reward.enable_r4_reward=True \

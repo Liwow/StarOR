@@ -68,6 +68,10 @@ class RewardConfig:
 
 @dataclass(slots=True)
 class GRPOConfig:
+    # Master switch of TTRL training behavior.
+    # True: run GRPO update with LoRA policy.
+    # False: pure MCTS inference mode (no LoRA inference, no GRPO update).
+    use_ttrl: bool = True
     learning_rate: float = 5e-5
     group_size: int = 3  # Alias of num_generations in GRPO literature.
     kl_coef: float = 0.001  # KL penalty coefficient beta.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import uuid
 from copy import deepcopy
 from dataclasses import asdict
@@ -225,7 +226,12 @@ class VerlRayPolicyBackend:
         self._prior_use_ref = bool(prior_use_ref)
         self._prior_min_std = float(prior_min_std)
 
+    def _use_ttrl_enabled(self) -> bool:
+        return bool(getattr(self.pipeline_config.grpo, "use_ttrl", True))
+
     def _sample_reset_enabled(self) -> bool:
+        if not self._use_ttrl_enabled():
+            return False
         return bool(self.pipeline_config.backend.reset_lora_on_begin_episode)
 
     def _has_episode_lora(self) -> bool:
@@ -258,19 +264,23 @@ class VerlRayPolicyBackend:
     def generate(self, stage: Stage, prompt: Any, n: int, *, no_lora_adapter: bool = False) -> list[Generation]:
         del stage
         messages = _prompt_to_messages(prompt)
+        effective_no_lora = bool(no_lora_adapter) or (not self._use_ttrl_enabled())
         outputs = self._generate_messages(
             [messages for _ in range(max(1, int(n)))],
             temperature=float(self.trainer.config.actor_rollout_ref.rollout.temperature),
             top_p=float(self.trainer.config.actor_rollout_ref.rollout.get("top_p", 1.0)),
             do_sample=True,
             max_new_tokens=int(self.pipeline_config.grpo.max_completion_length),
-            no_lora_adapter=bool(no_lora_adapter),
+            no_lora_adapter=effective_no_lora,
         )
         k = max(1, len(outputs))
         return [Generation(text=str(text or ""), prior=1.0 / float(k), metadata={"backend": "verl"}) for text in outputs]
 
     def score_action_priors(self, stage: Stage, prompt: Any, candidates: list[str]) -> list[float]:
         del stage
+        if not self._use_ttrl_enabled():
+            n = len(candidates)
+            return [1.0 / float(max(1, n))] * n
         if not self.pipeline_config.mcts.enable_prior or not candidates:
             n = len(candidates)
             return [1.0 / float(max(1, n))] * n
@@ -317,14 +327,18 @@ class VerlRayPolicyBackend:
         return {"updated": False, "backend": "verl", "reason": "manual_grpo_update_not_used"}
 
     def grpo_rollout_group(self, stage: Stage, prompt: Any, config, reward_callback):
+        group_t0 = time.perf_counter()
         messages = _prompt_to_messages(prompt)
         k = max(1, int(config.num_generations))
         rollout_temperature = float(self.trainer.config.actor_rollout_ref.rollout.temperature)
+        use_ttrl = self._use_ttrl_enabled()
+        no_lora_adapter = not use_ttrl
         current_step = int(self.trainer.global_steps) + 1
         self.trainer.global_steps = current_step
         prompt_batch = self._make_prompt_batch(
             [messages],
             extra_infos=[{"task_id": self._current_task_id, "stage": stage.value}],
+            no_lora_adapter=no_lora_adapter,
         )
         prompt_batch.meta_info["temperature"] = rollout_temperature
         prompt_batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4())], dtype=object)
@@ -336,7 +350,9 @@ class VerlRayPolicyBackend:
         gen_batch.meta_info["global_steps"] = current_step
         gen_batch.meta_info["max_new_tokens"] = int(config.max_completion_length)
         gen_batch_output = gen_batch.repeat(repeat_times=k, interleave=True)
+        rollout_infer_t0 = time.perf_counter()
         gen_output = self._rollout_generate(gen_batch_output)
+        rollout_infer_sec = float(time.perf_counter() - rollout_infer_t0)
 
         batch = prompt_batch.repeat(repeat_times=k, interleave=True)
         batch.meta_info["temperature"] = rollout_temperature
@@ -357,7 +373,41 @@ class VerlRayPolicyBackend:
         reward_tensor = self._terminal_reward_tensor(batch.batch["response_mask"], rewards)
         batch.batch["token_level_scores"] = reward_tensor
 
+        if not use_ttrl:
+            generations: list[Generation] = []
+            prior = 1.0 / float(max(1, len(completions)))
+            for ridx, text in enumerate(completions):
+                generations.append(
+                    Generation(
+                        text=str(text or ""),
+                        prior=prior,
+                        metadata={
+                            "backend": "verl",
+                            "rollout_index": ridx,
+                            "reward_total": float(rewards[ridx]),
+                            "use_ttrl": False,
+                        },
+                    )
+                )
+            report = {
+                "updated": False,
+                "backend": "verl",
+                "stage": stage.value,
+                "num_samples": len(generations),
+                "use_ttrl": False,
+                "reason": "use_ttrl_disabled_no_grpo_no_lora",
+                "timing": {
+                    "rollout_vllm_infer_sec": float(rollout_infer_sec),
+                    "old_log_prob_forward_sec": 0.0,
+                    "actor_update_sec": 0.0,
+                    "grpo_group_total_sec": float(time.perf_counter() - group_t0),
+                },
+            }
+            return generations, report
+
+        old_log_prob_t0 = time.perf_counter()
         old_log_prob, old_log_prob_mfu = self.trainer._compute_old_log_prob(batch)
+        old_log_prob_forward_sec = float(time.perf_counter() - old_log_prob_t0)
         batch = batch.union(old_log_prob)
 
         if self.trainer.use_reference_policy and "ref_log_prob" not in batch.batch.keys():
@@ -388,7 +438,9 @@ class VerlRayPolicyBackend:
             config=self.trainer.config.algorithm,
         )
 
+        actor_update_t0 = time.perf_counter()
         actor_output = self.trainer._update_actor(batch)
+        actor_update_sec = float(time.perf_counter() - actor_update_t0)
         actor_metrics_raw = dict(actor_output.meta_info.get("metrics", {}) or {})
         actor_metrics = reduce_metrics(actor_metrics_raw) if actor_metrics_raw else {}
         actor_metrics["perf/mfu/actor_infer"] = old_log_prob_mfu
@@ -415,7 +467,14 @@ class VerlRayPolicyBackend:
             "backend": "verl",
             "stage": stage.value,
             "num_samples": len(generations),
+            "use_ttrl": True,
             "metrics": {**actor_metrics, **kl_metrics},
+            "timing": {
+                "rollout_vllm_infer_sec": float(rollout_infer_sec),
+                "old_log_prob_forward_sec": float(old_log_prob_forward_sec),
+                "actor_update_sec": float(actor_update_sec),
+                "grpo_group_total_sec": float(time.perf_counter() - group_t0),
+            },
         }
         return generations, report
 
@@ -469,6 +528,7 @@ class VerlRayPolicyBackend:
             top_p=float(top_p),
             do_sample=bool(float(temperature) > 0.0),
             max_new_tokens=int(max_new_tokens),
+            no_lora_adapter=not self._use_ttrl_enabled(),
         )
 
     def _rollout_generate(self, gen_batch: DataProto) -> DataProto:

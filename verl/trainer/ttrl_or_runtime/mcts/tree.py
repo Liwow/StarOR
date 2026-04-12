@@ -101,7 +101,7 @@ class FourStageMCTS:
         best_trajectory: Trajectory | None = None
         best_reward = float("-inf")
         selection_history: list[tuple[tuple[str, str], str]] = []
-        code_entry_attempt_count: dict[str, int] = {}
+        code_entry_attempt_total: int = 0
         code_entry_one_shot_suppression: dict[str, Any] | None = None
 
         stage_archives: dict[Stage, list[Trajectory]] = {stage: [] for stage in self.stage_order}
@@ -199,8 +199,8 @@ class FourStageMCTS:
 
             if next_stage == Stage.CODE and self._second_code_entry_enabled():
                 selected_node_id = str(selected.node_id)
-                attempt = int(code_entry_attempt_count.get(selected_node_id, 0)) + 1
-                code_entry_attempt_count[selected_node_id] = attempt
+                code_entry_attempt_total = int(code_entry_attempt_total) + 1
+                attempt = int(code_entry_attempt_total)
                 if attempt < 2:
                     suppress_node_ids, suppress_meta = self._build_global_same_cluster_node_ids(
                         selected=selected,
@@ -235,6 +235,7 @@ class FourStageMCTS:
                             "second_attempt_required": True,
                             "decision": "defer_first_attempt",
                             "attempt": int(attempt),
+                            "attempt_scope": "global_per_sample",
                             "target_node_id": selected_node_id,
                             "one_shot_suppression": dict(code_entry_one_shot_suppression),
                             "active_suppression_this_iter": dict(active_code_suppress_info),
