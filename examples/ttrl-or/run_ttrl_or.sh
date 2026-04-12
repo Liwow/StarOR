@@ -1,8 +1,8 @@
 set -x
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=0
 # export RAY_DEBUG_POST_MORTEM=1
 DATA_ROOT="${HOME}/code/TTRL-OR/data"
-
+log_dir="outputs/ttrl_or_logs_new_main"
 SAMPLE_RUN=false
 SAMPLE_SEED=2026
 sample_size=150
@@ -45,12 +45,12 @@ fi
 # model_name='Qwen/Qwen2.5-7B-Instruct'
 model_name='Qwen/Qwen3-4B-Instruct-2507'
 MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
-# MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_full_or_qwen3_4b_int_cp100_v1"
+# MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_or_qwen3_4b_int_cp513_v1"
 # dataset="NL4OPT.jsonl"
 # dataset="NL4LP.jsonl"
 # dataset="MAMO_ComplexLP_fixed.jsonl"
-# dataset="IndustryOR_fixedV2.jsonl"
-dataset="OptMATH_Bench_166.jsonl"
+dataset="IndustryOR_fixedV2.jsonl"
+# dataset="OptMATH_Bench_166.jsonl"
 
 # dataset="MAMO_EasyLP_fixed.jsonl" #sample
 # dataset="OptiBench.jsonl"
@@ -65,7 +65,7 @@ TRAIN_FILES="$DATA_PATH"
 python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     algorithm.ttrl_or.enable=True \
-    algorithm.ttrl_or.log_dir=outputs/ttrl_or_logs \
+    algorithm.ttrl_or.log_dir=${log_dir} \
     algorithm.ttrl_or.mcts.max_iterations=16 \
     algorithm.ttrl_or.mcts.c_puct=1.414 \
     algorithm.ttrl_or.mcts.enable_prior=True \
@@ -97,7 +97,7 @@ python -m verl.trainer.main_ppo \
     data.ttrl_or_max_numeric_features=256 \
     data.ttrl_or_key_param_top_k=16 \
     data.train_batch_size=1 \
-    data.max_prompt_length=5000 \
+    data.max_prompt_length=4000 \
     data.max_response_length=7000 \
     data.filter_overlong_prompts=False \
     data.truncation='error' \
@@ -123,7 +123,7 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.max_model_len=16384 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.32 \
     actor_rollout_ref.rollout.free_cache_engine=False \
     actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.rollout.temperature=1.0 \
