@@ -471,7 +471,10 @@ class FourStageMCTS:
                 )
             rollout_group_wall_sec = float(time.perf_counter() - rollout_group_t0)
 
-            callback_total_sec = float(sum(t.get("callback_total_sec", 0.0) for t in callback_timings))
+            # Callback timing is measured per rollout item. Since reward callbacks are executed in parallel,
+            # wall time should be approximated by max(item_time) instead of sum(item_time).
+            callback_total_sum_sec = float(sum(t.get("callback_total_sec", 0.0) for t in callback_timings))
+            callback_total_sec = float(max([0.0] + [float(t.get("callback_total_sec", 0.0) or 0.0) for t in callback_timings]))
             callback_exec_sec = float(sum(t.get("code_execution_sec", 0.0) for t in callback_timings))
             callback_complete_sec = float(sum(t.get("rollout_to_code_sec", 0.0) for t in callback_timings))
             callback_reward_sec = float(sum(t.get("reward_compute_sec", 0.0) for t in callback_timings))
@@ -892,6 +895,7 @@ class FourStageMCTS:
                     "grpo_train_runtime_sec": grpo_train_runtime_sec,
                     "grpo_group_total_sec": grpo_group_total_sec,
                     "reward_callback_total_sec": callback_total_sec,
+                    "reward_callback_total_sum_sec": callback_total_sum_sec,
                     "old_log_prob_forward_sec": forward_compute_sec,
                     "actor_update_sec": grpo_update_sec,
                     "completion_parse_total_sec": callback_parse_sec,
