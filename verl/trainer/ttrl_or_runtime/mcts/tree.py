@@ -1319,11 +1319,14 @@ class FourStageMCTS:
             cur = cur.parent
 
     def _mcts_cluster_update_enabled(self) -> bool:
-        # Compatibility: allow legacy typo key mcts_cluster_updata to override.
+        # Canonical key first; legacy typo key is fallback-only compatibility.
+        canonical = getattr(self.config, "mcts_cluster_update", None)
+        if canonical is not None:
+            return bool(canonical)
         legacy = getattr(self.config, "mcts_cluster_updata", None)
         if legacy is not None:
             return bool(legacy)
-        return bool(getattr(self.config, "mcts_cluster_update", True))
+        return True
 
     def _latest_record_for_node(
         self,

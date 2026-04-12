@@ -153,7 +153,7 @@ algorithm:
       # update same-cluster siblings and ancestor-layer same-cluster siblings.
       mcts_cluster_update: True
 
-      # Legacy alias for compatibility with existing scripts/overrides.
+      # Legacy typo alias, fallback-only compatibility (prefer mcts_cluster_update).
       mcts_cluster_updata: null
 
     # Reward settings migrated from TTRL-OR.

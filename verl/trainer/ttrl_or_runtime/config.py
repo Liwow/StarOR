@@ -26,7 +26,7 @@ class MCTSConfig:
     # besides normal selected-path backprop, also update same-cluster siblings
     # (and same-cluster ancestor-layer siblings with decay).
     mcts_cluster_update: bool = True
-    # Legacy/compat alias (keep for CLI override compatibility).
+    # Legacy typo alias, fallback-only compatibility (do not use in new scripts).
     mcts_cluster_updata: bool | None = None
 
 
