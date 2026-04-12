@@ -447,6 +447,7 @@ class vLLMHttpServer:
     ) -> TokenOutput:
         """Generate sequence with token-in-token-out."""
         prompt_ids = normalize_token_ids(prompt_ids)
+        no_lora_adapter = bool(sampling_params.pop("no_lora_adapter", False))
 
         # Calculate the maximum possible new tokens based on available context space
         # This serves as a safety upper bound
@@ -491,7 +492,7 @@ class vLLMHttpServer:
 
         # Add lora request
         lora_request = None
-        if self.lora_as_adapter:
+        if self.lora_as_adapter and not no_lora_adapter:
             # Make sure we also check that the lora is already loaded in the engine
             lora_loaded = VLLM_LORA_INT_ID in await self.engine.list_loras()
             if lora_loaded:

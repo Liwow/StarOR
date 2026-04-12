@@ -149,6 +149,13 @@ algorithm:
       # CODE terminal repair rounds (0 means disabled).
       code_repair: 0
 
+      # Require two attempts on the same node before entering CODE.
+      code_entry_second_attempt: True
+
+      # One-shot PUCT multiplier for same-cluster nodes on next selection
+      # after first CODE-entry attempt.
+      code_entry_same_cluster_suppress_weight: 0.7
+
       # Enable cluster-linked backprop update in MCTS:
       # update same-cluster siblings and ancestor-layer same-cluster siblings.
       mcts_cluster_update: True

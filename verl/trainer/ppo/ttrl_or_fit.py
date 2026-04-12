@@ -255,7 +255,7 @@ class VerlRayPolicyBackend:
             print(f"[verl-or][WARN] actor LoRA sample reset failed: {type(exc).__name__}: {exc}")
         self._current_task_id = ""
 
-    def generate(self, stage: Stage, prompt: Any, n: int) -> list[Generation]:
+    def generate(self, stage: Stage, prompt: Any, n: int, *, no_lora_adapter: bool = False) -> list[Generation]:
         del stage
         messages = _prompt_to_messages(prompt)
         outputs = self._generate_messages(
@@ -264,6 +264,7 @@ class VerlRayPolicyBackend:
             top_p=float(self.trainer.config.actor_rollout_ref.rollout.get("top_p", 1.0)),
             do_sample=True,
             max_new_tokens=int(self.pipeline_config.grpo.max_completion_length),
+            no_lora_adapter=bool(no_lora_adapter),
         )
         k = max(1, len(outputs))
         return [Generation(text=str(text or ""), prior=1.0 / float(k), metadata={"backend": "verl"}) for text in outputs]
@@ -492,12 +493,14 @@ class VerlRayPolicyBackend:
         top_p: float,
         do_sample: bool,
         max_new_tokens: int,
+        no_lora_adapter: bool = False,
     ) -> list[str | None]:
         if not messages_batch:
             return []
         prompt_batch = self._make_prompt_batch(
             messages_batch,
             extra_infos=[{"task_id": self._current_task_id, "kind": "aux"} for _ in messages_batch],
+            no_lora_adapter=bool(no_lora_adapter),
         )
         gen_batch = self.trainer._get_gen_batch(prompt_batch)
         gen_batch.meta_info["temperature"] = float(temperature)
@@ -514,6 +517,7 @@ class VerlRayPolicyBackend:
         messages_batch: list[list[dict[str, str]]],
         *,
         extra_infos: list[dict[str, Any]] | None = None,
+        no_lora_adapter: bool = False,
     ) -> DataProto:
         rows: list[dict[str, Any]] = []
         for idx, messages in enumerate(messages_batch):
@@ -528,6 +532,7 @@ class VerlRayPolicyBackend:
                     "index": idx,
                     "tools_kwargs": {},
                     "interaction_kwargs": {},
+                    "no_lora_adapter": bool(no_lora_adapter),
                 }
             )
         batch_dict = verl_collate_fn(rows)

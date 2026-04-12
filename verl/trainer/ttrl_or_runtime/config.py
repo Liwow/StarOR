@@ -22,6 +22,12 @@ class MCTSConfig:
     code_refine: bool = True
     # CODE terminal repair rounds (0 means disable repair).
     code_repair: int = 0
+    # Require two consecutive "attempts to enter CODE" on the same node
+    # before actually entering CODE.
+    code_entry_second_attempt: bool = True
+    # One-shot suppression weight (PUCT multiplier) applied on next selection
+    # to the global same-cluster nodes after the first CODE-entry attempt.
+    code_entry_same_cluster_suppress_weight: float = 0.7
     # Enable cluster-linked MCTS backprop update:
     # besides normal selected-path backprop, also update same-cluster siblings
     # (and same-cluster ancestor-layer siblings with decay).

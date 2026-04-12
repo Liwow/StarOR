@@ -101,6 +101,8 @@ class FourStageMCTS:
         best_trajectory: Trajectory | None = None
         best_reward = float("-inf")
         selection_history: list[tuple[tuple[str, str], str]] = []
+        code_entry_attempt_count: dict[str, int] = {}
+        code_entry_one_shot_suppression: dict[str, Any] | None = None
 
         stage_archives: dict[Stage, list[Trajectory]] = {stage: [] for stage in self.stage_order}
 
@@ -116,6 +118,21 @@ class FourStageMCTS:
         for iter_idx in range(max(1, int(self.config.max_iterations))):
             iter_t0 = time.perf_counter()
             selection_t0 = time.perf_counter()
+            active_code_suppress_node_ids: set[str] = set()
+            active_code_suppress_weight = 1.0
+            active_code_suppress_info: dict[str, Any] = {}
+            if code_entry_one_shot_suppression is not None:
+                target_iter = int(code_entry_one_shot_suppression.get("target_iter", -1))
+                if int(iter_idx) == target_iter:
+                    active_code_suppress_node_ids = {
+                        str(x) for x in (code_entry_one_shot_suppression.get("node_ids", []) or []) if str(x).strip()
+                    }
+                    active_code_suppress_weight = float(
+                        code_entry_one_shot_suppression.get("weight", self._code_entry_suppress_weight())
+                    )
+                    active_code_suppress_info = dict(code_entry_one_shot_suppression)
+                elif int(iter_idx) > target_iter:
+                    code_entry_one_shot_suppression = None
             blocked_repeat_threshold = self._blocked_sibling_threshold()
             stuck_state = self._blocked_sibling_state(selection_history, blocked_repeat_threshold)
             blocked_group = stuck_state["group"] if stuck_state is not None else None
@@ -134,6 +151,8 @@ class FourStageMCTS:
                 selection_root,
                 soft_block_group=blocked_group,
                 soft_block_weight=soft_block_weight,
+                extra_suppress_node_ids=active_code_suppress_node_ids,
+                extra_suppress_weight=active_code_suppress_weight,
             )
             if not ranked_leaves and force_applied:
                 selection_root = root
@@ -142,6 +161,8 @@ class FourStageMCTS:
                     selection_root,
                     soft_block_group=blocked_group,
                     soft_block_weight=soft_block_weight,
+                    extra_suppress_node_ids=active_code_suppress_node_ids,
+                    extra_suppress_weight=active_code_suppress_weight,
                 )
             if not ranked_leaves:
                 stop_info = {
@@ -158,7 +179,13 @@ class FourStageMCTS:
                 selection_root,
                 soft_block_group=blocked_group,
                 soft_block_weight=soft_block_weight,
+                extra_suppress_node_ids=active_code_suppress_node_ids,
+                extra_suppress_weight=active_code_suppress_weight,
             )
+            if code_entry_one_shot_suppression is not None and int(iter_idx) == int(
+                code_entry_one_shot_suppression.get("target_iter", -1)
+            ):
+                code_entry_one_shot_suppression = None
 
             next_stage = self._next_stage(selected.stage)
             if next_stage is None:
@@ -169,6 +196,58 @@ class FourStageMCTS:
             selection_sec = float(time.perf_counter() - selection_t0)
             selected_q_before_group = float(selected.q_value)
             selected_visits_before_group = int(selected.visits)
+
+            if next_stage == Stage.CODE and self._second_code_entry_enabled():
+                selected_node_id = str(selected.node_id)
+                attempt = int(code_entry_attempt_count.get(selected_node_id, 0)) + 1
+                code_entry_attempt_count[selected_node_id] = attempt
+                if attempt < 2:
+                    suppress_node_ids, suppress_meta = self._build_global_same_cluster_node_ids(
+                        selected=selected,
+                        records=records,
+                    )
+                    suppress_weight = self._code_entry_suppress_weight()
+                    code_entry_one_shot_suppression = {
+                        "target_iter": int(iter_idx + 1),
+                        "node_ids": sorted(suppress_node_ids),
+                        "weight": float(suppress_weight),
+                        "source_node_id": selected_node_id,
+                        "source_stage": selected.stage.value if selected.stage else "<ROOT>",
+                        "source_attempt": int(attempt),
+                        "cluster_debug": dict(suppress_meta),
+                    }
+                    iter_payload = {
+                        "iter": int(iter_idx),
+                        "stage": "obj-con-code-gate",
+                        "selection": {
+                            "selected_parent": {
+                                "node_id": selected.node_id,
+                                "stage": selected.stage.value if selected.stage else "<ROOT>",
+                                "puct_score": float(selected_score),
+                                "value_before_group": float(selected_q_before_group),
+                                "visits_before_group": int(selected_visits_before_group),
+                                "content": selected.text,
+                            },
+                            "selection_path": selection_path,
+                        },
+                        "code_entry_gate": {
+                            "enabled": True,
+                            "second_attempt_required": True,
+                            "decision": "defer_first_attempt",
+                            "attempt": int(attempt),
+                            "target_node_id": selected_node_id,
+                            "one_shot_suppression": dict(code_entry_one_shot_suppression),
+                            "active_suppression_this_iter": dict(active_code_suppress_info),
+                        },
+                        "timing": {
+                            "mcts_selection_sec": float(time.perf_counter() - selection_t0),
+                            "iteration_total_sec": float(time.perf_counter() - iter_t0),
+                        },
+                    }
+                    iteration_logs.append(iter_payload)
+                    if iteration_callback is not None:
+                        iteration_callback(iter_payload)
+                    continue
 
             prompt_t0 = time.perf_counter()
             selected_traj = None if selected.stage is None else selected.to_partial_trajectory()
@@ -358,7 +437,14 @@ class FourStageMCTS:
             rollout_group_t0 = time.perf_counter()
             if next_stage == Stage.CODE:
                 code_k = max(1, int(grpo_config.num_generations))
-                generations = list(self.backend.generate(next_stage, prompt_messages or prompt, code_k))
+                generations = list(
+                    self._backend_generate(
+                        next_stage,
+                        prompt_messages or prompt,
+                        code_k,
+                        no_lora_adapter=True,
+                    )
+                )
                 completion_texts = [str(gen.text or "") for gen in generations]
                 if completion_texts:
                     rewards = list(_batch_reward_callback(prompt, completion_texts))
@@ -724,6 +810,7 @@ class FourStageMCTS:
                         "content": selected.text,
                     },
                     "selection_path": selection_path,
+                    "code_entry_suppression_active": dict(active_code_suppress_info),
                     "leaf_candidates": [
                         {
                             "node_id": node.node_id,
@@ -916,6 +1003,23 @@ class FourStageMCTS:
             "reason": "backend_has_no_internal_grpo_rollout",
         }
         return generations, report
+
+    def _backend_generate(
+        self,
+        stage: Stage,
+        prompt: Any,
+        n: int,
+        *,
+        no_lora_adapter: bool = False,
+    ) -> list[Generation]:
+        method = getattr(self.backend, "generate")
+        try:
+            return list(method(stage=stage, prompt=prompt, n=n, no_lora_adapter=bool(no_lora_adapter)))
+        except TypeError:
+            try:
+                return list(method(stage, prompt, n, no_lora_adapter=bool(no_lora_adapter)))
+            except TypeError:
+                return list(method(stage, prompt, n))
 
     @staticmethod
     def _split_rollout_completion(text: str) -> tuple[str, str]:
@@ -1134,9 +1238,13 @@ class FourStageMCTS:
         root: SearchNode,
         soft_block_group: tuple[str, str] | None = None,
         soft_block_weight: float = 0.6,
+        extra_suppress_node_ids: set[str] | None = None,
+        extra_suppress_weight: float = 1.0,
     ) -> tuple[SearchNode, float, list[dict[str, Any]]]:
         cur = root
         selection_path: list[dict[str, Any]] = []
+        suppress_ids = {str(x) for x in (extra_suppress_node_ids or set()) if str(x).strip()}
+        suppress_weight = float(max(0.0, min(1.0, extra_suppress_weight)))
 
         while cur.children:
             candidate_scores: list[tuple[SearchNode, float]] = []
@@ -1146,6 +1254,10 @@ class FourStageMCTS:
                 score = float(self.selector.score(cur, child))
                 if self._node_matches_selection_group(child, soft_block_group):
                     score *= float(max(0.0, soft_block_weight))
+                suppress_applied = False
+                if suppress_ids and self._node_is_under_node_ids(child, suppress_ids):
+                    score *= suppress_weight
+                    suppress_applied = True
                 candidate_scores.append((child, score))
 
             if not candidate_scores:
@@ -1162,6 +1274,11 @@ class FourStageMCTS:
                         'stage': (soft_block_group[1] if soft_block_group else ''),
                         'soft_weight': float(max(0.0, soft_block_weight)),
                     },
+                    'one_shot_suppression': {
+                        'enabled': bool(suppress_ids),
+                        'node_count': int(len(suppress_ids)),
+                        'weight': float(suppress_weight),
+                    },
                     'candidates': [
                         {
                             'node_id': node.node_id,
@@ -1171,6 +1288,9 @@ class FourStageMCTS:
                             'visits': int(node.visits),
                             'prior': float(node.prior),
                             'soft_block_applied': bool(self._node_matches_selection_group(node, soft_block_group)),
+                            'one_shot_suppression_applied': bool(
+                                suppress_ids and self._node_is_under_node_ids(node, suppress_ids)
+                            ),
                             'content': node.text,
                         }
                         for node, score in candidate_scores
@@ -1188,6 +1308,8 @@ class FourStageMCTS:
         root: SearchNode,
         soft_block_group: tuple[str, str] | None = None,
         soft_block_weight: float = 0.6,
+        extra_suppress_node_ids: set[str] | None = None,
+        extra_suppress_weight: float = 1.0,
     ) -> list[tuple[SearchNode, float]]:
         leaves = [
             node
@@ -1195,14 +1317,18 @@ class FourStageMCTS:
             if self._next_stage(node.stage) is not None
         ]
         ranked = self._rank_leaves(leaves)
-        if soft_block_group is None:
+        if soft_block_group is None and not extra_suppress_node_ids:
             return ranked
         out: list[tuple[SearchNode, float]] = []
         weight = float(max(0.0, soft_block_weight))
+        suppress_ids = {str(x) for x in (extra_suppress_node_ids or set()) if str(x).strip()}
+        suppress_weight = float(max(0.0, min(1.0, extra_suppress_weight)))
         for node, score in ranked:
             adjusted = float(score)
             if self._leaf_is_under_soft_block_group(node, soft_block_group):
                 adjusted *= weight
+            if suppress_ids and self._node_is_under_node_ids(node, suppress_ids):
+                adjusted *= suppress_weight
             out.append((node, adjusted))
         out.sort(key=lambda item: item[1], reverse=True)
         return out
@@ -1243,6 +1369,20 @@ class FourStageMCTS:
             cur = cur.parent
         return False
 
+    @staticmethod
+    def _node_is_under_node_ids(
+        node: SearchNode,
+        node_ids: set[str],
+    ) -> bool:
+        if not node_ids:
+            return False
+        cur: SearchNode | None = node
+        while cur is not None:
+            if str(cur.node_id) in node_ids:
+                return True
+            cur = cur.parent
+        return False
+
     def _blocked_sibling_threshold(self) -> int:
         group_k = max(2, int(getattr(self._active_grpo_config, 'num_generations', 0) or 0)) if self._active_grpo_config is not None else 1
         return max(2, group_k // 2)
@@ -1277,6 +1417,64 @@ class FourStageMCTS:
             return max(0.0, min(1.0, float(raw)))
         except Exception:
             return 0.6
+
+    def _second_code_entry_enabled(self) -> bool:
+        raw = getattr(self.config, "code_entry_second_attempt", True)
+        try:
+            return bool(raw)
+        except Exception:
+            return True
+
+    def _code_entry_suppress_weight(self) -> float:
+        raw = getattr(self.config, "code_entry_same_cluster_suppress_weight", 0.7)
+        try:
+            return max(0.0, min(1.0, float(raw)))
+        except Exception:
+            return 0.7
+
+    def _build_global_same_cluster_node_ids(
+        self,
+        *,
+        selected: SearchNode,
+        records: list[StageExpansionRecord],
+    ) -> tuple[set[str], dict[str, Any]]:
+        selected_node_id = str(selected.node_id)
+        latest_by_node: dict[str, StageExpansionRecord] = {}
+        for rec in records:
+            node_id = str(rec.node_id)
+            prev = latest_by_node.get(node_id)
+            if prev is None or int(rec.iteration) > int(prev.iteration):
+                latest_by_node[node_id] = rec
+            elif int(rec.iteration) == int(prev.iteration):
+                if float(self._record_reward_total(rec)) > float(self._record_reward_total(prev)):
+                    latest_by_node[node_id] = rec
+
+        selected_rec = latest_by_node.get(selected_node_id)
+        selected_obj = self._record_obj_answer(selected_rec) if selected_rec is not None else None
+        if selected_obj is None:
+            return {
+                selected_node_id,
+            }, {
+                "mode": "fallback_selected_only_no_obj",
+                "selected_obj": None,
+                "matched": 1,
+                "considered_nodes": int(len(latest_by_node)),
+            }
+
+        node_ids: set[str] = {selected_node_id}
+        for node_id, rec in latest_by_node.items():
+            obj = self._record_obj_answer(rec)
+            if obj is None:
+                continue
+            if self._within_rel_tol(float(obj), float(selected_obj)):
+                node_ids.add(str(node_id))
+
+        return node_ids, {
+            "mode": "global_cross_stage_obj_cluster",
+            "selected_obj": float(selected_obj),
+            "matched": int(len(node_ids)),
+            "considered_nodes": int(len(latest_by_node)),
+        }
 
     @staticmethod
     def _find_node_by_id(root: SearchNode, node_id: str) -> SearchNode | None:
@@ -2344,6 +2542,13 @@ class FourStageMCTS:
             need_repair = not self._reward_has_valid_obj(candidate_reward)
             issue_kind, issue_reason = self._classify_terminal_issue(candidate_reward)
             step_payload["candidate"] = self._terminal_candidate_summary(candidate_traj)
+            step_payload["reward"] = {
+                "r1": float(candidate_reward.r1 if candidate_reward is not None else 0.0),
+                "r2": float(candidate_reward.r2 if candidate_reward is not None else 0.0),
+                "r3": float(candidate_reward.r3 if candidate_reward is not None else 0.0),
+                "r4": float(candidate_reward.r4 if candidate_reward is not None else 0.0),
+                "total": float(candidate_reward.total if candidate_reward is not None else 0.0),
+            }
             step_payload["issue_after"] = {"kind": issue_kind, "reason": issue_reason}
             terminal_trace["steps"].append(step_payload)
 
@@ -2372,6 +2577,7 @@ class FourStageMCTS:
         terminal_trace["final_candidate"] = self._terminal_candidate_summary(candidate_traj)
         terminal_trace["final_issue"] = {"kind": issue_kind, "reason": issue_reason}
         terminal_trace["fallback_to_original_logic"] = bool(fallback_to_original)
+        terminal_trace["repair_logs"] = list(terminal_trace.get("steps", []))
 
         return {
             "enabled": True,
@@ -2444,7 +2650,7 @@ class FourStageMCTS:
 
     def _generate_code_candidate(self, prompt: Any) -> tuple[str, str, float]:
         try:
-            generations = self.backend.generate(Stage.CODE, prompt, 1)
+            generations = self._backend_generate(Stage.CODE, prompt, 1, no_lora_adapter=True)
         except Exception as exc:  # noqa: BLE001
             return f"[generation_error] {type(exc).__name__}: {exc}", "", 0.0
         if not generations:

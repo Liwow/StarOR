@@ -9,6 +9,8 @@ sample_size=150
 MCTS_CLUSTER_UPDATE=true
 CODE_REFINE=true
 CODE_REPAIR=1
+CODE_ENTRY_SECOND_ATTEMPT=true
+CODE_ENTRY_SAME_CLUSTER_SUPPRESS_WEIGHT=0.7
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -72,6 +74,8 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.mcts.blocked_sibling_soft_weight=0.6 \
     algorithm.ttrl_or.mcts.code_refine=${CODE_REFINE} \
     algorithm.ttrl_or.mcts.code_repair=${CODE_REPAIR} \
+    algorithm.ttrl_or.mcts.code_entry_second_attempt=${CODE_ENTRY_SECOND_ATTEMPT} \
+    algorithm.ttrl_or.mcts.code_entry_same_cluster_suppress_weight=${CODE_ENTRY_SAME_CLUSTER_SUPPRESS_WEIGHT} \
     algorithm.ttrl_or.mcts.mcts_cluster_update=${MCTS_CLUSTER_UPDATE} \
     algorithm.ttrl_or.mcts.solverllm_compare_mode=False \
     algorithm.ttrl_or.reward.enable_r3_reward=${r3_reward} \
@@ -81,7 +85,7 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.reward.cluster_scope=local \
     algorithm.ttrl_or.reward.r1_weight=0.6 \
     algorithm.ttrl_or.reward.r2_weight=0.1 \
-    algorithm.ttrl_or.reward.r1_obj_scale_fail_multiplier=0.5 \
+    algorithm.ttrl_or.reward.r1_obj_scale_fail_multiplier=0.6 \
     algorithm.ttrl_or.reward.r3_weight=0.1 \
     algorithm.ttrl_or.reward.r4_weight=0.2 \
     algorithm.ttrl_or.reward.structure_gate_min=1.0 \
