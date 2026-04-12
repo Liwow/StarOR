@@ -84,14 +84,27 @@ class ModelInfo:
     num_vars: int = 0
     num_bin_vars: int = 0
     num_int_vars: int = 0
+    num_cont_vars: int = 0
     num_constrs: int = 0
     has_objective: bool = False
     has_constraints: bool = False
     has_variables: bool = False
     extracted: bool = False
 
-    def feature_tuple(self) -> tuple[int, int, int, int]:
-        return (self.model_sense, self.num_vars, self.num_bin_vars, self.num_int_vars)
+    def feature_tuple(self) -> tuple[int, int, int, int, int, int]:
+        cont = int(self.num_cont_vars)
+        if cont < 0:
+            cont = 0
+        if cont == 0:
+            cont = max(0, int(self.num_vars) - int(self.num_bin_vars) - int(self.num_int_vars))
+        return (
+            int(self.model_sense),
+            int(self.num_vars),
+            int(self.num_bin_vars),
+            int(self.num_int_vars),
+            int(cont),
+            int(self.num_constrs),
+        )
 
 
 @dataclass(slots=True)

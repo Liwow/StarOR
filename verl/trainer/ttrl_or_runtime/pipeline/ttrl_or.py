@@ -167,9 +167,12 @@ class TTRLORRunner:
                 print(
                     f"[MCTS][task={task.task_id}] iter={iter_idx} stage={stage_name} "
                     f"best_reward={best_reward} obj={obj_answer} gt={gold_answer} "
-                    f"iter_sec={timing.get('iteration_total_sec', 'n/a')} "
-                    f"rollout_sec={timing.get('rollout_group_wall_sec', 'n/a')} "
-                    f"exec_sec={timing.get('code_execution_total_sec', 'n/a')}"
+                    f"mcts_selection_sec={timing.get('mcts_selection_sec', timing.get('selection_sec', 'n/a'))} "
+                    f"vllm_infer_generation_sec={timing.get('vllm_infer_generation_sec', timing.get('rollout_vllm_infer_sec', 'n/a'))} "
+                    f"reward_calculation_total_sec={timing.get('reward_calculation_total_sec', timing.get('reward_callback_total_sec', 'n/a'))} "
+                    f"grpo_update_sec={timing.get('grpo_update_sec', timing.get('actor_update_sec', timing.get('grpo_train_runtime_sec', 'n/a')))} "
+                    f"forward_compute_sec={timing.get('forward_compute_sec', timing.get('old_log_prob_forward_sec', 'n/a'))} "
+                    f"iter_sec={timing.get('iteration_total_sec', 'n/a')}"
                 )
 
             search_result = mcts.search(task=task, grpo_config=self.config.grpo, iteration_callback=_on_iteration_log)
@@ -613,6 +616,11 @@ class TTRLORRunner:
                 "",
                 "### Timing (sec)",
                 f"- iteration_total_sec: {timing.get('iteration_total_sec', '')}",
+                f"- mcts_selection_sec: {timing.get('mcts_selection_sec', timing.get('selection_sec', ''))}",
+                f"- vllm_infer_generation_sec: {timing.get('vllm_infer_generation_sec', timing.get('rollout_vllm_infer_sec', ''))}",
+                f"- reward_calculation_total_sec: {timing.get('reward_calculation_total_sec', timing.get('reward_callback_total_sec', ''))}",
+                f"- grpo_update_sec: {timing.get('grpo_update_sec', timing.get('actor_update_sec', timing.get('grpo_train_runtime_sec', '')))}",
+                f"- forward_compute_sec: {timing.get('forward_compute_sec', timing.get('old_log_prob_forward_sec', ''))}",
                 f"- selection_sec: {timing.get('selection_sec', '')}",
                 f"- rollout_group_wall_sec: {timing.get('rollout_group_wall_sec', '')}",
                 f"- grpo_train_runtime_sec: {timing.get('grpo_train_runtime_sec', '')}",
@@ -721,6 +729,11 @@ class TTRLORRunner:
                     "r3": reward.get("r3"),
                     "r4": reward.get("r4"),
                     "iter_sec": iter_sec,
+                    "mcts_selection_sec": timing.get("mcts_selection_sec", timing.get("selection_sec")),
+                    "vllm_infer_generation_sec": timing.get("vllm_infer_generation_sec", timing.get("rollout_vllm_infer_sec")),
+                    "reward_calculation_total_sec": timing.get("reward_calculation_total_sec", timing.get("reward_callback_total_sec")),
+                    "grpo_update_sec": timing.get("grpo_update_sec", timing.get("actor_update_sec", timing.get("grpo_train_runtime_sec"))),
+                    "forward_compute_sec": timing.get("forward_compute_sec", timing.get("old_log_prob_forward_sec")),
                     "rollout_group_wall_sec": timing.get("rollout_group_wall_sec"),
                     "grpo_train_runtime_sec": timing.get("grpo_train_runtime_sec"),
                     "code_execution_total_sec": timing.get("code_execution_total_sec"),
@@ -751,8 +764,8 @@ class TTRLORRunner:
             f"- last_reward: {runtime_summary.get('last_reward')}",
             "",
             "## Per Iteration",
-            "| iter | stage | reward_total | r1 | r2 | r3 | r4 | iter_sec | rollout_group_wall_sec | grpo_train_runtime_sec | code_execution_total_sec | reward_callback_total_sec |",
-            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| iter | stage | reward_total | r1 | r2 | r3 | r4 | iter_sec | mcts_selection_sec | vllm_infer_generation_sec | reward_calculation_total_sec | grpo_update_sec | forward_compute_sec |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
         for item in runtime_summary.get("per_iteration", []):
             lines.append(
@@ -767,10 +780,11 @@ class TTRLORRunner:
                         str(item.get("r3", "")),
                         str(item.get("r4", "")),
                         str(item.get("iter_sec", "")),
-                        str(item.get("rollout_group_wall_sec", "")),
-                        str(item.get("grpo_train_runtime_sec", "")),
-                        str(item.get("code_execution_total_sec", "")),
-                        str(item.get("reward_callback_total_sec", "")),
+                        str(item.get("mcts_selection_sec", "")),
+                        str(item.get("vllm_infer_generation_sec", "")),
+                        str(item.get("reward_calculation_total_sec", "")),
+                        str(item.get("grpo_update_sec", "")),
+                        str(item.get("forward_compute_sec", "")),
                     ]
                 )
                 + " |"

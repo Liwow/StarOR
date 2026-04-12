@@ -469,12 +469,16 @@ class PythonCodeExecutor:
             model = gp.read(lp_path)
             model_sense = int(model.ModelSense)
             num_vars = int(model.NumVars)
+            num_bin_vars = int(model.NumBinVars)
+            num_int_vars = int(model.NumIntVars)
+            num_cont_vars = max(0, num_vars - num_bin_vars - num_int_vars)
             num_constrs = int(model.NumConstrs)
             model_info = ModelInfo(
                 model_sense=model_sense,  # 1=min, -1=max
                 num_vars=num_vars,
-                num_bin_vars=int(model.NumBinVars),
-                num_int_vars=int(model.NumIntVars),
+                num_bin_vars=num_bin_vars,
+                num_int_vars=num_int_vars,
+                num_cont_vars=num_cont_vars,
                 num_constrs=num_constrs,
                 has_objective=bool(model_sense in (-1, 1)),
                 has_constraints=bool(num_constrs > 0),
@@ -531,11 +535,13 @@ class PythonCodeExecutor:
                 num_constrs = len(constr_lines)
 
             total_vars = max(num_vars, num_bin_vars + num_int_vars)
+            num_cont_vars = max(0, total_vars - num_bin_vars - num_int_vars)
             return ModelInfo(
                 model_sense=model_sense,
                 num_vars=total_vars,
                 num_bin_vars=num_bin_vars,
                 num_int_vars=num_int_vars,
+                num_cont_vars=num_cont_vars,
                 num_constrs=num_constrs,
                 has_objective=bool(model_sense in (-1, 1)),
                 has_constraints=bool(num_constrs > 0),

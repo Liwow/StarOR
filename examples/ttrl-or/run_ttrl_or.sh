@@ -6,6 +6,9 @@ DATA_ROOT="${HOME}/code/TTRL-OR/data"
 SAMPLE_RUN=true
 SAMPLE_SEED=2026
 sample_size=150
+MCTS_CLUSTER_UPDATA=true
+CODE_REFINE=true
+CODE_REPAIR=1
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -67,6 +70,10 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.mcts.c_puct=1.414 \
     algorithm.ttrl_or.mcts.enable_prior=True \
     algorithm.ttrl_or.mcts.blocked_sibling_soft_weight=0.6 \
+    algorithm.ttrl_or.mcts.code_refine=${CODE_REFINE} \
+    algorithm.ttrl_or.mcts.code_repair=${CODE_REPAIR} \
+    algorithm.ttrl_or.mcts.mcts_cluster_update=${MCTS_CLUSTER_UPDATA} \
+    algorithm.ttrl_or.mcts.mcts_cluster_updata=${MCTS_CLUSTER_UPDATA} \
     algorithm.ttrl_or.mcts.solverllm_compare_mode=False \
     algorithm.ttrl_or.reward.enable_r3_reward=${r3_reward} \
     algorithm.ttrl_or.reward.enable_r4_reward=True \

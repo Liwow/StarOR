@@ -23,7 +23,7 @@ class SemanticSample:
 @dataclass(slots=True)
 class StructuralSample:
     """A single sample in the structural cluster."""
-    feature_tuple: tuple[int, int, int, int]
+    feature_tuple: tuple[int, int, int, int, int, int]
     iteration: int
 
 
@@ -185,44 +185,50 @@ class StructuralCluster:
 
     def add_sample(
         self,
-        feature_tuple: tuple[int, int, int, int] | None,
+        feature_tuple: tuple[int, ...] | None,
         iteration: int,
     ) -> None:
         self._total_count += 1
         if feature_tuple is not None:
+            normalized = self._normalize_feature_tuple(feature_tuple)
+            if normalized is None:
+                return
             self._samples.append(
                 StructuralSample(
-                    feature_tuple=feature_tuple,
+                    feature_tuple=normalized,
                     iteration=iteration,
                 )
             )
 
     def compute_r4(
         self,
-        feature_tuple: tuple[int, int, int, int] | None,
+        feature_tuple: tuple[int, ...] | None,
         current_iteration: int,
         alpha: float,
         k: int,
     ) -> tuple[float, dict[str, Any]]:
         n = self._total_count
 
-        if n == 0 or feature_tuple is None:
+        normalized_feature = self._normalize_feature_tuple(feature_tuple) if feature_tuple is not None else None
+        if n == 0 or normalized_feature is None:
             return 0.0, {
                 "r4": 0.0,
                 "reason": "no_samples" if n == 0 else "no_feature_tuple",
                 "total_count": n,
             }
 
-        model_sense, num_vars, num_bin_vars, num_int_vars = feature_tuple
+        model_sense, num_vars, num_bin_vars, num_int_vars, num_cont_vars, num_constrs = normalized_feature
         psi_d = 0.0
         psi_nv = 0.0
         psi_nb = 0.0
         psi_ni = 0.0
+        psi_nc = 0.0
+        psi_ncon = 0.0
 
         for sample in self._samples:
             delta_iter = current_iteration - sample.iteration
             weight = self.decay ** max(0, delta_iter)
-            s_sense, s_nv, s_nb, s_ni = sample.feature_tuple
+            s_sense, s_nv, s_nb, s_ni, s_nc, s_ncon = sample.feature_tuple
 
             if s_sense == model_sense:
                 psi_d += weight
@@ -232,24 +238,39 @@ class StructuralCluster:
                 psi_nb += weight
             if s_ni == num_int_vars:
                 psi_ni += weight
+            if s_nc == num_cont_vars:
+                psi_nc += weight
+            if s_ncon == num_constrs:
+                psi_ncon += weight
 
         psi_d += 1.0
         psi_nv += 1.0
         psi_nb += 1.0
         psi_ni += 1.0
+        psi_nc += 1.0
+        psi_ncon += 1.0
 
-        s = math.sqrt(psi_d) + math.sqrt(psi_nv) + math.sqrt(psi_nb) + math.sqrt(psi_ni)
-        s_max = 4.0 * math.sqrt(n + alpha * k)
+        s = (
+            math.sqrt(psi_d)
+            + math.sqrt(psi_nv)
+            + math.sqrt(psi_nb)
+            + math.sqrt(psi_ni)
+            + math.sqrt(psi_nc)
+            + math.sqrt(psi_ncon)
+        )
+        s_max = 6.0 * math.sqrt(n + alpha * k)
         r4 = s / s_max if s_max > 0 else 0.0
         r4 = min(1.0, max(0.0, r4))
 
         debug_info = {
             "r4": r4,
-            "feature_tuple": feature_tuple,
+            "feature_tuple": normalized_feature,
             "psi_direction": psi_d,
             "psi_num_vars": psi_nv,
             "psi_num_bin_vars": psi_nb,
             "psi_num_int_vars": psi_ni,
+            "psi_num_cont_vars": psi_nc,
+            "psi_num_constrs": psi_ncon,
             "raw_score": s,
             "max_score": s_max,
             "total_count": n,
@@ -263,17 +284,18 @@ class StructuralCluster:
     def preview_r4(
         self,
         *,
-        feature_tuple: tuple[int, int, int, int] | None,
+        feature_tuple: tuple[int, ...] | None,
         current_iteration: int,
         alpha: float,
         k: int,
-        group_feature_counts: dict[tuple[int, int, int, int], int] | None = None,
+        group_feature_counts: dict[tuple[int, ...], int] | None = None,
         group_total_count: int = 0,
     ) -> tuple[float, dict[str, Any]]:
         """Preview r4 using historical state plus the current rollout group."""
         n = self._total_count + max(0, int(group_total_count))
 
-        if n == 0 or feature_tuple is None:
+        normalized_feature = self._normalize_feature_tuple(feature_tuple) if feature_tuple is not None else None
+        if n == 0 or normalized_feature is None:
             return 0.0, {
                 "r4": 0.0,
                 "reason": "no_samples" if n == 0 else "no_feature_tuple",
@@ -281,16 +303,18 @@ class StructuralCluster:
                 "preview_mode": True,
             }
 
-        model_sense, num_vars, num_bin_vars, num_int_vars = feature_tuple
+        model_sense, num_vars, num_bin_vars, num_int_vars, num_cont_vars, num_constrs = normalized_feature
         psi_d = 0.0
         psi_nv = 0.0
         psi_nb = 0.0
         psi_ni = 0.0
+        psi_nc = 0.0
+        psi_ncon = 0.0
 
         for sample in self._samples:
             delta_iter = current_iteration - sample.iteration
             weight = self.decay ** max(0, delta_iter)
-            s_sense, s_nv, s_nb, s_ni = sample.feature_tuple
+            s_sense, s_nv, s_nb, s_ni, s_nc, s_ncon = sample.feature_tuple
 
             if s_sense == model_sense:
                 psi_d += weight
@@ -300,11 +324,16 @@ class StructuralCluster:
                 psi_nb += weight
             if s_ni == num_int_vars:
                 psi_ni += weight
+            if s_nc == num_cont_vars:
+                psi_nc += weight
+            if s_ncon == num_constrs:
+                psi_ncon += weight
 
         for group_tuple, count in (group_feature_counts or {}).items():
-            if not isinstance(group_tuple, tuple) or len(group_tuple) != 4:
+            normalized_group = self._normalize_feature_tuple(group_tuple)
+            if normalized_group is None:
                 continue
-            g_sense, g_nv, g_nb, g_ni = group_tuple
+            g_sense, g_nv, g_nb, g_ni, g_nc, g_ncon = normalized_group
             if g_sense == model_sense:
                 psi_d += float(count)
             if g_nv == num_vars:
@@ -313,19 +342,32 @@ class StructuralCluster:
                 psi_nb += float(count)
             if g_ni == num_int_vars:
                 psi_ni += float(count)
+            if g_nc == num_cont_vars:
+                psi_nc += float(count)
+            if g_ncon == num_constrs:
+                psi_ncon += float(count)
 
-        s = math.sqrt(psi_d) + math.sqrt(psi_nv) + math.sqrt(psi_nb) + math.sqrt(psi_ni)
-        s_max = 4.0 * math.sqrt(n + alpha * k)
+        s = (
+            math.sqrt(psi_d)
+            + math.sqrt(psi_nv)
+            + math.sqrt(psi_nb)
+            + math.sqrt(psi_ni)
+            + math.sqrt(psi_nc)
+            + math.sqrt(psi_ncon)
+        )
+        s_max = 6.0 * math.sqrt(n + alpha * k)
         r4 = s / s_max if s_max > 0 else 0.0
         r4 = min(1.0, max(0.0, r4))
 
         debug_info = {
             "r4": r4,
-            "feature_tuple": feature_tuple,
+            "feature_tuple": normalized_feature,
             "psi_direction": psi_d,
             "psi_num_vars": psi_nv,
             "psi_num_bin_vars": psi_nb,
             "psi_num_int_vars": psi_ni,
+            "psi_num_cont_vars": psi_nc,
+            "psi_num_constrs": psi_ncon,
             "raw_score": s,
             "max_score": s_max,
             "total_count": n,
@@ -341,7 +383,7 @@ class StructuralCluster:
         return self._total_count
 
     def get_state(self) -> dict[str, Any]:
-        feature_counts: dict[tuple[int, int, int, int], int] = {}
+        feature_counts: dict[tuple[int, int, int, int, int, int], int] = {}
         for sample in self._samples:
             ft = sample.feature_tuple
             feature_counts[ft] = feature_counts.get(ft, 0) + 1
@@ -352,4 +394,23 @@ class StructuralCluster:
             "decay": self.decay,
             "feature_counts": {str(k): v for k, v in feature_counts.items()},
         }
+
+    @staticmethod
+    def _normalize_feature_tuple(feature_tuple: tuple[int, ...] | None) -> tuple[int, int, int, int, int, int] | None:
+        if not isinstance(feature_tuple, tuple):
+            return None
+        if len(feature_tuple) == 6:
+            try:
+                return tuple(int(x) for x in feature_tuple)  # type: ignore[return-value]
+            except Exception:
+                return None
+        if len(feature_tuple) == 4:
+            try:
+                model_sense, num_vars, num_bin_vars, num_int_vars = (int(x) for x in feature_tuple)
+            except Exception:
+                return None
+            num_cont_vars = max(0, int(num_vars) - int(num_bin_vars) - int(num_int_vars))
+            num_constrs = 0
+            return (int(model_sense), int(num_vars), int(num_bin_vars), int(num_int_vars), int(num_cont_vars), int(num_constrs))
+        return None
 

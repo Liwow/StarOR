@@ -287,6 +287,7 @@ class TTRLRewardCalculator(RewardCalculator):
                     "num_vars": model_info.num_vars if model_info else None,
                     "num_bin_vars": model_info.num_bin_vars if model_info else None,
                     "num_int_vars": model_info.num_int_vars if model_info else None,
+                    "num_cont_vars": model_info.num_cont_vars if model_info else None,
                     "num_constrs": model_info.num_constrs if model_info else None,
                     "has_objective": model_info.has_objective if model_info else None,
                     "has_constraints": model_info.has_constraints if model_info else None,
@@ -497,35 +498,39 @@ class TTRLRewardCalculator(RewardCalculator):
         }
 
     @staticmethod
-    def _prepare_structural_group(evals: list[dict[str, Any]]) -> dict[tuple[int, int, int, int], int]:
-        group_counts: dict[tuple[int, int, int, int], int] = {}
+    def _prepare_structural_group(evals: list[dict[str, Any]]) -> dict[tuple[int, int, int, int, int, int], int]:
+        group_counts: dict[tuple[int, int, int, int, int, int], int] = {}
         for item in evals:
             feature_tuple = item.get("feature_tuple")
-            if isinstance(feature_tuple, tuple) and len(feature_tuple) == 4:
-                group_counts[feature_tuple] = group_counts.get(feature_tuple, 0) + 1
+            normalized = TTRLRewardCalculator._normalize_structural_feature_tuple(feature_tuple)
+            if normalized is not None:
+                group_counts[normalized] = group_counts.get(normalized, 0) + 1
         return group_counts
 
     def _compute_local_r4(
         self,
         *,
-        feature_tuple: tuple[int, int, int, int],
-        group_feature_counts: dict[tuple[int, int, int, int], int],
+        feature_tuple: tuple[int, int, int, int, int, int],
+        group_feature_counts: dict[tuple[int, int, int, int, int, int], int],
         group_total_count: int,
     ) -> tuple[float, dict[str, Any]]:
         n = int(group_total_count)
         if n <= 0:
             return 0.0, {"r4": 0.0, "reason": "no_samples", "total_count": n, "scope": "local"}
 
-        model_sense, num_vars, num_bin_vars, num_int_vars = feature_tuple
+        model_sense, num_vars, num_bin_vars, num_int_vars, num_cont_vars, num_constrs = feature_tuple
         psi_d = 0.0
         psi_nv = 0.0
         psi_nb = 0.0
         psi_ni = 0.0
+        psi_nc = 0.0
+        psi_ncon = 0.0
 
         for group_tuple, count in group_feature_counts.items():
-            if not isinstance(group_tuple, tuple) or len(group_tuple) != 4:
+            normalized = self._normalize_structural_feature_tuple(group_tuple)
+            if normalized is None:
                 continue
-            g_sense, g_nv, g_nb, g_ni = group_tuple
+            g_sense, g_nv, g_nb, g_ni, g_nc, g_ncon = normalized
             if g_sense == model_sense:
                 psi_d += float(count)
             if g_nv == num_vars:
@@ -534,11 +539,22 @@ class TTRLRewardCalculator(RewardCalculator):
                 psi_nb += float(count)
             if g_ni == num_int_vars:
                 psi_ni += float(count)
+            if g_nc == num_cont_vars:
+                psi_nc += float(count)
+            if g_ncon == num_constrs:
+                psi_ncon += float(count)
 
-        raw_score = math.sqrt(psi_d) + math.sqrt(psi_nv) + math.sqrt(psi_nb) + math.sqrt(psi_ni)
+        raw_score = (
+            math.sqrt(psi_d)
+            + math.sqrt(psi_nv)
+            + math.sqrt(psi_nb)
+            + math.sqrt(psi_ni)
+            + math.sqrt(psi_nc)
+            + math.sqrt(psi_ncon)
+        )
         tuple_cluster_count = len(group_feature_counts)
         k = max(tuple_cluster_count, int(self.config.r4_k))
-        max_score = 4.0 * math.sqrt(n + float(self.config.r4_alpha) * k)
+        max_score = 6.0 * math.sqrt(n + float(self.config.r4_alpha) * k)
         r4 = raw_score / max_score if max_score > 0 else 0.0
         r4 = min(1.0, max(0.0, r4))
 
@@ -549,6 +565,8 @@ class TTRLRewardCalculator(RewardCalculator):
             "psi_num_vars": psi_nv,
             "psi_num_bin_vars": psi_nb,
             "psi_num_int_vars": psi_ni,
+            "psi_num_cont_vars": psi_nc,
+            "psi_num_constrs": psi_ncon,
             "raw_score": raw_score,
             "max_score": max_score,
             "total_count": n,
@@ -1259,6 +1277,32 @@ class TTRLRewardCalculator(RewardCalculator):
             "num_constrs": int(num_constrs),
             "reason": str(reason),
         }
+
+    @staticmethod
+    def _normalize_structural_feature_tuple(feature_tuple: Any) -> tuple[int, int, int, int, int, int] | None:
+        if not isinstance(feature_tuple, tuple):
+            return None
+        if len(feature_tuple) == 6:
+            try:
+                return tuple(int(x) for x in feature_tuple)  # type: ignore[return-value]
+            except Exception:
+                return None
+        if len(feature_tuple) == 4:
+            try:
+                model_sense, num_vars, num_bin_vars, num_int_vars = (int(x) for x in feature_tuple)
+            except Exception:
+                return None
+            num_cont_vars = max(0, int(num_vars) - int(num_bin_vars) - int(num_int_vars))
+            num_constrs = 0
+            return (
+                int(model_sense),
+                int(num_vars),
+                int(num_bin_vars),
+                int(num_int_vars),
+                int(num_cont_vars),
+                int(num_constrs),
+            )
+        return None
 
 
 

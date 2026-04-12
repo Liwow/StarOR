@@ -1,7 +1,9 @@
 ﻿from __future__ import annotations
 
+import json
 import math
 import re
+import string
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -11,6 +13,11 @@ from verl.trainer.ttrl_or_runtime.config import GRPOConfig, MCTSConfig
 from verl.trainer.ttrl_or_runtime.mcts.node import SearchNode
 from verl.trainer.ttrl_or_runtime.mcts.puct import PUCTSelector
 from verl.trainer.ttrl_or_runtime.prompts import PromptBuilder
+from verl.trainer.ttrl_or_runtime.prompts.refine_code import (
+    CODE_ERROR_PROMPT_TEMPLATE,
+    CODE_INFEASIBLE_PROMPT_TEMPLATE,
+    CODE_REFINE_PROMPT_TEMPLATE,
+)
 from verl.trainer.ttrl_or_runtime.types import Generation, OptimizationTask, RewardBreakdown, STAGE_ORDER, Stage, Trajectory
 
 
@@ -169,6 +176,17 @@ class FourStageMCTS:
             prompt_messages = self.prompt_builder.build_messages(task, next_stage, selected_traj, prompt_kind="rollout")
             base_prompt = self.prompt_builder.build(task, next_stage, selected_traj)
             prompt = self.prompt_builder.build_rollout(task, next_stage, selected_traj)
+            if next_stage == Stage.CODE and bool(getattr(self.config, "code_refine", True)):
+                code_refine_prompt = self._build_code_refine_rollout_prompt(
+                    task=task,
+                    selected=selected,
+                    records=records,
+                )
+                if code_refine_prompt.strip():
+                    base_prompt_messages = [{"role": "user", "content": code_refine_prompt}]
+                    prompt_messages = [{"role": "user", "content": code_refine_prompt}]
+                    base_prompt = code_refine_prompt
+                    prompt = code_refine_prompt
             prompt_build_sec = float(time.perf_counter() - prompt_t0)
 
             group_id = f"iter:{iter_idx}:{selected.node_id}:{next_stage.value}"
@@ -338,12 +356,32 @@ class FourStageMCTS:
             setattr(_reward_callback, "batch_score", _batch_reward_callback)
 
             rollout_group_t0 = time.perf_counter()
-            generations, grpo_report = self._run_internal_grpo_rollout(
-                stage=next_stage,
-                prompt=prompt_messages or prompt,
-                grpo_config=grpo_config,
-                reward_callback=_reward_callback,
-            )
+            if next_stage == Stage.CODE:
+                code_k = max(1, int(grpo_config.num_generations))
+                generations = list(self.backend.generate(next_stage, prompt_messages or prompt, code_k))
+                completion_texts = [str(gen.text or "") for gen in generations]
+                if completion_texts:
+                    rewards = list(_batch_reward_callback(prompt, completion_texts))
+                else:
+                    rewards = []
+                for ridx, gen in enumerate(generations):
+                    reward_total = float(rewards[ridx]) if ridx < len(rewards) else 0.0
+                    gen.metadata["reward_total"] = reward_total
+                    gen.metadata["rollout_index"] = int(ridx)
+                grpo_report = {
+                    "updated": False,
+                    "backend": type(self.backend).__name__,
+                    "stage": next_stage.value,
+                    "num_samples": len(generations),
+                    "reason": "code_stage_generate_only_no_grpo_update",
+                }
+            else:
+                generations, grpo_report = self._run_internal_grpo_rollout(
+                    stage=next_stage,
+                    prompt=prompt_messages or prompt,
+                    grpo_config=grpo_config,
+                    reward_callback=_reward_callback,
+                )
             rollout_group_wall_sec = float(time.perf_counter() - rollout_group_t0)
 
             callback_total_sec = float(sum(t.get("callback_total_sec", 0.0) for t in callback_timings))
@@ -354,6 +392,38 @@ class FourStageMCTS:
             model_sampling_update_sec = float(max(0.0, rollout_group_wall_sec - callback_total_sec))
 
             if not group_rollouts:
+                if next_stage == Stage.CODE:
+                    iter_payload = {
+                        "iter": int(iter_idx),
+                        "stage": next_stage.value,
+                        "timing": {
+                            "mcts_selection_sec": selection_sec,
+                            "iteration_total_sec": float(time.perf_counter() - iter_t0),
+                        },
+                        "code_terminal": {
+                            "enabled": False,
+                            "reason": "empty_code_rollout_group",
+                            "fallback_to_original_logic": True,
+                        },
+                    }
+                    iteration_logs.append(iter_payload)
+                    if iteration_callback is not None:
+                        iteration_callback(iter_payload)
+                    stop_info = {
+                        "reason": "expanded_to_code",
+                        "iteration": iter_idx,
+                        "stage": next_stage.value,
+                        "node_id": selected.node_id,
+                        "trajectory_id": "",
+                        "reward_total": None,
+                        "code_terminal": dict(iter_payload["code_terminal"]),
+                    }
+                    return self._finalize_result(
+                        root=root,
+                        records=records,
+                        stop_info=stop_info,
+                        iteration_logs=iteration_logs,
+                    )
                 continue
 
             resolved_priors, prior_source = self._resolve_child_priors(
@@ -486,6 +556,22 @@ class FourStageMCTS:
             backprop_total_sec += group_backprop_sec
             shared_group_backprop_sec = group_backprop_sec / max(1, len(processed_group_rollouts))
 
+            cluster_lineage_update: dict[str, Any] = {
+                "enabled": bool(self._mcts_cluster_update_enabled()),
+                "updated": 0,
+                "levels": [],
+                "node_ids": [],
+                "sec": 0.0,
+            }
+            if self._mcts_cluster_update_enabled():
+                cluster_lineage_update = self._propagate_cluster_lineage_from_selected(
+                    selected=selected,
+                    records=records,
+                    reward=group_reward_mean,
+                )
+                backprop_total_sec += float(cluster_lineage_update.get("sec", 0.0))
+            shared_cluster_backprop_sec = float(cluster_lineage_update.get("sec", 0.0)) / max(1, len(processed_group_rollouts))
+
             for pending in pending_record_inputs:
                 ridx = int(pending["rollout_index"])
                 rollout = pending["rollout"]
@@ -495,6 +581,7 @@ class FourStageMCTS:
                 reward_total = float(pending["reward_total"])
                 rollout_timing = dict(rollout.get("timing", {}))
                 rollout_timing["group_backprop_sec"] = float(shared_group_backprop_sec)
+                rollout_timing["cluster_linked_backprop_sec"] = float(shared_cluster_backprop_sec)
                 rollout_timing["group_reward_mean"] = float(group_reward_mean)
                 rollout["timing"] = rollout_timing
                 completed.metadata["iter"] = int(iter_idx)
@@ -570,6 +657,7 @@ class FourStageMCTS:
                     "parent_visits_after": int(selected.visits),
                     "child_backprop_sec": float(rollout_timing.get("child_backprop_sec", 0.0)),
                     "group_backprop_sec": float(shared_group_backprop_sec),
+                    "cluster_linked_backprop_sec": float(shared_cluster_backprop_sec),
                     "group_reward_mean": float(group_reward_mean),
                 }
                 if 0 <= ridx < len(rollout_summaries):
@@ -590,7 +678,25 @@ class FourStageMCTS:
             best_rollout_timing = dict(best_rollout.get("timing", {}))
             best_rollout_update = dict(best_rollout.get("update", {}))
 
+            grpo_timing = (
+                dict((grpo_report or {}).get("timing", {}))
+                if isinstance((grpo_report or {}).get("timing", {}), dict)
+                else {}
+            )
+            rollout_vllm_infer_sec = float(grpo_timing.get("rollout_vllm_infer_sec", model_sampling_update_sec) or 0.0)
+            forward_compute_sec = float(grpo_timing.get("old_log_prob_forward_sec", 0.0) or 0.0)
+            grpo_update_sec = float(grpo_timing.get("actor_update_sec", 0.0) or 0.0)
+            grpo_group_total_sec = float(grpo_timing.get("grpo_group_total_sec", 0.0) or 0.0)
+
+            # Backward-compatible alias: prefer explicit train_runtime if present,
+            # otherwise use actor update time as the GRPO update time proxy.
             grpo_train_runtime_sec = float((grpo_report or {}).get("train_runtime", 0.0) or 0.0)
+            if grpo_train_runtime_sec <= 0.0:
+                grpo_train_runtime_sec = float(grpo_update_sec)
+
+            # Reward calculation time includes rollout->code completion/parsing,
+            # code execution and reward computation callback path.
+            reward_calculation_total_sec = float(callback_total_sec)
             iter_total_sec = float(time.perf_counter() - iter_t0)
 
             iter_payload = {
@@ -683,19 +789,33 @@ class FourStageMCTS:
                 },
                 "rollout_group": rollout_summaries,
                 "timing": {
+                    # Canonical timing fields (explicit names)
+                    "mcts_selection_sec": selection_sec,
+                    "vllm_infer_generation_sec": rollout_vllm_infer_sec,
+                    "reward_calculation_total_sec": reward_calculation_total_sec,
+                    "grpo_update_sec": grpo_update_sec,
+                    "forward_compute_sec": forward_compute_sec,
+
+                    # Backward-compatible / detailed timing fields
                     "selection_sec": selection_sec,
                     "prompt_build_sec": prompt_build_sec,
                     "rollout_group_wall_sec": rollout_group_wall_sec,
+                    "rollout_vllm_infer_sec": rollout_vllm_infer_sec,
                     "grpo_train_runtime_sec": grpo_train_runtime_sec,
+                    "grpo_group_total_sec": grpo_group_total_sec,
                     "reward_callback_total_sec": callback_total_sec,
+                    "old_log_prob_forward_sec": forward_compute_sec,
+                    "actor_update_sec": grpo_update_sec,
                     "completion_parse_total_sec": callback_parse_sec,
                     "rollout_to_code_total_sec": callback_complete_sec,
                     "reward_compute_total_sec": callback_reward_sec,
                     "code_execution_total_sec": callback_exec_sec,
                     "model_sampling_update_excluding_reward_callback_sec": model_sampling_update_sec,
                     "backprop_total_sec": backprop_total_sec,
+                    "cluster_linked_backprop_total_sec": float(cluster_lineage_update.get("sec", 0.0)),
                     "iteration_total_sec": iter_total_sec,
                 },
+                "cluster_lineage_update": cluster_lineage_update,
                 "grpo_update": dict(grpo_report),
             }
             iteration_logs.append(iter_payload)
@@ -703,31 +823,33 @@ class FourStageMCTS:
                 iteration_callback(iter_payload)
 
             if next_stage == Stage.CODE:
-                code_consensus_stop = self._check_code_stage_consensus(records=records, current_iter=iter_idx)
-                if code_consensus_stop is not None:
-                    stop_info = {
-                        "reason": "expanded_to_code",
-                        "iteration": iter_idx,
-                        "stage": next_stage.value,
-                        "node_id": selected.node_id,
-                        "trajectory_id": str(code_consensus_stop.get("trajectory_id", "")),
-                        "reward_total": code_consensus_stop.get("reward_total"),
-                        "obj_leader": code_consensus_stop.get("obj_leader"),
-                        "count": code_consensus_stop.get("count"),
-                        "eligible_count": code_consensus_stop.get("eligible_count"),
-                        "ratio": code_consensus_stop.get("ratio"),
-                        "obj_scale_mode": "expanded",
-                        "obj_scale_expand_ratio": code_consensus_stop.get("obj_scale_expand_ratio"),
-                        "tie_breaker": "prior_when_reward_equal",
-                    }
-                    return self._finalize_result(
-                        root=root,
-                        records=records,
-                        stop_info=stop_info,
-                        iteration_logs=iteration_logs,
-                    )
-                # Reaching CODE without consensus should continue MCTS exploration.
-                continue
+                terminal_payload = self._run_code_terminal_refine(
+                    task=task,
+                    selected=selected,
+                    records=records,
+                    code_rollouts=processed_group_rollouts,
+                    stage_archive=stage_archive,
+                    current_iter=iter_idx,
+                )
+                iter_payload["code_terminal"] = dict(terminal_payload)
+                fallback_to_original = bool(terminal_payload.get("fallback_to_original_logic", False))
+                final_tid = "" if fallback_to_original else str(terminal_payload.get("trajectory_id", ""))
+                final_reward = None if fallback_to_original else terminal_payload.get("reward_total")
+                stop_info = {
+                    "reason": "expanded_to_code",
+                    "iteration": iter_idx,
+                    "stage": next_stage.value,
+                    "node_id": selected.node_id,
+                    "trajectory_id": final_tid,
+                    "reward_total": final_reward,
+                    "code_terminal": dict(terminal_payload),
+                }
+                return self._finalize_result(
+                    root=root,
+                    records=records,
+                    stop_info=stop_info,
+                    iteration_logs=iteration_logs,
+                )
 
             recent_consensus_stop = self._check_recent_obj_consensus(records=records, current_iter=iter_idx)
             if recent_consensus_stop is not None:
@@ -1195,6 +1317,134 @@ class FourStageMCTS:
         while cur is not None:
             cur.update(reward)
             cur = cur.parent
+
+    def _mcts_cluster_update_enabled(self) -> bool:
+        # Compatibility: allow legacy typo key mcts_cluster_updata to override.
+        legacy = getattr(self.config, "mcts_cluster_updata", None)
+        if legacy is not None:
+            return bool(legacy)
+        return bool(getattr(self.config, "mcts_cluster_update", True))
+
+    def _latest_record_for_node(
+        self,
+        records: list[StageExpansionRecord],
+        *,
+        node_id: str,
+        stage: Stage,
+    ) -> StageExpansionRecord | None:
+        target = str(node_id or "")
+        chosen: StageExpansionRecord | None = None
+        for rec in records:
+            if rec.stage != stage:
+                continue
+            if str(rec.node_id) != target:
+                continue
+            if chosen is None:
+                chosen = rec
+                continue
+            if int(rec.iteration) > int(chosen.iteration):
+                chosen = rec
+            elif int(rec.iteration) == int(chosen.iteration):
+                if float(self._record_reward_total(rec)) > float(self._record_reward_total(chosen)):
+                    chosen = rec
+        return chosen
+
+    def _propagate_cluster_lineage_from_selected(
+        self,
+        *,
+        selected: SearchNode,
+        records: list[StageExpansionRecord],
+        reward: float,
+    ) -> dict[str, Any]:
+        coef_raw = getattr(self.config, "cluster_propagate_coef", 0.6)
+        decay_raw = getattr(self.config, "cluster_propagate_ancestor_decay", 0.8)
+        try:
+            cluster_coef = max(0.0, float(coef_raw))
+        except Exception:
+            cluster_coef = 0.6
+        try:
+            ancestor_decay = max(0.0, min(1.0, float(decay_raw)))
+        except Exception:
+            ancestor_decay = 0.8
+
+        t0 = time.perf_counter()
+        total_updated = 0
+        touched_ids: list[str] = []
+        levels: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+
+        cursor: SearchNode | None = selected
+        level = 0
+        while cursor is not None and cursor.parent is not None:
+            if cursor.stage is None:
+                cursor = cursor.parent
+                level += 1
+                continue
+
+            rec = self._latest_record_for_node(records, node_id=str(cursor.node_id), stage=cursor.stage)
+            if rec is None:
+                cursor = cursor.parent
+                level += 1
+                continue
+            cursor_obj = self._record_obj_answer(rec)
+            if cursor_obj is None:
+                cursor = cursor.parent
+                level += 1
+                continue
+
+            level_weight = float(cluster_coef * (ancestor_decay ** max(0, int(level))))
+            level_reward = float(reward) * float(level_weight)
+
+            peer_ids: list[str] = []
+            updated_this_level = 0
+            for sibling in cursor.parent.children:
+                sibling_id = str(sibling.node_id)
+                if sibling_id == str(cursor.node_id):
+                    continue
+                if sibling.stage != cursor.stage:
+                    continue
+                sibling_rec = self._latest_record_for_node(records, node_id=sibling_id, stage=sibling.stage)
+                if sibling_rec is None:
+                    continue
+                sibling_obj = self._record_obj_answer(sibling_rec)
+                if sibling_obj is None:
+                    continue
+                if not self._within_rel_tol(float(cursor_obj), float(sibling_obj)):
+                    continue
+                peer_ids.append(sibling_id)
+                if sibling_id in seen_ids:
+                    continue
+                sibling.update(level_reward)
+                seen_ids.add(sibling_id)
+                touched_ids.append(sibling_id)
+                total_updated += 1
+                updated_this_level += 1
+
+            levels.append(
+                {
+                    "target_node_id": str(cursor.node_id),
+                    "stage": str(cursor.stage.value),
+                    "obj_leader": float(cursor_obj),
+                    "level_index": int(level),
+                    "level_weight": float(level_weight),
+                    "level_reward": float(level_reward),
+                    "peer_node_ids": peer_ids,
+                    "updated": int(updated_this_level),
+                }
+            )
+
+            cursor = cursor.parent
+            level += 1
+
+        return {
+            "enabled": True,
+            "updated": int(total_updated),
+            "node_ids": touched_ids,
+            "levels": levels,
+            "coef": float(cluster_coef),
+            "ancestor_decay": float(ancestor_decay),
+            "sec": float(time.perf_counter() - t0),
+        }
 
     @staticmethod
     def _iter_leaves(root: SearchNode) -> list[SearchNode]:
@@ -1832,6 +2082,7 @@ class FourStageMCTS:
         target_iters = [int(current_iter) - 2, int(current_iter) - 1, int(current_iter)]
         top_records: list[StageExpansionRecord] = []
         top_objs: list[float] = []
+        top_stages: list[str] = []
 
         for iter_id in target_iters:
             iter_records = [
@@ -1852,6 +2103,12 @@ class FourStageMCTS:
 
             top_records.append(top_rec)
             top_objs.append(float(top_obj))
+            top_stages.append(str(top_rec.stage.value))
+
+        # New gate: recent 3 iterations must come from 3 different stages.
+        # If stage repeats across the 3 consecutive iterations, do not stop.
+        if len(set(top_stages)) < 3:
+            return None
 
         leader = float(top_objs[0])
         for value in top_objs[1:]:
@@ -1860,10 +2117,11 @@ class FourStageMCTS:
 
         return {
             "iterations": [int(x) for x in target_iters],
+            "stages": [str(x) for x in top_stages],
             "top_obj_values": [float(x) for x in top_objs],
             "top_obj_leader": float(leader),
             "trajectory_ids": [str(rec.trajectory.trajectory_id) for rec in top_records],
-            "rule": "same_top_obj_across_last_3_iterations_with_rel_tol",
+            "rule": "same_top_obj_across_last_3_iterations_with_rel_tol_and_distinct_3_stages",
         }
 
     def _check_code_stage_consensus(
@@ -1928,6 +2186,376 @@ class FourStageMCTS:
             "reward_total": float(self._record_reward_total(chosen)),
             "obj_scale_expand_ratio": float(expand_ratio),
         }
+
+    def _run_code_terminal_refine(
+        self,
+        *,
+        task: OptimizationTask,
+        selected: SearchNode,
+        records: list[StageExpansionRecord],
+        code_rollouts: list[dict[str, Any]],
+        stage_archive: list[Trajectory],
+        current_iter: int,
+    ) -> dict[str, Any]:
+        terminal_group_id = f"terminal:{current_iter}:{selected.node_id}"
+        partial_model = selected.to_partial_trajectory()
+        model_text = self._compose_model_text(partial_model)
+
+        candidate_items: list[dict[str, Any]] = []
+        for item in code_rollouts:
+            traj = item.get("trajectory")
+            if traj is None:
+                continue
+            reward_obj = traj.reward if traj.reward is not None else item.get("reward_obj")
+            if reward_obj is None:
+                continue
+            if traj.reward is None:
+                traj.reward = reward_obj
+            child = item.get("child")
+            prior_val = float(getattr(child, "prior", 1.0) if child is not None else item.get("resolved_prior", 1.0) or 1.0)
+            candidate_items.append(
+                {
+                    "trajectory": traj,
+                    "reward": reward_obj,
+                    "prior": prior_val,
+                    "obj": self._reward_obj_answer(reward_obj),
+                }
+            )
+
+        if not candidate_items:
+            return {
+                "enabled": False,
+                "reason": "empty_code_candidates",
+                "fallback_to_original_logic": True,
+            }
+
+        valid_items = [
+            item
+            for item in candidate_items
+            if isinstance(item.get("obj"), (int, float)) and math.isfinite(float(item.get("obj")))
+        ]
+
+        selection_debug: dict[str, Any] = {}
+        if valid_items:
+            clusters: list[dict[str, Any]] = []
+            for item in valid_items:
+                obj = float(item["obj"])
+                matched = None
+                for cluster in clusters:
+                    if self._within_rel_tol(obj, float(cluster["leader"])):
+                        matched = cluster
+                        break
+                if matched is None:
+                    matched = {"leader": obj, "items": []}
+                    clusters.append(matched)
+                matched["items"].append(item)
+
+            clusters.sort(
+                key=lambda c: (
+                    int(len(c["items"])),
+                    max(float(c_item["reward"].total) for c_item in c["items"]),
+                    max(float(c_item["prior"]) for c_item in c["items"]),
+                ),
+                reverse=True,
+            )
+            chosen_cluster = clusters[0]
+            chosen_item = max(
+                chosen_cluster["items"],
+                key=lambda x: (float(x["reward"].total), float(x["prior"])),
+            )
+            selection_debug = {
+                "mode": "largest_obj_cluster",
+                "cluster_count": int(len(clusters)),
+                "chosen_cluster_leader": float(chosen_cluster["leader"]),
+                "chosen_cluster_size": int(len(chosen_cluster["items"])),
+                "tie_breaker": "reward_then_prior",
+            }
+        else:
+            chosen_item = max(
+                candidate_items,
+                key=lambda x: (float(x["reward"].total), float(x["prior"])),
+            )
+            selection_debug = {
+                "mode": "max_reward_prior_no_valid_obj_cluster",
+                "cluster_count": 0,
+                "tie_breaker": "reward_then_prior",
+            }
+
+        candidate_traj = chosen_item["trajectory"]
+        candidate_reward = chosen_item["reward"]
+        repair_rounds = max(0, int(getattr(self.config, "code_repair", 0) or 0))
+        terminal_trace: dict[str, Any] = {
+            "enabled": True,
+            "code_refine_enabled": bool(getattr(self.config, "code_refine", True)),
+            "code_repair_max": int(repair_rounds),
+            "obj_cons_node_id": str(selected.node_id),
+            "selection": selection_debug,
+            "initial_candidate": self._terminal_candidate_summary(candidate_traj),
+            "steps": [],
+        }
+
+        need_repair = not self._reward_has_valid_obj(candidate_reward)
+        issue_kind, issue_reason = self._classify_terminal_issue(candidate_reward)
+        for repair_idx in range(repair_rounds):
+            if not need_repair:
+                break
+
+            current_code = str(candidate_traj.code or "")
+            current_exec_text = self._execution_text_from_reward(candidate_reward)
+            if issue_kind == "infeasible":
+                repair_prompt = self._safe_template_render(
+                    CODE_INFEASIBLE_PROMPT_TEMPLATE,
+                    task_description=str(task.description or ""),
+                    model_text=model_text,
+                    code_text=current_code,
+                    execution_text=current_exec_text,
+                )
+                repair_kind = "repair_infeasible"
+            else:
+                repair_prompt = self._safe_template_render(
+                    CODE_ERROR_PROMPT_TEMPLATE,
+                    task_description=str(task.description or ""),
+                    code_text=current_code,
+                    error_info=current_exec_text,
+                )
+                repair_kind = "repair_error"
+
+            answer_text, repaired_code, repaired_prior = self._generate_code_candidate(repair_prompt)
+            step_payload = {
+                "kind": repair_kind,
+                "round": int(repair_idx + 1),
+                "prompt": repair_prompt,
+                "answer": answer_text,
+                "parsed_code_len": int(len(str(repaired_code or "").strip())),
+                "prior": float(repaired_prior),
+                "issue_before": {"kind": issue_kind, "reason": issue_reason},
+            }
+
+            if repaired_code.strip():
+                repaired_traj = self._trajectory_with_code(partial_model, repaired_code, repaired_prior)
+                repaired_reward = self._score_terminal_trajectory(repaired_traj, stage_archive)
+                repaired_traj.reward = repaired_reward
+                candidate_traj = repaired_traj
+                candidate_reward = repaired_reward
+
+            need_repair = not self._reward_has_valid_obj(candidate_reward)
+            issue_kind, issue_reason = self._classify_terminal_issue(candidate_reward)
+            step_payload["candidate"] = self._terminal_candidate_summary(candidate_traj)
+            step_payload["issue_after"] = {"kind": issue_kind, "reason": issue_reason}
+            terminal_trace["steps"].append(step_payload)
+
+        if self._record_by_trajectory_id(records, str(candidate_traj.trajectory_id)) is None:
+            final_reward_total = float(candidate_reward.total if candidate_reward is not None else 0.0)
+            records.append(
+                StageExpansionRecord(
+                    stage=Stage.CODE,
+                    node_id=str(uuid.uuid4()),
+                    parent_id=str(selected.node_id),
+                    prompt=str((terminal_trace.get("steps", [{}])[-1] or {}).get("prompt", "")),
+                    completion=str(candidate_traj.code or ""),
+                    reward=final_reward_total,
+                    trajectory=candidate_traj,
+                    prior=float(candidate_traj.priors.get(Stage.CODE, 1.0)),
+                    was_expanded=False,
+                    simulation_index=int(current_iter),
+                    rollout_index=-1,
+                    group_id=terminal_group_id,
+                    grpo_report={"terminal_refine": True},
+                    iteration=int(current_iter),
+                )
+            )
+
+        fallback_to_original = not self._reward_has_valid_obj(candidate_reward)
+        terminal_trace["final_candidate"] = self._terminal_candidate_summary(candidate_traj)
+        terminal_trace["final_issue"] = {"kind": issue_kind, "reason": issue_reason}
+        terminal_trace["fallback_to_original_logic"] = bool(fallback_to_original)
+
+        return {
+            "enabled": True,
+            "trajectory_id": str(candidate_traj.trajectory_id),
+            "reward_total": float(candidate_reward.total if candidate_reward is not None else 0.0),
+            "obj_answer": self._reward_obj_answer(candidate_reward),
+            "fallback_to_original_logic": bool(fallback_to_original),
+            "trace": terminal_trace,
+        }
+
+    def _build_code_refine_rollout_prompt(
+        self,
+        *,
+        task: OptimizationTask,
+        selected: SearchNode,
+        records: list[StageExpansionRecord],
+    ) -> str:
+        partial_model = selected.to_partial_trajectory()
+        model_text = self._compose_model_text(partial_model)
+        selected_rec = (
+            self._latest_record_for_node(records, node_id=str(selected.node_id), stage=selected.stage)
+            if selected.stage is not None
+            else None
+        )
+        seed_code = str((selected_rec.trajectory.code if selected_rec is not None else "") or "")
+        seed_execution_text = self._execution_text_from_reward(selected_rec.trajectory.reward if selected_rec is not None else None)
+        return self._safe_template_render(
+            CODE_REFINE_PROMPT_TEMPLATE,
+            task_description=str(task.description or ""),
+            model_text=model_text,
+            code_text=seed_code,
+            execution_text=seed_execution_text,
+        )
+
+    def _compose_model_text(self, partial: Trajectory) -> str:
+        blocks: list[str] = []
+        stage_rank = {stage: idx for idx, stage in enumerate(self.stage_order)}
+        ordered_items = sorted(
+            list((partial.outputs or {}).items()),
+            key=lambda item: int(stage_rank.get(item[0], 10_000)),
+        )
+        for stage, raw_text in ordered_items:
+            if stage == Stage.CODE:
+                continue
+            text = str(raw_text or "").strip()
+            if text:
+                blocks.append(text)
+        return "\n\n".join(blocks).strip()
+
+    @staticmethod
+    def _safe_template_render(template: str, **kwargs: Any) -> str:
+        class _SafeMap(dict):
+            def __missing__(self, key):  # type: ignore[override]
+                return ""
+
+        text = str(template or "")
+        merged: dict[str, Any] = dict(kwargs or {})
+        for _, field_name, _, _ in string.Formatter().parse(text):
+            if not field_name:
+                continue
+            if field_name not in merged:
+                merged[field_name] = ""
+        try:
+            return text.format_map(_SafeMap(merged))
+        except Exception:
+            rendered = text
+            for key, value in merged.items():
+                rendered = rendered.replace("{" + str(key) + "}", str(value))
+            return rendered
+
+    def _generate_code_candidate(self, prompt: Any) -> tuple[str, str, float]:
+        try:
+            generations = self.backend.generate(Stage.CODE, prompt, 1)
+        except Exception as exc:  # noqa: BLE001
+            return f"[generation_error] {type(exc).__name__}: {exc}", "", 0.0
+        if not generations:
+            return "", "", 0.0
+        generation = generations[0]
+        answer_text = str(generation.text or "")
+        code_text = self._extract_stage_payload(Stage.CODE, answer_text)
+        if not code_text.strip() and self._looks_like_code(answer_text):
+            code_text = self._sanitize_code_payload(answer_text)
+        return answer_text, str(code_text or ""), float(getattr(generation, "prior", 1.0) or 1.0)
+
+    @staticmethod
+    def _trajectory_with_code(partial: Trajectory, code_text: str, code_prior: float = 1.0) -> Trajectory:
+        outputs = dict(partial.outputs)
+        priors = dict(partial.priors)
+        outputs[Stage.CODE] = str(code_text or "")
+        priors[Stage.CODE] = float(max(1e-6, code_prior))
+        return Trajectory(
+            trajectory_id=str(uuid.uuid4()),
+            outputs=outputs,
+            priors=priors,
+            metadata=dict(partial.metadata or {}),
+        )
+
+    def _score_terminal_trajectory(self, trajectory: Trajectory, stage_archive: list[Trajectory]) -> RewardBreakdown:
+        score_group = getattr(self.rewarder, "score_rollout_group", None)
+        if callable(score_group):
+            try:
+                scored = list(score_group(stage=Stage.CODE, trajectories=[trajectory], explored=stage_archive, commit=False))
+                if scored:
+                    trajectory.reward = scored[0]
+                    return scored[0]
+            except Exception:
+                pass
+        reward = self.rewarder.provisional_reward(trajectory, stage_archive)
+        trajectory.reward = reward
+        return reward
+
+    @staticmethod
+    def _execution_text_from_reward(reward: RewardBreakdown | None) -> str:
+        if reward is None:
+            return "{}"
+        meta = reward.metadata if isinstance(reward.metadata, dict) else {}
+        execution = meta.get("execution", {})
+        payload = {
+            "execution": execution,
+            "obj_answer": meta.get("obj_answer"),
+            "r1": reward.r1,
+            "r2": reward.r2,
+            "r3": reward.r3,
+            "r4": reward.r4,
+            "total": reward.total,
+        }
+        try:
+            return json.dumps(payload, ensure_ascii=False, indent=2)
+        except Exception:
+            return str(payload)
+
+    @staticmethod
+    def _terminal_candidate_summary(trajectory: Trajectory | None) -> dict[str, Any]:
+        if trajectory is None:
+            return {"trajectory_id": "", "reward_total": 0.0, "obj_answer": None, "code_len": 0}
+        reward = trajectory.reward
+        meta = (reward.metadata or {}) if reward is not None else {}
+        return {
+            "trajectory_id": str(trajectory.trajectory_id),
+            "reward_total": float(reward.total if reward is not None else 0.0),
+            "obj_answer": meta.get("obj_answer"),
+            "code_len": int(len(str(trajectory.code or "").strip())),
+            "execution": meta.get("execution", {}),
+        }
+
+    @staticmethod
+    def _reward_obj_answer(reward: RewardBreakdown | None) -> float | None:
+        if reward is None:
+            return None
+        meta = reward.metadata if isinstance(reward.metadata, dict) else {}
+        obj = meta.get("obj_answer")
+        if isinstance(obj, (int, float)) and math.isfinite(float(obj)):
+            return float(obj)
+        return None
+
+    @staticmethod
+    def _reward_has_valid_obj(reward: RewardBreakdown | None) -> bool:
+        return FourStageMCTS._reward_obj_answer(reward) is not None
+
+    @staticmethod
+    def _classify_terminal_issue(reward: RewardBreakdown | None) -> tuple[str, str]:
+        if reward is None:
+            return "error", "missing_reward"
+        meta = reward.metadata if isinstance(reward.metadata, dict) else {}
+        execution = meta.get("execution", {}) if isinstance(meta.get("execution", {}), dict) else {}
+        output = execution.get("output")
+        status_text = ""
+        if isinstance(output, dict):
+            status_text = str(output.get("status", "") or "")
+        elif output is not None:
+            status_text = str(output)
+        err_type = str(execution.get("error_type", "") or "").strip()
+        stdout_tail = str(execution.get("stdout_tail", "") or "")
+        stderr_tail = str(execution.get("stderr_tail", "") or "")
+        haystack = " ".join([status_text, stdout_tail, stderr_tail]).lower()
+        infeasible_markers = ("infeasible", "inf_or_unbd", "infeasible or unbounded", "unbounded")
+        if any(marker in haystack for marker in infeasible_markers):
+            return "infeasible", "infeasible_marker"
+        if err_type:
+            return "error", err_type
+        eff = bool(execution.get("effective_success", False))
+        obj = meta.get("obj_answer")
+        if eff and isinstance(obj, (int, float)) and math.isfinite(float(obj)):
+            return "ok", "effective_success_with_obj"
+        if not bool(execution.get("r2_success", False)) and not eff:
+            return "error", "execution_failed"
+        return "ok", "default"
 
     def _semantic_rel_tol(self) -> float:
         reward_cfg = getattr(self.rewarder, 'config', None)

@@ -143,6 +143,19 @@ algorithm:
       # Soft penalty weight for repeatedly selected sibling group (range: 0~1).
       blocked_sibling_soft_weight: 0.6
 
+      # Whether to run CODE terminal refine when expanded_to_code is triggered.
+      code_refine: True
+
+      # CODE terminal repair rounds (0 means disabled).
+      code_repair: 0
+
+      # Enable cluster-linked backprop update in MCTS:
+      # update same-cluster siblings and ancestor-layer same-cluster siblings.
+      mcts_cluster_update: True
+
+      # Legacy alias for compatibility with existing scripts/overrides.
+      mcts_cluster_updata: null
+
     # Reward settings migrated from TTRL-OR.
     reward:
 

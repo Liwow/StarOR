@@ -18,6 +18,16 @@ class MCTSConfig:
     final_select_obj_scale_preference: bool = True
     final_select_obj_scale_expand_ratio: float = 0.10
     blocked_sibling_soft_weight: float = 0.6
+    # Whether to run CODE terminal refine flow when expanded_to_code is triggered.
+    code_refine: bool = True
+    # CODE terminal repair rounds (0 means disable repair).
+    code_repair: int = 0
+    # Enable cluster-linked MCTS backprop update:
+    # besides normal selected-path backprop, also update same-cluster siblings
+    # (and same-cluster ancestor-layer siblings with decay).
+    mcts_cluster_update: bool = True
+    # Legacy/compat alias (keep for CLI override compatibility).
+    mcts_cluster_updata: bool | None = None
 
 
 @dataclass(slots=True)
