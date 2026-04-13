@@ -9,15 +9,15 @@ MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-${MODEL}}"
 VLLM_HOST="${VLLM_HOST:-0.0.0.0}"
 VLLM_PORT="${VLLM_PORT:-8000}"
 VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-1}"
-VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.45}"
+VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.95}"
 VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-16384}"
 VLLM_ENFORCE_EAGER="${VLLM_ENFORCE_EAGER:-false}"
 VLLM_ENABLE_PREFIX_CACHING="${VLLM_ENABLE_PREFIX_CACHING:-true}"
-SERVER_KIND="${SERVER_KIND:-trl}"
+SERVER_KIND="${SERVER_KIND:-openai}"
 CLEAN_START="${CLEAN_START:-false}"
 PORT_WAIT_SEC="${PORT_WAIT_SEC:-45}"
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-1}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
 port_in_use() {
   local port="$1"
@@ -74,7 +74,7 @@ fi
 if [[ "${SERVER_KIND}" == "openai" ]]; then
   echo "[WARN] Launching plain OpenAI API server."
   echo "[WARN] TRL --grpo-vllm-mode=server expects TRL vllm-serve endpoints."
-  exec python -m vllm.entrypoints.openai.api_server     --model "${MODEL_NAME_OR_PATH}"     --host "${VLLM_HOST}"     --port "${VLLM_PORT}"     --tensor-parallel-size "${VLLM_TENSOR_PARALLEL_SIZE}"     --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION}"     --max-model-len "${VLLM_MAX_MODEL_LEN}"     --max-num-seqs 32
+  exec python -m vllm.entrypoints.openai.api_server     --model "${MODEL_NAME_OR_PATH}"     --host "${VLLM_HOST}"     --port "${VLLM_PORT}"     --tensor-parallel-size "${VLLM_TENSOR_PARALLEL_SIZE}"     --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION}"     --max-model-len "${VLLM_MAX_MODEL_LEN}"     --max-num-seqs 3000
 fi
 
 if ! command -v trl >/dev/null 2>&1; then

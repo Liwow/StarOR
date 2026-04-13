@@ -1,502 +1,291 @@
-from __future__ import annotations
-
 import argparse
 import json
-import math
-import os
 import re
-import time
-import urllib.error
-import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import subprocess
+import tempfile
+import os
 from pathlib import Path
-from typing import Any
-
-
-NUMBER_RE = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
-
-
-def iter_jsonl(path: Path):
-    with path.open("r", encoding="utf-8-sig") as fh:
-        for idx, line in enumerate(fh):
-            line = line.strip()
-            if not line:
-                continue
-            yield idx, json.loads(line)
-
-
-def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        fh.flush()
-
-
-def sanitize_component(text: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(text or "").strip())
-    cleaned = cleaned.strip("._-")
-    return cleaned or "unknown"
-
-
-def is_close(a: float, b: float, *, rel_tol: float, abs_tol: float) -> bool:
-    return abs(float(a) - float(b)) <= float(abs_tol) + float(rel_tol) * max(abs(float(a)), abs(float(b)), 1.0)
-
-
-def parse_numeric(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        num = float(value)
-        return num if math.isfinite(num) else None
-    if value is None:
-        return None
-    text = str(value).strip().replace(",", "")
-    if not text:
-        return None
-    try:
-        num = float(text)
-        return num if math.isfinite(num) else None
-    except Exception:
-        pass
-    matches = NUMBER_RE.findall(text)
-    if not matches:
-        return None
-    try:
-        num = float(matches[-1])
-        return num if math.isfinite(num) else None
-    except Exception:
-        return None
-
-
-def extract_objective(text: str) -> float | None:
-    raw = str(text or "")
-    if not raw.strip():
-        return None
-
-    patterns = [
-        r"(?i)\bobjective(?:\s*value)?\s*[:=]\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)",
-        r"(?i)\boptimal(?:\s*value)?\s*[:=]\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)",
-        r"(?i)\bobj(?:ective)?\s*[:=]\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)",
-        r"(?i)\bfinal\s*answer\s*[:=]\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)",
-        r"(?i)\banswer\s*[:=]\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)",
-        r"(?i)\bobjectivevalue\s*[:=]?\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)",
-    ]
-
-    for pat in patterns:
-        m = re.search(pat, raw)
-        if m:
-            try:
-                v = float(m.group(1))
-                if math.isfinite(v):
-                    return v
-            except Exception:
-                pass
-
-    stripped = raw.strip()
-    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", stripped):
-        try:
-            v = float(stripped)
-            if math.isfinite(v):
-                return v
-        except Exception:
-            pass
-
-    tail = raw[-800:]
-    nums = NUMBER_RE.findall(tail)
-    if nums:
-        try:
-            v = float(nums[-1])
-            if math.isfinite(v):
-                return v
-        except Exception:
-            pass
-
-    return None
-
-
-def pick_first_nonempty(row: dict[str, Any], keys: list[str]) -> tuple[str, Any]:
-    for key in keys:
-        value = row.get(key)
-        if value is None:
-            continue
-        if isinstance(value, str) and not value.strip():
-            continue
-        return key, value
-    return "", None
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Optional, Tuple
+import urllib.request
+import urllib.error
+import socket
+import time
 
 class OpenAICompatClient:
     def __init__(self, *, model: str, api_key: str, base_url: str, timeout: int = 120):
         self.model = model
         self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
-        self.timeout = int(timeout)
+        base = base_url.strip().rstrip("/")
+        if not base.endswith("/v1"): base += "/v1"
+        self.endpoint = f"{base}/chat/completions"
+        self.timeout = timeout
 
-        if self.base_url.endswith("/chat/completions"):
-            self.endpoint = self.base_url
-        elif self.base_url.endswith("/v1"):
-            self.endpoint = self.base_url + "/chat/completions"
-        else:
-            self.endpoint = self.base_url + "/v1/chat/completions"
-
-    def chat(self, *, messages: list[dict[str, str]], n: int, temperature: float, top_p: float, max_tokens: int) -> list[str]:
+    def chat(self, messages: list, **kwargs) -> str:
         payload = {
             "model": self.model,
-            "temperature": float(temperature),
-            "top_p": float(top_p),
-            "max_tokens": int(max_tokens),
-            "n": int(max(1, n)),
             "messages": messages,
+            "temperature": kwargs.get("temperature", 0.7),
+            "max_tokens": kwargs.get("max_tokens", 2048),
         }
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            self.endpoint,
-            data=data,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
-            method="POST",
+            self.endpoint, data=data,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"},
+            method="POST"
         )
+        
+        for attempt in range(3):
+            try:
+                # 禁用系统代理以防止本地连接失败
+                with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=self.timeout) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
+                    return body["choices"][0]["message"]["content"]
+            except Exception as e:
+                if attempt == 2: raise
+                time.sleep(2 ** attempt)
+        return ""
 
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"URL error: {exc}") from exc
+# --- 提示词模板 ---
 
-        choices = body.get("choices", []) if isinstance(body, dict) else []
-        outputs: list[str] = []
-        for item in choices:
-            content = None
-            if isinstance(item, dict):
-                msg = item.get("message")
-                if isinstance(msg, dict):
-                    content = msg.get("content")
-                if content is None and isinstance(item.get("text"), str):
-                    content = item.get("text")
-            outputs.append(str(content or ""))
+SYSTEM_PROMPT = "You are an expert Operations Research engineer and Gurobi optimizer."
 
-        if not outputs:
-            raise RuntimeError(f"unexpected API response: {body}")
-        return outputs
+def get_initial_prompt(question):
+    return f"""Answer the following mathematical modeling question:
+{question}
+You should directly output the final python code using Gurobi to solve the mathematical modeling question within <python>.
+For example:
+<python>
+import gurobipy as gp
+from gurobipy import GRB
 
+# Create model
+model = gp.Model()
+......(here is core modeling code)
 
-def build_initial_messages(question: str) -> list[dict[str, str]]:
-    system_prompt = (
-        "You are an optimization expert. Solve the optimization problem carefully. "
-        "Return only one line in the exact format: ObjectiveValue: <number>. "
-        "Do not output any extra text."
-    )
-    user_prompt = (
-        "Problem:\n"
-        f"{question.strip()}\n\n"
-        "Output format requirement (strict):\n"
-        "ObjectiveValue: <number>"
-    )
-    return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
+model.optimize()
 
+status = model.status
+if status == GRB.OPTIMAL:
+    optimal = model.objVal
+    print(f"Optimal value: {{optimal}}")
+else:
+    print(f"Model status: {{status}}")
+</python>
+"""
 
-def build_reflection_prompt(round_index: int) -> str:
-    return (
-        f"Reflection round {round_index}. Re-check your previous answer for numerical or modeling mistakes. "
-        "If needed, correct it. Output only one line exactly: ObjectiveValue: <number>."
-    )
+def get_reflection_prompt(code, error):
+    return f"""Your previous Gurobi code failed. 
+[Previous Code]:
+{code}
 
+[Error Message]:
+{error}
 
-def choose_final_obj(round_payloads: list[dict[str, Any]]) -> tuple[float | None, int | None, str]:
-    for item in reversed(round_payloads):
-        obj = item.get("obj")
-        if isinstance(obj, (int, float)) and math.isfinite(float(obj)):
-            return float(obj), int(item.get("round", -1)), "last_valid_round"
-    return None, None, "no_valid_obj"
+Analyze why the code failed (e.g., incorrect constraints, syntax error, or infeasibility). 
+Provide a concise reflection on how to fix it."""
 
+def get_retry_prompt(question, reflection):
+    return f"""Question: {question}
 
-def process_one(
-    *,
-    source_index: int,
-    row: dict[str, Any],
-    client: OpenAICompatClient,
-    args: argparse.Namespace,
-    question_keys: list[str],
-    answer_keys: list[str],
-) -> dict[str, Any]:
-    q_key, q_val = pick_first_nonempty(row, question_keys)
-    a_key, a_val = pick_first_nonempty(row, answer_keys)
+[Reflection on previous attempt]:
+{reflection}
 
-    question = str(q_val or "").strip()
-    if not question:
-        return {
-            "source_index": int(source_index),
-            "sample_id": row.get(args.id_key, source_index),
-            "status": "failed",
-            "error": "missing question text",
-            "question_key": q_key,
-            "answer_key": a_key,
-        }
+Based on the reflection, provide the corrected Gurobi code in <python> tags.
+"""
 
-    gt_numeric = parse_numeric(a_val)
-    rounds = max(0, int(args.reflection_rounds))
+# --- 执行引擎 (Evaluator) ---
 
-    messages = build_initial_messages(question)
-    round_outputs: list[dict[str, Any]] = []
+def execute_code(code: str, timeout: int = 30) -> Tuple[bool, Optional[float], str]:
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as tf:
+        tf.write(code)
+        path = tf.name
+    try:
+        result = subprocess.run(["python", path], capture_output=True, text=True, timeout=timeout)
+        output = result.stdout
+        stderr = result.stderr
+        combined_output = output + "\n" + stderr
+        
+        num_pattern = r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
+        obj = None
+        match = re.search(rf"Optimal value:?\s*({num_pattern})", output, re.IGNORECASE)
+        
+        if not match:
+            match = re.search(rf"Best objective\s+:?\s*({num_pattern})", combined_output, re.IGNORECASE)
+            
+        if match:
+            try:
+                obj = float(match.group(1))
+            except ValueError:
+                obj = None
+        
+        success = (result.returncode == 0)
+        return success, obj, combined_output
+        
+    except subprocess.TimeoutExpired:
+        return False, None, "Execution Timed Out"
+    except Exception as e:
+        return False, None, str(e)
+    finally:
+        if os.path.exists(path): os.remove(path)
 
-    t0 = time.perf_counter()
-    first = client.chat(
-        messages=messages,
-        n=1,
-        temperature=float(args.temperature),
-        top_p=float(args.top_p),
-        max_tokens=int(args.max_tokens),
-    )[0]
-    first_obj = extract_objective(first)
-    round_outputs.append(
-        {
-            "round": 0,
-            "phase": "initial",
-            "obj": (float(first_obj) if isinstance(first_obj, (int, float)) and math.isfinite(float(first_obj)) else None),
-            "text": (first if bool(args.save_raw_text) else first[:400]),
-        }
-    )
-    messages.append({"role": "assistant", "content": first})
+# --- Reflexion 核心循环 ---
 
-    for ridx in range(1, rounds + 1):
-        messages.append({"role": "user", "content": build_reflection_prompt(round_index=ridx)})
-        reflected = client.chat(
-            messages=messages,
-            n=1,
-            temperature=float(args.temperature),
-            top_p=float(args.top_p),
-            max_tokens=int(args.max_tokens),
-        )[0]
-        reflected_obj = extract_objective(reflected)
-        round_outputs.append(
-            {
-                "round": int(ridx),
-                "phase": "reflection",
-                "obj": (float(reflected_obj) if isinstance(reflected_obj, (int, float)) and math.isfinite(float(reflected_obj)) else None),
-                "text": (reflected if bool(args.save_raw_text) else reflected[:400]),
-            }
-        )
-        messages.append({"role": "assistant", "content": reflected})
-
-    elapsed = float(time.perf_counter() - t0)
-
-    final_obj, final_round, final_policy = choose_final_obj(round_outputs)
-
-    hit = None
-    abs_err = None
-    rel_err = None
-    if final_obj is not None and gt_numeric is not None:
-        abs_err = abs(float(final_obj) - float(gt_numeric))
-        rel_err = abs_err / max(abs(float(gt_numeric)), 1.0)
-        hit = bool(is_close(float(final_obj), float(gt_numeric), rel_tol=float(args.gt_rel_tol), abs_tol=float(args.gt_abs_tol)))
-
-    return {
-        "source_index": int(source_index),
-        "sample_id": row.get(args.id_key, source_index),
-        "status": "ok",
-        "question_key": q_key,
-        "answer_key": a_key,
-        "question_preview": question[:300],
-        "gt_raw": a_val,
-        "gt_obj": gt_numeric,
-        "final_obj": final_obj,
-        "final_round": final_round,
-        "final_policy": final_policy,
-        "rounds_requested": int(rounds),
-        "rounds_executed": int(len(round_outputs) - 1),
-        "hit": hit,
-        "abs_error": abs_err,
-        "rel_error": rel_err,
-        "latency_sec": elapsed,
-        "round_outputs": round_outputs,
-    }
-
-
-def load_seen_indices(path: Path) -> set[int]:
-    if not path.exists():
-        return set()
-    seen: set[int] = set()
-    for _, row in iter_jsonl(path):
-        idx = row.get("source_index")
-        if isinstance(idx, int):
-            seen.add(idx)
-    return seen
-
-
-def build_summary(log_path: Path) -> dict[str, Any]:
-    total = 0
-    ok = 0
-    failed = 0
-    with_pred = 0
-    with_gt = 0
-    comparable = 0
-    hits = 0
-    abs_errors: list[float] = []
-
-    for _, row in iter_jsonl(log_path):
-        total += 1
-        status = str(row.get("status", ""))
-        if status == "ok":
-            ok += 1
+def process_reflexion(source_index, row, client, args, q_key, a_key):
+    question = str(row[q_key]).strip()
+    gt_obj = parse_numeric(row.get(a_key))
+    
+    memory = [] 
+    history = [] 
+    
+    current_question_prompt = get_initial_prompt(question)
+    
+    for t in range(args.max_trials):
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        if t > 0:
+            for m in memory:
+                messages.append({"role": "assistant", "content": m['code']})
+                messages.append({"role": "user", "content": f"[Reflection]: {m['reflection']}\nPlease fix the code."})
+        
+        messages.append({"role": "user", "content": current_question_prompt if t==0 else "Try again with the fix."})
+        
+        # 传入 max_tokens 参数
+        response_text = client.chat(messages, temperature=args.temperature, max_tokens=args.max_tokens)
+        code = extract_python_code(response_text)
+        
+        if not code:
+            history.append({"trial": t, "status": "no_code", "response": response_text})
+            # 如果没生成代码，直接进行反思尝试
+            feedback = "No python code block found in your response."
+            success = False
+            obj = None
         else:
-            failed += 1
+            success, obj, feedback = execute_code(code, timeout=args.exec_timeout)
+        
+        is_hit = False
+        if obj is not None and gt_obj is not None:
+            is_hit = is_close(obj, gt_obj, rel_tol=1e-4, abs_tol=1e-6)
 
-        pred = row.get("final_obj")
-        gt = row.get("gt_obj")
-        if isinstance(pred, (int, float)) and math.isfinite(float(pred)):
-            with_pred += 1
-        if isinstance(gt, (int, float)) and math.isfinite(float(gt)):
-            with_gt += 1
-        if isinstance(pred, (int, float)) and isinstance(gt, (int, float)):
-            if math.isfinite(float(pred)) and math.isfinite(float(gt)):
-                comparable += 1
-                ae = abs(float(pred) - float(gt))
-                abs_errors.append(ae)
-                if bool(row.get("hit", False)):
-                    hits += 1
+        history.append({
+            "trial": t,
+            "code": code,
+            "success": success,
+            "obj": obj,
+            "feedback": feedback if not success else "Success",
+            "hit": is_hit
+        })
 
-    mae = (sum(abs_errors) / float(len(abs_errors))) if abs_errors else None
+        if success and obj is not None:
+            break
+            
+        # Self-Reflection
+        reflection_msg = [{"role": "system", "content": SYSTEM_PROMPT},
+                          {"role": "user", "content": get_reflection_prompt(code if code else response_text, feedback)}]
+        reflection = client.chat(reflection_msg, temperature=0.3, max_tokens=args.max_tokens)
+        
+        memory.append({"code": response_text, "reflection": reflection})
+        current_question_prompt = get_retry_prompt(question, reflection)
+
+    final_res = history[-1]
     return {
-        "total": int(total),
-        "ok": int(ok),
-        "failed": int(failed),
-        "with_pred": int(with_pred),
-        "with_gt": int(with_gt),
-        "comparable": int(comparable),
-        "hits": int(hits),
-        "hit_rate": (float(hits) / float(comparable) if comparable > 0 else None),
-        "mae": mae,
+        "source_index": source_index,
+        "status": "ok",
+        "trials_taken": len(history),
+        "final_obj": final_res.get("obj"),
+        "gt_obj": gt_obj,
+        "hit": any(h.get("hit") for h in history),
+        "history": history
     }
 
+# --- 辅助函数 ---
+def parse_numeric(v: Any) -> Optional[float]:
+    if v is None: return None
+    if isinstance(v, (int, float)): return float(v)
+    text = str(v).strip().replace(",", "")
+    num_pattern = r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
+    matches = re.findall(num_pattern, text)
+    if matches:
+        try:
+            return float(matches[-1])
+        except:
+            return None
+    return None
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Reflection inference via local vLLM OpenAI-compatible API.")
-    parser.add_argument("--input", required=True, help="Input dataset jsonl path under data/.")
-    parser.add_argument("--model", default=os.getenv("OPENAI_MODEL", ""), help="Model name served by vLLM.")
-    parser.add_argument("--base-url", default=os.getenv("VLLM_BASE_URL", "http://127.0.0.1:8000/v1"))
-    parser.add_argument("--api-key", default=os.getenv("OPENAI_API_KEY", "EMPTY"))
-    parser.add_argument("--reflection-rounds", type=int, default=2, help="Number of reflection rounds after initial answer.")
-    parser.add_argument("--temperature", type=float, default=0.7)
-    parser.add_argument("--top-p", type=float, default=0.95)
-    parser.add_argument("--max-tokens", type=int, default=256)
-    parser.add_argument("--request-timeout", type=int, default=120)
-    parser.add_argument("--parallel", type=int, default=4)
-    parser.add_argument("--start-index", type=int, default=0)
-    parser.add_argument("--limit", type=int, default=0, help="0 means no limit.")
-    parser.add_argument("--id-key", default="id")
-    parser.add_argument("--question-keys", default="input,en_question,question,prompt,task")
-    parser.add_argument("--answer-keys", default="answer,en_answer,gt,ground_truth,output")
-    parser.add_argument("--gt-rel-tol", type=float, default=1e-4)
-    parser.add_argument("--gt-abs-tol", type=float, default=1e-6)
-    parser.add_argument("--save-raw-text", action="store_true", help="Save full round text in logs.")
-    parser.add_argument("--log-dir", default="outputs/reflection_logs")
-    parser.add_argument("--resume", action="store_true", default=True)
-    parser.add_argument("--no-resume", dest="resume", action="store_false")
+def extract_python_code(text):
+    match = re.search(r"<python>(.*?)</python>", text, re.DOTALL)
+    return match.group(1).strip() if match else None
+
+def is_close(a, b, rel_tol=1e-4, abs_tol=1e-6):
+    if a is None or b is None: return False
+    try:
+        return abs(float(a) - float(b)) <= abs_tol + rel_tol * max(abs(float(a)), abs(float(b)), 1.0)
+    except:
+        return False
+
+# --- 主程序逻辑 ---
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--base-url", default="http://127.0.0.1:8000/v1")
+    parser.add_argument("--api-key", default="EMPTY")
+    parser.add_argument("--max-trials", type=int, default=3)
+    parser.add_argument("--parallel", type=int, default=5)
+    parser.add_argument("--exec-timeout", type=int, default=30)
+    parser.add_argument("--temperature", type=float, default=0.5)
+    
+    # --- 新增适配启动脚本的参数 ---
+    parser.add_argument("--max-tokens", type=int, default=2048)
+    parser.add_argument("--log-dir", default="outputs/reflexion_logs")
+    parser.add_argument("--timeout", type=int, default=120, help="API request timeout")
+    
     args = parser.parse_args()
 
     input_path = Path(args.input)
-    if not input_path.exists():
-        raise SystemExit(f"input not found: {input_path}")
-    if not args.model:
-        raise SystemExit("missing model: pass --model or set OPENAI_MODEL")
+    log_dir = Path(args.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"reflexion_results_{input_path.stem}.jsonl"
+    
+    data = []
+    with open(input_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                data.append(json.loads(line))
 
-    dataset_tag = sanitize_component(input_path.stem)
-    model_tag = sanitize_component(args.model)
-    out_dir = Path(args.log_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if not data:
+        print("No data found.")
+        return
 
-    log_path = out_dir / f"reflection_{dataset_tag}__{model_tag}.jsonl"
-    summary_path = out_dir / f"reflection_{dataset_tag}__{model_tag}.summary.json"
+    sample = data[0]
+    q_key = next((k for k in ["question","en_question", "input", "prompt"] if k in sample), "question")
+    a_key = next((k for k in ["answer","en_answer", "output", "gt", "target"] if k in sample), "answer")
 
-    seen = load_seen_indices(log_path) if args.resume else set()
+    print(f"Starting Reflexion: {len(data)} tasks, Max Trials: {args.max_trials}")
 
-    question_keys = [k.strip() for k in str(args.question_keys).split(",") if k.strip()]
-    answer_keys = [k.strip() for k in str(args.answer_keys).split(",") if k.strip()]
-
-    tasks: list[tuple[int, dict[str, Any]]] = []
-    for idx, row in iter_jsonl(input_path):
-        if int(idx) < int(args.start_index):
-            continue
-        if args.resume and idx in seen:
-            continue
-        tasks.append((idx, row))
-        if int(args.limit) > 0 and len(tasks) >= int(args.limit):
-            break
-
-    client = OpenAICompatClient(
-        model=str(args.model),
-        api_key=str(args.api_key),
-        base_url=str(args.base_url),
-        timeout=int(args.request_timeout),
-    )
-
-    print(
-        f"[reflection] input={input_path} model={args.model} rounds={args.reflection_rounds} "
-        f"parallel={args.parallel} tasks={len(tasks)} log={log_path}",
-        flush=True,
-    )
-
-    processed = 0
-    with ThreadPoolExecutor(max_workers=max(1, int(args.parallel))) as pool:
-        fut_map = {
-            pool.submit(
-                process_one,
-                source_index=idx,
-                row=row,
-                client=client,
-                args=args,
-                question_keys=question_keys,
-                answer_keys=answer_keys,
-            ): idx
-            for idx, row in tasks
-        }
-        for fut in as_completed(fut_map):
-            idx = fut_map[fut]
-            try:
-                payload = fut.result()
-            except Exception as exc:  # noqa: BLE001
-                payload = {
-                    "source_index": int(idx),
-                    "sample_id": idx,
-                    "status": "failed",
-                    "error": f"worker exception: {type(exc).__name__}: {exc}",
-                }
-            append_jsonl(log_path, payload)
-            processed += 1
-            if processed % 10 == 0 or processed == len(tasks):
-                print(f"[reflection] processed={processed}/{len(tasks)}", flush=True)
-
-    summary = {
-        "dataset": str(input_path),
-        "dataset_tag": dataset_tag,
-        "model": str(args.model),
-        "model_tag": model_tag,
-        "reflection_rounds": int(args.reflection_rounds),
-        "temperature": float(args.temperature),
-        "top_p": float(args.top_p),
-        "max_tokens": int(args.max_tokens),
-        "parallel": int(args.parallel),
-        "log_path": str(log_path.resolve()),
-        "timestamp": int(time.time()),
-    }
-    summary.update(build_summary(log_path))
-    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    print(f"[reflection] done log={log_path} summary={summary_path}", flush=True)
-    print(
-        f"[reflection] comparable={summary.get('comparable')} hit_rate={summary.get('hit_rate')} mae={summary.get('mae')}",
-        flush=True,
-    )
-    return 0
-
+    with ThreadPoolExecutor(max_workers=args.parallel) as pool:
+        futures = []
+        for i, row in enumerate(data):
+            # 初始化 Client 时传入自定义 timeout
+            client = OpenAICompatClient(
+                model=args.model, 
+                api_key=args.api_key, 
+                base_url=args.base_url, 
+                timeout=args.timeout
+            )
+            futures.append(pool.submit(process_reflexion, i, row, client, args, q_key, a_key))
+        
+        hits = 0
+        total = 0
+        for f in as_completed(futures):
+            res = f.result()
+            total += 1
+            if res.get("hit"): hits += 1
+            
+            with open(log_path, "a", encoding="utf-8") as fw:
+                fw.write(json.dumps(res, ensure_ascii=False) + "\n")
+            
+            print(f"Progress: {total}/{len(data)} | Current Accuracy: {hits/total:.2%}")
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
