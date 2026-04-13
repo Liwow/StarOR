@@ -52,8 +52,8 @@ MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
 # dataset="NL4OPT.jsonl"
 # dataset="NL4LP.jsonl"
 # dataset="MAMO_ComplexLP_fixed.jsonl"
-# dataset="IndustryOR_fixedV2.jsonl"
-dataset="OptMATH_Bench_166.jsonl"
+dataset="IndustryOR_fixedV2.jsonl"
+# dataset="OptMATH_Bench_166.jsonl"
 
 # dataset="MAMO_EasyLP_fixed.jsonl" #sample
 # dataset="OptiBench.jsonl"
