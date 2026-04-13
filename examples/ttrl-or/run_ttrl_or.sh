@@ -55,7 +55,7 @@ dataset="OptMATH_Bench_166.jsonl"
 # dataset="MAMO_EasyLP_fixed.jsonl" #sample
 # dataset="OptiBench.jsonl"
 
-r3_reward=True
+r3_reward=False
 DATA_PATH="$DATA_ROOT/$dataset"
 # For multiple datasets, uncomment and edit the list below.
 DATA_SETS="[$DATA_ROOT/IndustryOR_fixedV2.jsonl, $DATA_ROOT/MAMO_ComplexLP_fixed.jsonl,$DATA_ROOT/OptMATH_Bench_166.jsonl, $DATA_ROOT/NL4OPT.jsonl, $DATA_ROOT/NL4LP.jsonl, $DATA_ROOT/ComplexOR.jsonl]"
