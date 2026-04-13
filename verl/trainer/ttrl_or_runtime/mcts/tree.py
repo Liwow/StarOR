@@ -202,18 +202,23 @@ class FourStageMCTS:
                 code_entry_attempt_total = int(code_entry_attempt_total) + 1
                 attempt = int(code_entry_attempt_total)
                 if attempt < 2:
-                    suppress_node_ids, suppress_meta = self._build_global_same_cluster_node_ids(
+                    cluster_suppress_node_ids, suppress_meta = self._build_global_same_cluster_node_ids(
                         selected=selected,
                         records=records,
                     )
+                    path_suppress_node_ids = self._collect_path_node_ids(selected, include_root=False)
+                    suppress_node_ids = set(cluster_suppress_node_ids) | set(path_suppress_node_ids)
                     suppress_weight = self._code_entry_suppress_weight()
                     code_entry_one_shot_suppression = {
                         "target_iter": int(iter_idx + 1),
                         "node_ids": sorted(suppress_node_ids),
+                        "cluster_node_ids": sorted(cluster_suppress_node_ids),
+                        "path_node_ids": sorted(path_suppress_node_ids),
                         "weight": float(suppress_weight),
                         "source_node_id": selected_node_id,
                         "source_stage": selected.stage.value if selected.stage else "<ROOT>",
                         "source_attempt": int(attempt),
+                        "scope": "cluster_plus_first_code_path_once",
                         "cluster_debug": dict(suppress_meta),
                     }
                     iter_payload = {
@@ -911,8 +916,6 @@ class FourStageMCTS:
                 "grpo_update": dict(grpo_report),
             }
             iteration_logs.append(iter_payload)
-            if iteration_callback is not None:
-                iteration_callback(iter_payload)
 
             if next_stage == Stage.CODE:
                 terminal_payload = self._run_code_terminal_refine(
@@ -924,6 +927,8 @@ class FourStageMCTS:
                     current_iter=iter_idx,
                 )
                 iter_payload["code_terminal"] = dict(terminal_payload)
+                if iteration_callback is not None:
+                    iteration_callback(iter_payload)
                 fallback_to_original = bool(terminal_payload.get("fallback_to_original_logic", False))
                 final_tid = "" if fallback_to_original else str(terminal_payload.get("trajectory_id", ""))
                 final_reward = None if fallback_to_original else terminal_payload.get("reward_total")
@@ -942,6 +947,9 @@ class FourStageMCTS:
                     stop_info=stop_info,
                     iteration_logs=iteration_logs,
                 )
+
+            if iteration_callback is not None:
+                iteration_callback(iter_payload)
 
             recent_consensus_stop = self._check_recent_obj_consensus(records=records, current_iter=iter_idx)
             if recent_consensus_stop is not None:
@@ -1493,6 +1501,16 @@ class FourStageMCTS:
                 return cur
             stack.extend(cur.children)
         return None
+
+    @staticmethod
+    def _collect_path_node_ids(node: SearchNode, *, include_root: bool = False) -> set[str]:
+        out: set[str] = set()
+        cur: SearchNode | None = node
+        while cur is not None:
+            if include_root or cur.parent is not None:
+                out.add(str(cur.node_id))
+            cur = cur.parent
+        return out
 
     @staticmethod
     def _normalize_priors(values: list[float]) -> list[float]:
@@ -2500,8 +2518,10 @@ class FourStageMCTS:
             "steps": [],
         }
 
-        need_repair = not self._reward_has_valid_obj(candidate_reward)
         issue_kind, issue_reason = self._classify_terminal_issue(candidate_reward)
+        need_repair = (not self._reward_has_valid_obj(candidate_reward)) or issue_kind in {"error", "infeasible"}
+        terminal_trace["initial_issue"] = {"kind": issue_kind, "reason": issue_reason}
+        terminal_trace["initial_need_repair"] = bool(need_repair)
         for repair_idx in range(repair_rounds):
             if not need_repair:
                 break
@@ -2544,8 +2564,8 @@ class FourStageMCTS:
                 candidate_traj = repaired_traj
                 candidate_reward = repaired_reward
 
-            need_repair = not self._reward_has_valid_obj(candidate_reward)
             issue_kind, issue_reason = self._classify_terminal_issue(candidate_reward)
+            need_repair = (not self._reward_has_valid_obj(candidate_reward)) or issue_kind in {"error", "infeasible"}
             step_payload["candidate"] = self._terminal_candidate_summary(candidate_traj)
             step_payload["reward"] = {
                 "r1": float(candidate_reward.r1 if candidate_reward is not None else 0.0),

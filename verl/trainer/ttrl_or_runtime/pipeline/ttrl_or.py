@@ -174,6 +174,19 @@ class TTRLORRunner:
                     f"forward_compute_sec={timing.get('forward_compute_sec', timing.get('old_log_prob_forward_sec', 'n/a'))} "
                     f"iter_sec={timing.get('iteration_total_sec', 'n/a')}"
                 )
+                code_terminal = payload.get("code_terminal", {}) if isinstance(payload, dict) else {}
+                if isinstance(code_terminal, dict) and bool(code_terminal.get("enabled", False)):
+                    trace = code_terminal.get("trace", {}) if isinstance(code_terminal.get("trace", {}), dict) else {}
+                    initial_issue = trace.get("initial_issue", {}) if isinstance(trace.get("initial_issue", {}), dict) else {}
+                    final_issue = trace.get("final_issue", {}) if isinstance(trace.get("final_issue", {}), dict) else {}
+                    steps = trace.get("steps", []) if isinstance(trace.get("steps", []), list) else []
+                    print(
+                        f"[CODE_TERMINAL][task={task.task_id}] iter={iter_idx} "
+                        f"repair_max={trace.get('code_repair_max', code_terminal.get('code_repair_max', 'n/a'))} "
+                        f"repair_steps={len(steps)} fallback={code_terminal.get('fallback_to_original_logic', False)} "
+                        f"initial_issue={initial_issue.get('kind', '')}:{initial_issue.get('reason', '')} "
+                        f"final_issue={final_issue.get('kind', '')}:{final_issue.get('reason', '')}"
+                    )
 
             search_result = mcts.search(task=task, grpo_config=self.config.grpo, iteration_callback=_on_iteration_log)
             if iter_live_writer is not None:
@@ -514,6 +527,7 @@ class TTRLORRunner:
         selection_path = selection.get("selection_path", []) if isinstance(selection, dict) else []
         best_prior = best.get("prior", {}) if isinstance(best, dict) else {}
         rollout_group = payload.get("rollout_group", []) if isinstance(payload, dict) else []
+        code_terminal = payload.get("code_terminal", {}) if isinstance(payload, dict) else {}
 
         lines = [
             f"# Iter {iter_idx} | Stage {stage}",
@@ -632,6 +646,54 @@ class TTRLORRunner:
                 "",
             ]
         )
+        if isinstance(code_terminal, dict) and bool(code_terminal.get("enabled", False)):
+            trace = code_terminal.get("trace", {}) if isinstance(code_terminal.get("trace", {}), dict) else {}
+            initial_issue = trace.get("initial_issue", {}) if isinstance(trace.get("initial_issue", {}), dict) else {}
+            final_issue = trace.get("final_issue", {}) if isinstance(trace.get("final_issue", {}), dict) else {}
+            initial_candidate = trace.get("initial_candidate", {}) if isinstance(trace.get("initial_candidate", {}), dict) else {}
+            final_candidate = trace.get("final_candidate", {}) if isinstance(trace.get("final_candidate", {}), dict) else {}
+            steps = trace.get("steps", []) if isinstance(trace.get("steps", []), list) else []
+            lines.extend(
+                [
+                    "## Code Terminal",
+                    f"- enabled: {code_terminal.get('enabled', False)}",
+                    f"- fallback_to_original_logic: {code_terminal.get('fallback_to_original_logic', False)}",
+                    f"- trajectory_id: {code_terminal.get('trajectory_id', '')}",
+                    f"- reward_total: {code_terminal.get('reward_total', '')}",
+                    f"- obj_answer: {code_terminal.get('obj_answer', '')}",
+                    f"- code_refine_enabled: {trace.get('code_refine_enabled', '')}",
+                    f"- code_repair_max: {trace.get('code_repair_max', '')}",
+                    f"- initial_need_repair: {trace.get('initial_need_repair', '')}",
+                    f"- initial_issue: {initial_issue.get('kind', '')} / {initial_issue.get('reason', '')}",
+                    f"- final_issue: {final_issue.get('kind', '')} / {final_issue.get('reason', '')}",
+                    f"- initial_candidate: traj={initial_candidate.get('trajectory_id', '')}, obj={initial_candidate.get('obj_answer', '')}, reward={initial_candidate.get('reward_total', '')}, code_len={initial_candidate.get('code_len', '')}",
+                    f"- final_candidate: traj={final_candidate.get('trajectory_id', '')}, obj={final_candidate.get('obj_answer', '')}, reward={final_candidate.get('reward_total', '')}, code_len={final_candidate.get('code_len', '')}",
+                ]
+            )
+            if steps:
+                lines.append("")
+                lines.append("### Repair Steps")
+                for idx, step in enumerate(steps, start=1):
+                    issue_before = step.get("issue_before", {}) if isinstance(step.get("issue_before", {}), dict) else {}
+                    issue_after = step.get("issue_after", {}) if isinstance(step.get("issue_after", {}), dict) else {}
+                    reward_step = step.get("reward", {}) if isinstance(step.get("reward", {}), dict) else {}
+                    lines.extend(
+                        [
+                            f"- step={idx} kind={step.get('kind', '')} round={step.get('round', '')} parsed_code_len={step.get('parsed_code_len', '')} prior={step.get('prior', '')}",
+                            f"  issue_before={issue_before.get('kind', '')}/{issue_before.get('reason', '')} "
+                            f"issue_after={issue_after.get('kind', '')}/{issue_after.get('reason', '')} "
+                            f"reward_total={reward_step.get('total', '')}",
+                            "  prompt:",
+                            "  ```text",
+                            str(step.get("prompt", "")),
+                            "  ```",
+                            "  answer:",
+                            "  ```text",
+                            str(step.get("answer", "")),
+                            "  ```",
+                        ]
+                    )
+            lines.extend(["", "---", ""])
         return "\n".join(lines)
 
     @staticmethod
