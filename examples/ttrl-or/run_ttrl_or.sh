@@ -13,7 +13,7 @@ CODE_ENTRY_SECOND_ATTEMPT=true
 CODE_ENTRY_SAME_CLUSTER_SUPPRESS_WEIGHT=0.6
 USE_TTRL=true
 r3_reward=true
-log_dir="outputs/logs_TTRL=${USE_TTRL}_r3=${r3_reward}_refine=${CODE_REFINE}_repair=${CODE_REPAIR}_codeGATE=${CODE_ENTRY_SECOND_ATTEMPT}"
+log_dir="outputs/logs_TTRL-${USE_TTRL}_r3-${r3_reward}_refine-${CODE_REFINE}_repair-${CODE_REPAIR}_codeGATE-${CODE_ENTRY_SECOND_ATTEMPT}"
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -46,6 +46,11 @@ if [[ "${SAMPLE_RUN}" != "true" && "${SAMPLE_RUN}" != "false" ]]; then
     echo "[run_ttrl_or.sh] --sample_run must be true or false, got: ${SAMPLE_RUN}"
     exit 1
 fi
+
+# Hydra override parser treats extra '=' in unquoted values as syntax errors.
+# Keep log_dir override parser-safe by normalizing risky chars.
+log_dir="${log_dir//=/\-}"
+log_dir="${log_dir// /_}"
 
 # model_name='Qwen/Qwen2.5-7B-Instruct'
 model_name='Qwen/Qwen3-4B-Instruct-2507'

@@ -187,6 +187,19 @@ class TTRLORRunner:
                         f"initial_issue={initial_issue.get('kind', '')}:{initial_issue.get('reason', '')} "
                         f"final_issue={final_issue.get('kind', '')}:{final_issue.get('reason', '')}"
                     )
+                    for step in steps:
+                        if not isinstance(step, dict):
+                            continue
+                        issue_before = step.get("issue_before", {}) if isinstance(step.get("issue_before", {}), dict) else {}
+                        issue_after = step.get("issue_after", {}) if isinstance(step.get("issue_after", {}), dict) else {}
+                        reward_step = step.get("reward", {}) if isinstance(step.get("reward", {}), dict) else {}
+                        print(
+                            f"[CODE_TERMINAL][task={task.task_id}] iter={iter_idx} "
+                            f"repair_round={step.get('round', '')} kind={step.get('kind', '')} "
+                            f"issue_before={issue_before.get('kind', '')}:{issue_before.get('reason', '')} "
+                            f"issue_after={issue_after.get('kind', '')}:{issue_after.get('reason', '')} "
+                            f"reward_total={reward_step.get('total', '')}"
+                        )
 
             search_result = mcts.search(task=task, grpo_config=self.config.grpo, iteration_callback=_on_iteration_log)
             if iter_live_writer is not None:
@@ -383,6 +396,7 @@ class TTRLORRunner:
         mcts_stats_path = run_dir / "mcts_stats.json"
         iter_logs_path = run_dir / "mcts_iterations.json"
         iter_logs_md_path = run_dir / "mcts_iterations.md"
+        code_terminal_repairs_path = run_dir / "code_terminal_repairs.json"
         result_path = run_dir / "result.json"
         runtime_path = run_dir / "runtime_summary.json"
         runtime_md_path = run_dir / "runtime_summary.md"
@@ -414,6 +428,23 @@ class TTRLORRunner:
             "".join(self._format_iteration_markdown(item) for item in iteration_logs),
             encoding="utf-8",
         )
+        code_terminal_repairs: list[dict[str, Any]] = []
+        for item in iteration_logs:
+            if not isinstance(item, dict):
+                continue
+            code_terminal = item.get("code_terminal", {})
+            if not isinstance(code_terminal, dict) or not bool(code_terminal.get("enabled", False)):
+                continue
+            trace_payload = code_terminal.get("trace", {})
+            code_terminal_repairs.append(
+                {
+                    "iter": item.get("iter"),
+                    "stage": item.get("stage"),
+                    "code_terminal": code_terminal,
+                    "trace": trace_payload if isinstance(trace_payload, dict) else {},
+                }
+            )
+        _write_json_file(code_terminal_repairs_path, code_terminal_repairs)
 
         traj_payload = []
         for traj in trajectories:
@@ -503,6 +534,7 @@ class TTRLORRunner:
             "mcts_iterations_md": str(iter_logs_md_path.resolve()),
             "mcts_stats": str(mcts_stats_path.resolve()),
             "final_trajectories": str(trajectories_path.resolve()),
+            "code_terminal_repairs": str(code_terminal_repairs_path.resolve()),
             "best_code": str(best_code_path.resolve()),
             "result_json": str(result_path.resolve()),
             "runtime_summary": str(runtime_path.resolve()),
