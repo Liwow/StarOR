@@ -53,9 +53,9 @@ log_dir="${log_dir// /_}"
 model_name='Qwen/Qwen3-4B-Instruct-2507'
 MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
 # MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_or_qwen3_4b_int_cp513_v1"
-dataset="NL4OPT.jsonl"
+# dataset="NL4OPT.jsonl"
 # dataset="NL4LP.jsonl"
-# dataset="MAMO_ComplexLP_fixed.jsonl"
+dataset="MAMO_ComplexLP_fixed.jsonl"
 # dataset="IndustryOR_fixedV2.jsonl"
 # dataset="OptMATH_Bench_166.jsonl"
 

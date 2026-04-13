@@ -493,7 +493,7 @@ def main() -> int:
         default="",
         help="Comma-separated dataset json/jsonl paths.",
     )
-    parser.add_argument("--tol", type=float, default=0.001, help="Relative error threshold")
+    parser.add_argument("--tol", type=float, default=0.0001, help="Relative error threshold")
     parser.add_argument(
         "--limit",
         type=int,
