@@ -2,16 +2,18 @@ set -x
 export CUDA_VISIBLE_DEVICES=1
 # export RAY_DEBUG_POST_MORTEM=1
 DATA_ROOT="${HOME}/code/TTRL-OR/data"
-log_dir="outputs/ttrl_or_logs_new_main_branch"
 SAMPLE_RUN=false
 SAMPLE_SEED=2026
 sample_size=150
 MCTS_CLUSTER_UPDATE=true
+
 CODE_REFINE=true
-CODE_REPAIR=1
+CODE_REPAIR=2
 CODE_ENTRY_SECOND_ATTEMPT=true
-CODE_ENTRY_SAME_CLUSTER_SUPPRESS_WEIGHT=0.7
+CODE_ENTRY_SAME_CLUSTER_SUPPRESS_WEIGHT=0.6
 USE_TTRL=true
+r3_reward=true
+log_dir="outputs/logs_TTRL=${USE_TTRL}_r3=${r3_reward}_refine=${CODE_REFINE}_repair=${CODE_REPAIR}_codeGATE=${CODE_ENTRY_SECOND_ATTEMPT}"
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -52,13 +54,12 @@ MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
 # dataset="NL4OPT.jsonl"
 # dataset="NL4LP.jsonl"
 # dataset="MAMO_ComplexLP_fixed.jsonl"
-dataset="IndustryOR_fixedV2.jsonl"
-# dataset="OptMATH_Bench_166.jsonl"
+# dataset="IndustryOR_fixedV2.jsonl"
+dataset="OptMATH_Bench_166.jsonl"
 
 # dataset="MAMO_EasyLP_fixed.jsonl" #sample
 # dataset="OptiBench.jsonl"
 
-r3_reward=True
 DATA_PATH="$DATA_ROOT/$dataset"
 # For multiple datasets, uncomment and edit the list below.
 DATA_SETS="[$DATA_ROOT/IndustryOR_fixedV2.jsonl, $DATA_ROOT/MAMO_ComplexLP_fixed.jsonl,$DATA_ROOT/OptMATH_Bench_166.jsonl, $DATA_ROOT/NL4OPT.jsonl, $DATA_ROOT/NL4LP.jsonl, $DATA_ROOT/ComplexOR.jsonl]"
@@ -68,7 +69,7 @@ TRAIN_FILES="$DATA_PATH"
 python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     algorithm.ttrl_or.enable=True \
-    algorithm.ttrl_or.log_dir=${log_dir} \
+    algorithm.ttrl_or.log_dir="${log_dir}" \
     algorithm.ttrl_or.mcts.max_iterations=16 \
     algorithm.ttrl_or.mcts.c_puct=1.414 \
     algorithm.ttrl_or.mcts.enable_prior=True \
