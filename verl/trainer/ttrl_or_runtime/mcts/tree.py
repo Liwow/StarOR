@@ -504,21 +504,9 @@ class FourStageMCTS:
                     iteration_logs.append(iter_payload)
                     if iteration_callback is not None:
                         iteration_callback(iter_payload)
-                    stop_info = {
-                        "reason": "expanded_to_code",
-                        "iteration": iter_idx,
-                        "stage": next_stage.value,
-                        "node_id": selected.node_id,
-                        "trajectory_id": "",
-                        "reward_total": None,
-                        "code_terminal": dict(iter_payload["code_terminal"]),
-                    }
-                    return self._finalize_result(
-                        root=root,
-                        records=records,
-                        stop_info=stop_info,
-                        iteration_logs=iteration_logs,
-                    )
+                    # CODE produced no rollout candidates: do not early-stop.
+                    # Continue search so sibling branches can still be explored.
+                    continue
                 continue
 
             resolved_priors, prior_source = self._resolve_child_priors(
@@ -930,23 +918,27 @@ class FourStageMCTS:
                 if iteration_callback is not None:
                     iteration_callback(iter_payload)
                 fallback_to_original = bool(terminal_payload.get("fallback_to_original_logic", False))
-                final_tid = "" if fallback_to_original else str(terminal_payload.get("trajectory_id", ""))
-                final_reward = None if fallback_to_original else terminal_payload.get("reward_total")
-                stop_info = {
-                    "reason": "expanded_to_code",
-                    "iteration": iter_idx,
-                    "stage": next_stage.value,
-                    "node_id": selected.node_id,
-                    "trajectory_id": final_tid,
-                    "reward_total": final_reward,
-                    "code_terminal": dict(terminal_payload),
-                }
-                return self._finalize_result(
-                    root=root,
-                    records=records,
-                    stop_info=stop_info,
-                    iteration_logs=iteration_logs,
-                )
+                if not fallback_to_original:
+                    final_tid = str(terminal_payload.get("trajectory_id", ""))
+                    final_reward = terminal_payload.get("reward_total")
+                    stop_info = {
+                        "reason": "expanded_to_code",
+                        "iteration": iter_idx,
+                        "stage": next_stage.value,
+                        "node_id": selected.node_id,
+                        "trajectory_id": final_tid,
+                        "reward_total": final_reward,
+                        "code_terminal": dict(terminal_payload),
+                    }
+                    return self._finalize_result(
+                        root=root,
+                        records=records,
+                        stop_info=stop_info,
+                        iteration_logs=iteration_logs,
+                    )
+                # CODE(plus optional repair) still has no valid obj: continue MCTS search.
+                # This lets sibling branches keep exploring until max_iterations or a CODE-success appears.
+                continue
 
             if iteration_callback is not None:
                 iteration_callback(iter_payload)
@@ -2453,57 +2445,21 @@ class FourStageMCTS:
                 "fallback_to_original_logic": True,
             }
 
-        valid_items = [
-            item
-            for item in candidate_items
-            if isinstance(item.get("obj"), (int, float)) and math.isfinite(float(item.get("obj")))
-        ]
-
-        selection_debug: dict[str, Any] = {}
-        if valid_items:
-            clusters: list[dict[str, Any]] = []
-            for item in valid_items:
-                obj = float(item["obj"])
-                matched = None
-                for cluster in clusters:
-                    if self._within_rel_tol(obj, float(cluster["leader"])):
-                        matched = cluster
-                        break
-                if matched is None:
-                    matched = {"leader": obj, "items": []}
-                    clusters.append(matched)
-                matched["items"].append(item)
-
-            clusters.sort(
-                key=lambda c: (
-                    int(len(c["items"])),
-                    max(float(c_item["reward"].total) for c_item in c["items"]),
-                    max(float(c_item["prior"]) for c_item in c["items"]),
-                ),
-                reverse=True,
-            )
-            chosen_cluster = clusters[0]
-            chosen_item = max(
-                chosen_cluster["items"],
-                key=lambda x: (float(x["reward"].total), float(x["prior"])),
-            )
-            selection_debug = {
-                "mode": "largest_obj_cluster",
-                "cluster_count": int(len(clusters)),
-                "chosen_cluster_leader": float(chosen_cluster["leader"]),
-                "chosen_cluster_size": int(len(chosen_cluster["items"])),
-                "tie_breaker": "reward_then_prior",
-            }
-        else:
-            chosen_item = max(
-                candidate_items,
-                key=lambda x: (float(x["reward"].total), float(x["prior"])),
-            )
-            selection_debug = {
-                "mode": "max_reward_prior_no_valid_obj_cluster",
-                "cluster_count": 0,
-                "tie_breaker": "reward_then_prior",
-            }
+        # CODE candidate selection rule: reward first, then prior.
+        # Do not force obj-cluster consensus at this step.
+        chosen_item = max(
+            candidate_items,
+            key=lambda x: (float(x["reward"].total), float(x["prior"])),
+        )
+        valid_obj_count = sum(
+            1 for item in candidate_items if isinstance(item.get("obj"), (int, float)) and math.isfinite(float(item.get("obj")))
+        )
+        selection_debug: dict[str, Any] = {
+            "mode": "max_reward_then_prior",
+            "candidate_count": int(len(candidate_items)),
+            "valid_obj_count": int(valid_obj_count),
+            "tie_breaker": "prior_when_reward_equal",
+        }
 
         candidate_traj = chosen_item["trajectory"]
         candidate_reward = chosen_item["reward"]
