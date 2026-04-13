@@ -1,7 +1,7 @@
 ﻿SYSTEM_INSTRUCTION = """
 You are a helpful Assistant with expertise in operations research and the Gurobi python solver.
 You should think step by step first and then follow the instruction to output.
-Note: Output only clean, stage-specific content within each tag, without other explanations, descriptions or thoughts.
+Note: Output only clean, tag-specific content within each tag, without other explanations, descriptions or thoughts.
 You MUST output the complete modeling python code to solve within <python> at last.
 """
 
@@ -21,21 +21,17 @@ You MUST output the complete modeling python code to solve within <python> at la
 TYPE_SET_NOTICE = """
 # MANDATORY FORMAT RULES
 
-1. This stage must return exactly two blocks and in this order:
-<Type> ... </Type>
-<Sets> ... </Sets>
-
-2. <Type> should summarize:
+1. <Type> should summarize:
 - optimization type: LP / MILP / NLP / MINLP and so on.
 - classical OR family when identifiable: TSP / Facility Location Problem / VRP (Vehicle Routing Problem) and so on. 
 - Explanation: Provide a brief sentence outlining the rationale and key points.
 
-3. <Sets> should define the minimum necessary indexing sets.
+2. <Sets> should define the minimum necessary indexing sets.
 - set_name: description: {elements if explicitly enumerable}
 Example:
 - s: Employee types: {f,p} where f=full-time workers, p=part-time workers
 
-4. Do NOT output parameters, variables, objective, constraints, or code.
+3. Do NOT output parameters, variables, objective, constraints, or code.
 
 # DETAILED INSTRUCTIONS
 
@@ -72,6 +68,7 @@ Good examples:
 - j: Jobs
 - m: Machines
 - s: Employee types: {f,p} where f=full-time workers, p=part-time workers
+
 # QUALITY CHECK BEFORE OUTPUT
 
 Make sure:
@@ -83,12 +80,6 @@ Make sure:
 
 
 PARA_VAR_NOTICE = """
-# MANDATORY FORMAT RULES
-
-This stage must return exactly two blocks and in this order:
-<Parameters> ... </Parameters>
-<Variables> ... </Variables>
-
 # MANDATORY FORMAT RULES
 
 1. Parameters format:
@@ -188,8 +179,6 @@ Make sure:
 3. All decisions are represented as variables with valid domains.
 4. Names are short, stable, and reusable by the next stage.
 5. No objective, no constraints, and no code appear in this stage.
-
-Put the problem Parameters within <Parameters> and </Parameters>, and the problem Variables within <Variables> and </Variables>.
 """
 
 
@@ -413,9 +402,6 @@ Make sure:
 4. Constraint directions are correct.
 5. No code appears in this stage.
 Before finalizing, verify whether the model covers: feasibility, resource balance, demand/service requirements, linking logic, exclusivity/conflict logic, and domain consistency whenever applicable.
-
-Put problem Objective within <Objective> and </Objective> and problem Constraints within <Constraints> and </Constraints>.
-
 """
 
 CODE_NOTICE ="""

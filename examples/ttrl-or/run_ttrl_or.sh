@@ -46,9 +46,6 @@ if [[ "${SAMPLE_RUN}" != "true" && "${SAMPLE_RUN}" != "false" ]]; then
     echo "[run_ttrl_or.sh] --sample_run must be true or false, got: ${SAMPLE_RUN}"
     exit 1
 fi
-
-# Hydra override parser treats extra '=' in unquoted values as syntax errors.
-# Keep log_dir override parser-safe by normalizing risky chars.
 log_dir="${log_dir//=/\-}"
 log_dir="${log_dir// /_}"
 
@@ -59,8 +56,8 @@ MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
 # dataset="NL4OPT.jsonl"
 # dataset="NL4LP.jsonl"
 # dataset="MAMO_ComplexLP_fixed.jsonl"
-# dataset="IndustryOR_fixedV2.jsonl"
-dataset="OptMATH_Bench_166.jsonl"
+dataset="IndustryOR_fixedV2.jsonl"
+# dataset="OptMATH_Bench_166.jsonl"
 
 # dataset="MAMO_EasyLP_fixed.jsonl" #sample
 # dataset="OptiBench.jsonl"
