@@ -15,6 +15,8 @@ USE_TTRL=false
 r3_reward=true
 log_dir="outputs/logs_TTRL-${USE_TTRL}_r3-${r3_reward}_refine-${CODE_REFINE}_repair-${CODE_REPAIR}_codeGATE-${CODE_ENTRY_SECOND_ATTEMPT}"
 EXTRA_ARGS=()
+LORA_RANK=16
+LORA_ALPHA=32
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -48,6 +50,12 @@ if [[ "${SAMPLE_RUN}" != "true" && "${SAMPLE_RUN}" != "false" ]]; then
 fi
 log_dir="${log_dir//=/\-}"
 log_dir="${log_dir// /_}"
+
+if [[ "$(echo "${USE_TTRL}" | tr '[:upper:]' '[:lower:]')" == "false" ]]; then
+    # Pure-MCTS mode: disable LoRA adapter construction to avoid unnecessary vLLM LoRA paths.
+    LORA_RANK=0
+    LORA_ALPHA=0
+fi
 
 # model_name='Qwen/Qwen2.5-7B-Instruct'
 model_name='Qwen/Qwen3-4B-Instruct-2507'
@@ -114,8 +122,8 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.model.path=${MODEL_NAME_OR_PATH} \
     actor_rollout_ref.model.use_shm=False \
     actor_rollout_ref.model.target_modules=all-linear \
-    actor_rollout_ref.model.lora_rank=16 \
-    actor_rollout_ref.model.lora_alpha=32 \
+    actor_rollout_ref.model.lora_rank=${LORA_RANK} \
+    actor_rollout_ref.model.lora_alpha=${LORA_ALPHA} \
     actor_rollout_ref.actor.optim.lr=1e-4 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=1 \

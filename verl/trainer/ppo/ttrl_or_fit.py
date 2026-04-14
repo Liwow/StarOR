@@ -882,9 +882,13 @@ def _prepare_r3_for_samples(raw_samples: list, runner: TTRLORRunner, rank: int, 
 def run_ttrl_or_fit(trainer, logger) -> None:
     trainer.global_steps = 0
     trainer._load_checkpoint()
-    trainer.checkpoint_manager.update_weights(trainer.global_steps)
-
     pipeline_config = build_pipeline_config_from_verl_config(trainer.config)
+    if bool(getattr(pipeline_config.grpo, "use_ttrl", True)):
+        trainer.checkpoint_manager.update_weights(trainer.global_steps)
+    else:
+        # In pure-MCTS mode (use_ttrl=False), skip eager rollout weight sync.
+        # vLLM is initialized from model path and does not require per-step policy syncing.
+        print("[verl-or][info] use_ttrl=false: skip initial checkpoint_manager.update_weights")
     model_log_root = _verl_model_log_root(pipeline_config)
     _write_run_config(pipeline_config, model_log_root)
     backend = VerlRayPolicyBackend(trainer, pipeline_config)
