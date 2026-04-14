@@ -11,14 +11,14 @@ BASE_URL="http://127.0.0.1:8000/v1"
 API_KEY="EMPTY"
 
 # 推理参数
-N_VALUE=16              # Best-of-N
-PARALLEL_SIZE=15        # 并发请求数
+N_VALUE=1             # Best-of-N
+PARALLEL_SIZE=150        # 并发请求数
 TEMPERATURE=0.7
 MAX_TOKENS=5000         # 足够长以容纳 Gurobi 代码
 EXEC_TIMEOUT=30         # 每个代码运行最长 30 秒
 
 # 日志目录
-LOG_DIR="outputs/best_of_n_logs"
+LOG_DIR="outputs/best_of_n_logs_${N_VALUE}"
 
 # 数据集列表
 DATASETS=(

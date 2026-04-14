@@ -66,26 +66,67 @@ def get_retry_prompt(question, reflection):
     return f"Question: {question}\n[Reflection]: {reflection}\nProvide the corrected Gurobi code in <python> tags."
 
 # --- 执行引擎 ---
+def truncate_feedback(text: str, max_chars: int = 1500) -> str:
+    """
+    智能截断输出：保留开头和结尾，并过滤掉 Gurobi 冗长的迭代日志。
+    """
+    if not text:
+        return ""
+    
+    lines = text.splitlines()
+    
+    # 1. 过滤掉 Gurobi 典型的迭代进度行（通常包含大量空格和数字列）
+    # 示例: "     0     0   10.00000    0   10   10.00000   10.00000  0.00%     -    0s"
+    filtered_lines = []
+    for line in lines:
+        # 正则匹配：以多个空格开头，后面跟着数字和浮点数（Gurobi 进度表特征）
+        if re.match(r"^\s+\d+\s+\d+\s+[-+]?\d+", line):
+            continue
+        filtered_lines.append(line)
+    
+    # 2. 如果过滤后仍然太长，保留头尾
+    if len(filtered_lines) < 40:
+        result = "\n".join(filtered_lines)
+    else:
+        # 保留前 15 行（导入错误、初始化错误）和后 25 行（Traceback 和最终状态）
+        head = filtered_lines[:15]
+        tail = filtered_lines[-25:]
+        result = "\n".join(head + ["\n... [Verbose logs truncated] ...\n"] + tail)
+
+    # 3. 硬截断字符数，防止单行超长
+    if len(result) > max_chars:
+        return result[:max_chars//2] + "\n\n... [Content Truncated] ...\n\n" + result[-max_chars//2:]
+    return result
 
 def execute_code(code: str, timeout: int = 30) -> Tuple[bool, Optional[float], str]:
     with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as tf:
         tf.write(code)
         path = tf.name
     try:
+        # 尝试运行代码
         result = subprocess.run(["python", path], capture_output=True, text=True, timeout=timeout)
-        output = result.stdout
-        combined_output = output + "\n" + result.stderr
+        stdout = result.stdout
+        stderr = result.stderr
+        combined_output = stdout + "\n" + stderr
+        
+        # 提取目标值 (逻辑不变)
         num_pattern = r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
         obj = None
-        match = re.search(rf"Optimal value:?\s*({num_pattern})", output, re.IGNORECASE)
+        match = re.search(rf"Optimal value:?\s*({num_pattern})", stdout, re.IGNORECASE)
         if not match:
             match = re.search(rf"Best objective\s+:?\s*({num_pattern})", combined_output, re.IGNORECASE)
         if match:
             try: obj = float(match.group(1))
             except: obj = None
-        return (result.returncode == 0), obj, combined_output
+        
+        # --- 关键修改：对 feedback 进行截断 ---
+        processed_feedback = truncate_feedback(combined_output)
+        
+        return (result.returncode == 0), obj, processed_feedback
+    except subprocess.TimeoutExpired:
+        return False, None, "Error: Execution timed out."
     except Exception as e:
-        return False, None, str(e)
+        return False, None, f"Error: {str(e)}"
     finally:
         if os.path.exists(path): os.remove(path)
 
@@ -102,9 +143,9 @@ def process_reflexion(source_index, row, client, args, q_key, a_key):
     for t in range(args.max_trials):
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         if t > 0:
-            for m in memory:
-                messages.append({"role": "assistant", "content": m['code']})
-                messages.append({"role": "user", "content": f"[Reflection]: {m['reflection']}\nPlease fix."})
+            for m in memory[-2:]: # 只看最近 2 次尝试
+                messages.append({"role": "assistant", "content": "Previous attempted code omitted for brevity."}) 
+                messages.append({"role": "user", "content": f"[Reflection]: {m['reflection']}"})
         messages.append({"role": "user", "content": current_prompt if t==0 else "Try again with the fix."})
         
         resp = client.chat(messages, temperature=args.temperature, max_tokens=args.max_tokens)
@@ -112,7 +153,7 @@ def process_reflexion(source_index, row, client, args, q_key, a_key):
         
         code = extract_python_code(resp)
         success, obj, feedback = execute_code(code, timeout=args.exec_timeout) if code else (False, None, "No code block found.")
-        feedback = feedback[:4000]
+
         hit = is_close(obj, gt_obj) if obj is not None else False
         history.append({"trial": t, "success": success, "obj": obj, "hit": hit, "feedback": feedback})
 
