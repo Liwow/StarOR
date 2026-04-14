@@ -11,7 +11,7 @@ CODE_REFINE=true
 CODE_REPAIR=2
 CODE_ENTRY_SECOND_ATTEMPT=true
 CODE_ENTRY_SAME_CLUSTER_SUPPRESS_WEIGHT=0.6
-USE_TTRL=true
+USE_TTRL=false
 r3_reward=true
 log_dir="outputs/logs_TTRL-${USE_TTRL}_r3-${r3_reward}_refine-${CODE_REFINE}_repair-${CODE_REPAIR}_codeGATE-${CODE_ENTRY_SECOND_ATTEMPT}"
 EXTRA_ARGS=()
@@ -53,13 +53,13 @@ log_dir="${log_dir// /_}"
 model_name='Qwen/Qwen3-4B-Instruct-2507'
 MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
 # MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_or_qwen3_4b_int_cp513_v1"
-# dataset="NL4OPT.jsonl"
+dataset="NL4OPT.jsonl"
 # dataset="NL4LP.jsonl"
 # dataset="MAMO_ComplexLP_fixed.jsonl"
 # dataset="IndustryOR_fixedV2.jsonl"
 # dataset="OptMATH_Bench_166.jsonl"
 
-dataset="MAMO_EasyLP_fixed.jsonl" #sample
+# dataset="MAMO_EasyLP_fixed.jsonl" #sample
 # dataset="OptiBench.jsonl"
 
 DATA_PATH="$DATA_ROOT/$dataset"
@@ -88,8 +88,8 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.reward.gurobi_time_limit_sec=30 \
     algorithm.ttrl_or.reward.robustness_cases=3 \
     algorithm.ttrl_or.reward.cluster_scope=local \
-    algorithm.ttrl_or.reward.r1_weight=0.7 \
-    algorithm.ttrl_or.reward.r2_weight=0.1 \
+    algorithm.ttrl_or.reward.r1_weight=0.6 \
+    algorithm.ttrl_or.reward.r2_weight=0.2 \
     algorithm.ttrl_or.reward.r1_obj_scale_fail_multiplier=0.5 \
     algorithm.ttrl_or.reward.r3_weight=0.1 \
     algorithm.ttrl_or.reward.r4_weight=0.1 \
