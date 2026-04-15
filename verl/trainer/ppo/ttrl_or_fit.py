@@ -234,48 +234,79 @@ class VerlRayPolicyBackend:
         return bool(getattr(self.pipeline_config.grpo, "stage_update", False))
 
     @staticmethod
-    def _tag_aliases(tag: str) -> list[str]:
-        base = str(tag or "").strip()
-        if not base:
-            return []
-        aliases = [base]
-        low = base.lower()
-        if low.endswith("s"):
-            aliases.append(base[:-1])
-        else:
-            aliases.append(base + "s")
-        # De-duplicate while preserving order.
-        out: list[str] = []
-        seen: set[str] = set()
-        for x in aliases:
-            key = x.lower()
-            if key in seen:
+    def _stage_anchor_tags(stage: Stage) -> list[str]:
+        # Use the LAST stage tag in each stage group as anchor.
+        # Example: Stage2 -> Variables, Stage3 -> Constraints.
+        if stage == Stage.SCHEMA:
+            return ["Sets", "Set"]
+        if stage == Stage.SET_PARAM_VAR:
+            return ["Variables", "Variable"]
+        if stage == Stage.OBJ_CONS:
+            return ["Constraints", "Constraint"]
+        if stage == Stage.TYPE_HINT:
+            return ["Type"]
+        if stage == Stage.SETS:
+            return ["Sets", "Set"]
+        if stage == Stage.PARAMETERS:
+            return ["Parameters", "Parameter"]
+        if stage == Stage.VARIABLES:
+            return ["Variables", "Variable"]
+        if stage == Stage.OBJECTIVE:
+            return ["Objective"]
+        if stage == Stage.CONSTRAINTS:
+            return ["Constraints", "Constraint"]
+        return []
+
+    @staticmethod
+    def _find_stage_anchor_end(text: str, stage: Stage, min_len: int = 21) -> int:
+        raw = str(text or "")
+        if not raw:
+            return -1
+        required_len = max(21, int(min_len))
+        best_end = -1
+        for tag in VerlRayPolicyBackend._stage_anchor_tags(stage):
+            od = re.escape("<")
+            cd = re.escape(">")
+            open_re = re.compile(rf"{od}\s*{re.escape(tag)}\s*{cd}", flags=re.IGNORECASE)
+            close_re = re.compile(rf"{od}\s*/\s*{re.escape(tag)}\s*{cd}", flags=re.IGNORECASE)
+            open_matches = list(open_re.finditer(raw))
+            close_matches = list(close_re.finditer(raw))
+            if not open_matches or not close_matches:
                 continue
-            seen.add(key)
-            out.append(x)
-        return out
+            for close_match in close_matches:
+                close_start = int(close_match.start())
+                nearest_open = None
+                for open_match in reversed(open_matches):
+                    if int(open_match.end()) <= close_start:
+                        nearest_open = open_match
+                        break
+                if nearest_open is None:
+                    continue
+                content = raw[int(nearest_open.end()):close_start].strip()
+                if len(content) < required_len:
+                    continue
+                best_end = int(close_match.end())
+                break
+            if best_end >= 0:
+                break
+        return best_end
 
     @staticmethod
     def _extract_stage_update_text(stage: Stage, text: str) -> str:
-        cleaned = FourStageMCTS._normalize_text_block(str(text or ""))
+        raw_text = str(text or "")
+        cleaned = FourStageMCTS._normalize_text_block(raw_text)
         if not cleaned:
             return ""
-
-        blocks: list[str] = []
-
-        thought = FourStageMCTS._extract_tag_block(cleaned, tag="thought", min_len=21)
-        if thought:
-            blocks.append(f"<thought>\n{thought.strip()}\n</thought>")
-
-        for tag in FourStageMCTS._tags_for_stage(stage):
-            extracted = ""
-            for cand in VerlRayPolicyBackend._tag_aliases(tag):
-                extracted = FourStageMCTS._extract_tag_block(cleaned, tag=cand, min_len=21)
-                if extracted:
-                    blocks.append(f"<{tag}>\n{extracted.strip()}\n</{tag}>")
-                    break
-
-        return "\n\n".join(blocks).strip()
+        anchor_end = VerlRayPolicyBackend._find_stage_anchor_end(cleaned, stage=stage, min_len=21)
+        if anchor_end < 0:
+            return ""
+        python_re = re.compile(r"<\s*python\s*>", flags=re.IGNORECASE)
+        python_match = python_re.search(cleaned, pos=int(anchor_end))
+        if python_match is None:
+            # No python tail to remove: keep the full original completion text.
+            return raw_text.strip()
+        prefix = cleaned[: int(python_match.start())].strip()
+        return prefix
 
     @staticmethod
     def _prefix_match_len(lhs: list[int], rhs: list[int]) -> int:
@@ -527,13 +558,21 @@ class VerlRayPolicyBackend:
             "reason": "disabled",
         }
         if use_ttrl and self._stage_update_enabled():
+            base_response_mask = batch.batch.get("response_mask")
             stage_mask, stage_update_info = self._build_stage_update_response_mask(
                 stage=stage,
                 batch=batch,
                 completions=completions,
             )
-            if bool(stage_update_info.get("applied", False)):
-                batch.batch["response_mask"] = stage_mask
+            if bool(stage_update_info.get("applied", False)) and base_response_mask is not None:
+                # Compose masks explicitly: effective update region = response_mask AND stage_mask.
+                # This is safer than direct replacement if stage_mask construction changes in future.
+                effective_mask = (
+                    base_response_mask.to(dtype=torch.bool) & stage_mask.to(dtype=torch.bool)
+                ).to(dtype=base_response_mask.dtype)
+                batch.batch["response_mask"] = effective_mask
+                stage_update_info["mask_composition"] = "response_mask_and_stage_mask"
+                stage_update_info["effective_tokens_after_and"] = int(effective_mask.sum().item())
             else:
                 stage_update_info.setdefault("reason", "build_mask_not_applied")
         elif not use_ttrl and self._stage_update_enabled():
