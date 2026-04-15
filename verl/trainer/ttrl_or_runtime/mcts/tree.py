@@ -103,6 +103,9 @@ class FourStageMCTS:
         selection_history: list[tuple[tuple[str, str], str]] = []
         code_entry_attempt_total: int = 0
         code_entry_one_shot_suppression: dict[str, Any] | None = None
+        # Once MCTS first attempts to enter CODE (including deferred gate),
+        # dynamic reward should immediately switch to late-phase weights.
+        dynamic_reward_force_stage3: bool = False
 
         stage_archives: dict[Stage, list[Trajectory]] = {stage: [] for stage in self.stage_order}
 
@@ -190,6 +193,8 @@ class FourStageMCTS:
             next_stage = self._next_stage(selected.stage)
             if next_stage is None:
                 continue
+            if next_stage == Stage.CODE:
+                dynamic_reward_force_stage3 = True
             selected_group_key = self._selection_group_key(selected)
             if selected_group_key is not None:
                 selection_history.append((selected_group_key, str(selected.node_id)))
@@ -377,6 +382,16 @@ class FourStageMCTS:
 
                 reward_t0 = time.perf_counter()
                 trajectories = [item["trajectory"] for item in prepared_items]
+                # Attach per-iteration dynamic reward context for reward calculator.
+                iter_num = int(iter_idx) + 1
+                for t in trajectories:
+                    if t is None:
+                        continue
+                    meta = t.metadata if isinstance(t.metadata, dict) else {}
+                    meta["__mcts_iter__"] = int(iter_num)
+                    meta["__dynamic_reward_force_stage3__"] = bool(dynamic_reward_force_stage3)
+                    meta["__mcts_stage__"] = str(next_stage.value)
+                    t.metadata = meta
                 score_group = getattr(self.rewarder, "score_rollout_group", None)
                 if callable(score_group):
                     reward_list = list(score_group(stage=next_stage, trajectories=trajectories, explored=stage_archive))
@@ -2554,9 +2569,15 @@ class FourStageMCTS:
                 )
             )
 
-        fallback_to_original = not self._reward_has_valid_obj(candidate_reward)
+        final_has_valid_obj = bool(self._reward_has_valid_obj(candidate_reward))
+        final_issue_blocking = issue_kind in {"error", "infeasible"}
+        # Only stop at CODE when both conditions are met:
+        # 1) objective is valid; 2) final issue is not error/infeasible.
+        fallback_to_original = (not final_has_valid_obj) or final_issue_blocking
         terminal_trace["final_candidate"] = self._terminal_candidate_summary(candidate_traj)
         terminal_trace["final_issue"] = {"kind": issue_kind, "reason": issue_reason}
+        terminal_trace["final_has_valid_obj"] = bool(final_has_valid_obj)
+        terminal_trace["final_issue_blocking"] = bool(final_issue_blocking)
         terminal_trace["fallback_to_original_logic"] = bool(fallback_to_original)
         terminal_trace["repair_logs"] = list(terminal_trace.get("steps", []))
 

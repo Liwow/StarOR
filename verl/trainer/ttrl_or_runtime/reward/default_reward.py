@@ -224,12 +224,21 @@ class TTRLRewardCalculator(RewardCalculator):
                 r1_weight_scale = float(self.config.r1_obj_scale_fail_multiplier)
                 r1_obj_scale_penalized = True
 
-            # If r3 is disabled, fold r3 weight into r1 to keep total weight mass stable.
+            # Resolve base reward weights (static or dynamic schedule by MCTS iteration).
+            weight_plan = self._resolve_reward_weight_plan(trajectory=traj, current_iter=current_iter)
+            # Keep total weight mass stable with feature toggles:
+            # - if r3 is disabled, fold r3_weight into r2
+            # - if r4 is disabled, fold r4_weight into r1
             r3_enabled = bool(self.config.enable_r3_reward)
-            base_r1_weight = float(self.config.r1_weight)
-            base_r3_weight = float(self.config.r3_weight)
-            r1_weight_effective = base_r1_weight + (0.0 if r3_enabled else base_r3_weight)
+            r4_enabled = bool(self.config.enable_r4_reward)
+            base_r1_weight = float(weight_plan["r1"])
+            base_r2_weight = float(weight_plan["r2"])
+            base_r3_weight = float(weight_plan["r3"])
+            base_r4_weight = float(weight_plan["r4"])
+            r1_weight_effective = base_r1_weight + (0.0 if r4_enabled else base_r4_weight)
+            r2_weight_effective = base_r2_weight + (0.0 if r3_enabled else base_r3_weight)
             r3_weight_effective = base_r3_weight if r3_enabled else 0.0
+            r4_weight_effective = base_r4_weight if r4_enabled else 0.0
 
             total = self.combine_rewards(
                 r1=r1,
@@ -238,10 +247,10 @@ class TTRLRewardCalculator(RewardCalculator):
                 r4=r4,
                 reward_gate=reward_gate,
                 r1_weight=r1_weight_effective,
-                r2_weight=self.config.r2_weight,
+                r2_weight=r2_weight_effective,
                 r1_weight_scale=r1_weight_scale,
                 r3_weight=r3_weight_effective,
-                r4_weight=self.config.r4_weight,
+                r4_weight=r4_weight_effective,
             )
 
             common_meta = {
@@ -252,14 +261,22 @@ class TTRLRewardCalculator(RewardCalculator):
                 "total_reward_formula": "total_r = (w1*r1*r1_weight_scale) + (w2*r2) + (w3*r3) + (w4*r4); total=max(0,total_r)",
                 "total_reward_weights": {
                     "w1_r1": float(r1_weight_effective),
-                    "w2_r2": float(self.config.r2_weight),
+                    "w2_r2": float(r2_weight_effective),
                     "r1_obj_scale_fail_multiplier": float(self.config.r1_obj_scale_fail_multiplier),
                     "w3_r3": float(r3_weight_effective),
-                    "w4_r4": float(self.config.r4_weight),
+                    "w4_r4": float(r4_weight_effective),
                     "w1_base_r1": float(base_r1_weight),
+                    "w2_base_r2": float(base_r2_weight),
                     "w3_base_r3": float(base_r3_weight),
+                    "w4_base_r4": float(base_r4_weight),
                     "r3_enabled": bool(r3_enabled),
-                    "r3_weight_folded_into_r1": bool(not r3_enabled),
+                    "r4_enabled": bool(r4_enabled),
+                    "r3_weight_folded_into_r2": bool(not r3_enabled),
+                    "r4_weight_folded_into_r1": bool(not r4_enabled),
+                    "dynamic_reward": bool(weight_plan.get("dynamic_reward", False)),
+                    "dynamic_phase": str(weight_plan.get("phase", "")),
+                    "dynamic_force_stage3": bool(weight_plan.get("force_stage3", False)),
+                    "dynamic_iter": int(weight_plan.get("iter", current_iter)),
                 },
                 "total_reward_terms": {
                     "r1": float(r1),
@@ -438,6 +455,48 @@ class TTRLRewardCalculator(RewardCalculator):
         )
         total_r = total_r_raw
         return max(0.0, total_r)
+
+    def _resolve_reward_weight_plan(self, trajectory: Trajectory, current_iter: int) -> dict[str, Any]:
+        dynamic_enabled = bool(getattr(self.config, "dynamic_reward", False))
+        if not dynamic_enabled:
+            return {
+                "dynamic_reward": False,
+                "phase": "static",
+                "iter": int(current_iter),
+                "force_stage3": False,
+                "r1": float(self.config.r1_weight),
+                "r2": float(self.config.r2_weight),
+                "r3": float(self.config.r3_weight),
+                "r4": float(self.config.r4_weight),
+            }
+
+        metadata = trajectory.metadata if isinstance(trajectory.metadata, dict) else {}
+        iter_num = int(metadata.get("__mcts_iter__", current_iter) or current_iter)
+        force_stage3 = bool(metadata.get("__dynamic_reward_force_stage3__", False))
+
+        if force_stage3:
+            phase = "late_or_code_seen"
+            w1, w2, w3, w4 = 0.6, 0.2, 0.1, 0.1
+        elif iter_num <= 3:
+            phase = "early"
+            w1, w2, w3, w4 = 0.3, 0.4, 0.2, 0.1
+        elif iter_num <= 5:
+            phase = "middle"
+            w1, w2, w3, w4 = 0.5, 0.3, 0.1, 0.1
+        else:
+            phase = "late"
+            w1, w2, w3, w4 = 0.6, 0.2, 0.1, 0.1
+
+        return {
+            "dynamic_reward": True,
+            "phase": phase,
+            "iter": int(iter_num),
+            "force_stage3": bool(force_stage3),
+            "r1": float(w1),
+            "r2": float(w2),
+            "r3": float(w3),
+            "r4": float(w4),
+        }
 
     def _use_local_cluster_scope(self) -> bool:
         return str(self.config.cluster_scope or "global").strip().lower() == "local"

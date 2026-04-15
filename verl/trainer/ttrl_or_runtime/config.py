@@ -58,6 +58,7 @@ class RewardConfig:
     r4_decay: float = 0.95  # Decay factor for historical structural counts
 
     #  Final reward weights 
+    dynamic_reward: bool = False  # Enable dynamic reward schedule by MCTS iteration / code-entry
     r1_weight: float = 0.6  # Weight for r1 in final reward
     r2_weight: float = 0.1  # Weight for r2 in final reward
     r1_obj_scale_fail_multiplier: float = 0.2  # Multiplier on r1 weight when obj-scale check fails
@@ -72,6 +73,9 @@ class GRPOConfig:
     # True: run GRPO update with LoRA policy.
     # False: pure MCTS inference mode (no LoRA inference, no GRPO update).
     use_ttrl: bool = True
+    # When True, GRPO update only uses tokens up to current stage content
+    # (e.g., keep <thought> + current stage tags, drop trailing <python> tail).
+    stage_update: bool = False
     learning_rate: float = 5e-5
     group_size: int = 3  # Alias of num_generations in GRPO literature.
     kl_coef: float = 0.001  # KL penalty coefficient beta.

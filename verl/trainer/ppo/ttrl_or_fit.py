@@ -21,6 +21,7 @@ from verl.utils.model import compute_position_id_with_mask
 
 from verl.trainer.ttrl_or_runtime.config import PipelineConfig
 from verl.trainer.ttrl_or_runtime.dataset.loader import normalize_dataset_paths
+from verl.trainer.ttrl_or_runtime.mcts.tree import FourStageMCTS
 from verl.trainer.ttrl_or_runtime.pipeline.ttrl_or import TTRLORRunner
 from verl.trainer.ttrl_or_runtime.reward.r3_batch_planner import (
     attach_r3_plan_to_instance,
@@ -229,6 +230,156 @@ class VerlRayPolicyBackend:
     def _use_ttrl_enabled(self) -> bool:
         return bool(getattr(self.pipeline_config.grpo, "use_ttrl", True))
 
+    def _stage_update_enabled(self) -> bool:
+        return bool(getattr(self.pipeline_config.grpo, "stage_update", False))
+
+    @staticmethod
+    def _tag_aliases(tag: str) -> list[str]:
+        base = str(tag or "").strip()
+        if not base:
+            return []
+        aliases = [base]
+        low = base.lower()
+        if low.endswith("s"):
+            aliases.append(base[:-1])
+        else:
+            aliases.append(base + "s")
+        # De-duplicate while preserving order.
+        out: list[str] = []
+        seen: set[str] = set()
+        for x in aliases:
+            key = x.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(x)
+        return out
+
+    @staticmethod
+    def _extract_stage_update_text(stage: Stage, text: str) -> str:
+        cleaned = FourStageMCTS._normalize_text_block(str(text or ""))
+        if not cleaned:
+            return ""
+
+        blocks: list[str] = []
+
+        thought = FourStageMCTS._extract_tag_block(cleaned, tag="thought", min_len=21)
+        if thought:
+            blocks.append(f"<thought>\n{thought.strip()}\n</thought>")
+
+        for tag in FourStageMCTS._tags_for_stage(stage):
+            extracted = ""
+            for cand in VerlRayPolicyBackend._tag_aliases(tag):
+                extracted = FourStageMCTS._extract_tag_block(cleaned, tag=cand, min_len=21)
+                if extracted:
+                    blocks.append(f"<{tag}>\n{extracted.strip()}\n</{tag}>")
+                    break
+
+        return "\n\n".join(blocks).strip()
+
+    @staticmethod
+    def _prefix_match_len(lhs: list[int], rhs: list[int]) -> int:
+        n = min(len(lhs), len(rhs))
+        i = 0
+        while i < n and int(lhs[i]) == int(rhs[i]):
+            i += 1
+        return i
+
+    def _build_stage_update_response_mask(
+        self,
+        *,
+        stage: Stage,
+        batch: DataProto,
+        completions: list[str],
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        base_mask = batch.batch.get("response_mask")
+        responses = batch.batch.get("responses")
+        if base_mask is None or responses is None:
+            return (
+                torch.zeros(0, dtype=torch.long),
+                {
+                    "enabled": True,
+                    "applied": False,
+                    "reason": "missing_response_mask_or_responses",
+                },
+            )
+
+        base_mask_cpu = base_mask.detach().cpu()
+        responses_cpu = responses.detach().cpu()
+        new_mask_cpu = torch.zeros_like(base_mask_cpu)
+
+        rows = int(base_mask_cpu.shape[0]) if base_mask_cpu.ndim >= 2 else 0
+        truncated_rows = 0
+        full_rows = 0
+        fallback_rows = 0
+        effective_tokens = 0
+        total_tokens = 0
+
+        for row_idx in range(rows):
+            valid_positions = torch.nonzero(base_mask_cpu[row_idx], as_tuple=False).flatten()
+            valid_len = int(valid_positions.numel())
+            if valid_len <= 0:
+                continue
+            total_tokens += int(valid_len)
+
+            full_text = str(completions[row_idx] if row_idx < len(completions) else "")
+            selected_text = self._extract_stage_update_text(stage, full_text)
+
+            # If stage tags are not valid/missing (e.g. <20 chars), keep full update
+            # to avoid accidentally masking out all learning signal.
+            if len(selected_text.strip()) < 21:
+                selected_len = int(valid_len)
+                full_rows += 1
+                fallback_rows += 1
+            elif selected_text.strip() == full_text.strip():
+                selected_len = int(valid_len)
+                full_rows += 1
+            else:
+                selected_ids = self.tokenizer(
+                    str(selected_text),
+                    add_special_tokens=False,
+                    return_attention_mask=False,
+                )["input_ids"]
+                response_ids = responses_cpu[row_idx][valid_positions].tolist()
+                match_len = self._prefix_match_len(list(selected_ids), response_ids)
+                if match_len <= 0:
+                    # Robust fallback when text-token alignment is imperfect.
+                    selected_len = min(int(valid_len), int(len(selected_ids)))
+                    if selected_len <= 0:
+                        selected_len = int(valid_len)
+                    fallback_rows += 1
+                else:
+                    selected_len = min(int(valid_len), int(match_len))
+
+                if selected_len < valid_len:
+                    truncated_rows += 1
+                else:
+                    full_rows += 1
+
+            effective_tokens += int(selected_len)
+            if selected_len > 0:
+                new_mask_cpu[row_idx, valid_positions[:selected_len]] = 1
+
+        applied = bool(rows > 0 and effective_tokens > 0)
+        info = {
+            "enabled": True,
+            "applied": bool(applied),
+            "stage": str(stage.value),
+            "rows": int(rows),
+            "rows_truncated": int(truncated_rows),
+            "rows_full": int(full_rows),
+            "rows_fallback": int(fallback_rows),
+            "total_tokens_before": int(total_tokens),
+            "total_tokens_after": int(effective_tokens),
+        }
+        if total_tokens > 0:
+            info["token_keep_ratio"] = float(effective_tokens) / float(total_tokens)
+        else:
+            info["token_keep_ratio"] = 0.0
+
+        new_mask = new_mask_cpu.to(device=base_mask.device, dtype=base_mask.dtype)
+        return new_mask, info
+
     def _sample_reset_enabled(self) -> bool:
         if not self._use_ttrl_enabled():
             return False
@@ -370,6 +521,28 @@ class VerlRayPolicyBackend:
             rewards = [float(reward_callback(prompt, text, ridx)) for ridx, text in enumerate(completions)]
         rewards = rewards[: len(completions)] + [0.0] * max(0, len(completions) - len(rewards))
 
+        stage_update_info: dict[str, Any] = {
+            "enabled": bool(self._stage_update_enabled()),
+            "applied": False,
+            "reason": "disabled",
+        }
+        if use_ttrl and self._stage_update_enabled():
+            stage_mask, stage_update_info = self._build_stage_update_response_mask(
+                stage=stage,
+                batch=batch,
+                completions=completions,
+            )
+            if bool(stage_update_info.get("applied", False)):
+                batch.batch["response_mask"] = stage_mask
+            else:
+                stage_update_info.setdefault("reason", "build_mask_not_applied")
+        elif not use_ttrl and self._stage_update_enabled():
+            stage_update_info = {
+                "enabled": True,
+                "applied": False,
+                "reason": "use_ttrl_false_no_grpo_update",
+            }
+
         reward_tensor = self._terminal_reward_tensor(batch.batch["response_mask"], rewards)
         batch.batch["token_level_scores"] = reward_tensor
 
@@ -396,6 +569,7 @@ class VerlRayPolicyBackend:
                 "num_samples": len(generations),
                 "use_ttrl": False,
                 "reason": "use_ttrl_disabled_no_grpo_no_lora",
+                "stage_update": stage_update_info,
                 "timing": {
                     "rollout_vllm_infer_sec": float(rollout_infer_sec),
                     "old_log_prob_forward_sec": 0.0,
@@ -468,6 +642,7 @@ class VerlRayPolicyBackend:
             "stage": stage.value,
             "num_samples": len(generations),
             "use_ttrl": True,
+            "stage_update": stage_update_info,
             "metrics": {**actor_metrics, **kl_metrics},
             "timing": {
                 "rollout_vllm_infer_sec": float(rollout_infer_sec),

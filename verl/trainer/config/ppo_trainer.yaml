@@ -205,6 +205,9 @@ algorithm:
       # Historical decay used by r4 global bookkeeping.
       r4_decay: 0.95
 
+      # Enable dynamic reward schedule by MCTS iteration / code-entry.
+      dynamic_reward: False
+
       # Weight of r1 in final reward.
       r1_weight: 0.6
 
@@ -272,6 +275,10 @@ algorithm:
 
       # Master switch: True uses GRPO+LoRA updates; False runs pure MCTS (no LoRA, no GRPO update).
       use_ttrl: True
+
+      # Whether GRPO update is restricted to tokens up to current-stage content.
+      # If True, trailing content (e.g., <python> tail) is masked out for update.
+      stage_update: False
 
       # Optimizer learning rate mirrored into the runtime config.
       learning_rate: 5.0e-5
