@@ -457,6 +457,13 @@ class TTRLRewardCalculator(RewardCalculator):
         return max(0.0, total_r)
 
     def _resolve_reward_weight_plan(self, trajectory: Trajectory, current_iter: int) -> dict[str, Any]:
+        default_early = (0.3, 0.4, 0.2, 0.1)
+        default_mid = (0.5, 0.3, 0.1, 0.1)
+        default_final = (0.6, 0.2, 0.1, 0.1)
+        early_w = self._parse_dynamic_stage_weight(getattr(self.config, "early_weight", None), default_early)
+        mid_w = self._parse_dynamic_stage_weight(getattr(self.config, "mid_weight", None), default_mid)
+        final_w = self._parse_dynamic_stage_weight(getattr(self.config, "final_weight", None), default_final)
+
         dynamic_enabled = bool(getattr(self.config, "dynamic_reward", False))
         if not dynamic_enabled:
             return {
@@ -476,16 +483,16 @@ class TTRLRewardCalculator(RewardCalculator):
 
         if force_stage3:
             phase = "late_or_code_seen"
-            w1, w2, w3, w4 = 0.6, 0.2, 0.1, 0.1
+            w1, w2, w3, w4 = final_w
         elif iter_num <= 3:
             phase = "early"
-            w1, w2, w3, w4 = 0.3, 0.4, 0.2, 0.1
+            w1, w2, w3, w4 = early_w
         elif iter_num <= 5:
             phase = "middle"
-            w1, w2, w3, w4 = 0.5, 0.3, 0.1, 0.1
+            w1, w2, w3, w4 = mid_w
         else:
             phase = "late"
-            w1, w2, w3, w4 = 0.6, 0.2, 0.1, 0.1
+            w1, w2, w3, w4 = final_w
 
         return {
             "dynamic_reward": True,
@@ -496,7 +503,60 @@ class TTRLRewardCalculator(RewardCalculator):
             "r2": float(w2),
             "r3": float(w3),
             "r4": float(w4),
+            "configured_early_weight": [float(x) for x in early_w],
+            "configured_mid_weight": [float(x) for x in mid_w],
+            "configured_final_weight": [float(x) for x in final_w],
         }
+
+    @staticmethod
+    def _parse_dynamic_stage_weight(raw: Any, default: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+        def _to_float(value: Any) -> float | None:
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, (int, float)):
+                v = float(value)
+                return v if math.isfinite(v) else None
+            if isinstance(value, str):
+                s = value.strip()
+                if not s:
+                    return None
+                try:
+                    v = float(s)
+                    return v if math.isfinite(v) else None
+                except Exception:
+                    return None
+            return None
+
+        parsed: list[float] = []
+        if isinstance(raw, (list, tuple)):
+            parsed = [x for x in (_to_float(v) for v in raw) if x is not None]
+        elif isinstance(raw, dict):
+            ordered = [raw.get("r1"), raw.get("r2"), raw.get("r3"), raw.get("r4")]
+            parsed = [x for x in (_to_float(v) for v in ordered) if x is not None]
+        elif isinstance(raw, str):
+            text = raw.strip()
+            if text:
+                obj = None
+                try:
+                    obj = json.loads(text)
+                except Exception:
+                    obj = None
+                if isinstance(obj, (list, tuple)):
+                    parsed = [x for x in (_to_float(v) for v in obj) if x is not None]
+                elif isinstance(obj, dict):
+                    ordered = [obj.get("r1"), obj.get("r2"), obj.get("r3"), obj.get("r4")]
+                    parsed = [x for x in (_to_float(v) for v in ordered) if x is not None]
+                else:
+                    tokens = [tok for tok in re.split(r"[,\s;|]+", text) if tok.strip()]
+                    parsed = [x for x in (_to_float(tok) for tok in tokens) if x is not None]
+
+        if len(parsed) != 4:
+            return default
+        if any((not math.isfinite(float(x))) for x in parsed):
+            return default
+        if sum(float(x) for x in parsed) <= 0.0:
+            return default
+        return (float(parsed[0]), float(parsed[1]), float(parsed[2]), float(parsed[3]))
 
     def _use_local_cluster_scope(self) -> bool:
         return str(self.config.cluster_scope or "global").strip().lower() == "local"

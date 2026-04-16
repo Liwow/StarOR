@@ -233,6 +233,9 @@ class VerlRayPolicyBackend:
     def _stage_update_enabled(self) -> bool:
         return bool(getattr(self.pipeline_config.grpo, "stage_update", False))
 
+    def _filter_rollout_enabled(self) -> bool:
+        return bool(getattr(self.pipeline_config.mcts, "filter_rollout", False))
+
     @staticmethod
     def _stage_anchor_tags(stage: Stage) -> list[str]:
         # Use the LAST stage tag in each stage group as anchor.
@@ -552,6 +555,78 @@ class VerlRayPolicyBackend:
             rewards = [float(reward_callback(prompt, text, ridx)) for ridx, text in enumerate(completions)]
         rewards = rewards[: len(completions)] + [0.0] * max(0, len(completions) - len(rewards))
 
+        kept_original_indices = list(range(len(completions)))
+        filter_rollout_info: dict[str, Any] = {
+            "enabled": bool(self._filter_rollout_enabled()),
+            "applied": False,
+            "reason": "disabled",
+            "num_total": int(len(completions)),
+            "num_kept": int(len(completions)),
+            "num_dropped": 0,
+        }
+        if bool(self._filter_rollout_enabled()):
+            raw_mask = None
+            raw_stats: dict[str, Any] = {}
+            if callable(batch_score):
+                raw_mask = getattr(batch_score, "_last_filter_mask", None)
+                raw_stats = dict(getattr(batch_score, "_last_filter_stats", {}) or {})
+
+            if isinstance(raw_mask, (list, tuple)) and len(raw_mask) == len(completions):
+                keep_mask = [bool(x) for x in raw_mask]
+                keep_indices = [idx for idx, keep in enumerate(keep_mask) if keep]
+                filter_rollout_info.update(
+                    {
+                        "enabled": True,
+                        "applied": True,
+                        "reason": "batch_filter_mask",
+                        "num_total": int(len(keep_mask)),
+                        "num_kept": int(len(keep_indices)),
+                        "num_dropped": int(len(keep_mask) - len(keep_indices)),
+                        "raw_filter_stats": raw_stats,
+                    }
+                )
+                kept_original_indices = keep_indices
+                if len(keep_indices) < len(completions):
+                    if keep_indices:
+                        batch = batch[keep_indices]
+                        completions = [completions[i] for i in keep_indices]
+                        rewards = [rewards[i] for i in keep_indices]
+                    else:
+                        completions = []
+                        rewards = []
+            else:
+                filter_rollout_info.update(
+                    {
+                        "enabled": True,
+                        "applied": False,
+                        "reason": "missing_or_invalid_batch_filter_mask",
+                        "raw_filter_stats": raw_stats,
+                    }
+                )
+
+        if len(completions) == 0:
+            report = {
+                "updated": False,
+                "backend": "verl",
+                "stage": stage.value,
+                "num_samples": 0,
+                "use_ttrl": bool(use_ttrl),
+                "reason": "all_rollouts_filtered_or_empty",
+                "stage_update": {
+                    "enabled": bool(self._stage_update_enabled()),
+                    "applied": False,
+                    "reason": "no_completion_after_filter",
+                },
+                "filter_rollout": filter_rollout_info,
+                "timing": {
+                    "rollout_vllm_infer_sec": float(rollout_infer_sec),
+                    "old_log_prob_forward_sec": 0.0,
+                    "actor_update_sec": 0.0,
+                    "grpo_group_total_sec": float(time.perf_counter() - group_t0),
+                },
+            }
+            return [], report
+
         stage_update_info: dict[str, Any] = {
             "enabled": bool(self._stage_update_enabled()),
             "applied": False,
@@ -589,13 +664,14 @@ class VerlRayPolicyBackend:
             generations: list[Generation] = []
             prior = 1.0 / float(max(1, len(completions)))
             for ridx, text in enumerate(completions):
+                orig_idx = int(kept_original_indices[ridx]) if ridx < len(kept_original_indices) else int(ridx)
                 generations.append(
                     Generation(
                         text=str(text or ""),
                         prior=prior,
                         metadata={
                             "backend": "verl",
-                            "rollout_index": ridx,
+                            "rollout_index": orig_idx,
                             "reward_total": float(rewards[ridx]),
                             "use_ttrl": False,
                         },
@@ -609,6 +685,7 @@ class VerlRayPolicyBackend:
                 "use_ttrl": False,
                 "reason": "use_ttrl_disabled_no_grpo_no_lora",
                 "stage_update": stage_update_info,
+                "filter_rollout": filter_rollout_info,
                 "timing": {
                     "rollout_vllm_infer_sec": float(rollout_infer_sec),
                     "old_log_prob_forward_sec": 0.0,
@@ -663,13 +740,14 @@ class VerlRayPolicyBackend:
         generations: list[Generation] = []
         prior = 1.0 / float(max(1, len(completions)))
         for ridx, text in enumerate(completions):
+            orig_idx = int(kept_original_indices[ridx]) if ridx < len(kept_original_indices) else int(ridx)
             generations.append(
                 Generation(
                     text=str(text or ""),
                     prior=prior,
                     metadata={
                         "backend": "verl",
-                        "rollout_index": ridx,
+                        "rollout_index": orig_idx,
                         "reward_total": float(rewards[ridx]),
                     },
                 )
@@ -682,6 +760,7 @@ class VerlRayPolicyBackend:
             "num_samples": len(generations),
             "use_ttrl": True,
             "stage_update": stage_update_info,
+            "filter_rollout": filter_rollout_info,
             "metrics": {**actor_metrics, **kl_metrics},
             "timing": {
                 "rollout_vllm_infer_sec": float(rollout_infer_sec),

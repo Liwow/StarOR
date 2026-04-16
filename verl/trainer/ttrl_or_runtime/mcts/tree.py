@@ -316,19 +316,35 @@ class FourStageMCTS:
 
                 complete_t0 = time.perf_counter()
                 average_complete_sec = 0.0
+                auto_complete_enabled = bool(self._auto_complete_enabled())
 
                 if self.split_rollout_completion and next_stage != Stage.CODE:
                     prompts: list[str] = []
                     prompt_indices: list[int] = []
                     for idx, item in enumerate(prepared_items):
                         child = item["child"]
-                        partial = child.to_partial_trajectory()
-                        partial.trajectory_id = str(uuid.uuid4())
-                        completion_prompt = self.prompt_builder.build_completion(task, child.stage, partial)
-                        item["split_completion_prompt"] = completion_prompt
-                        if completion_prompt.strip():
-                            prompts.append(completion_prompt)
-                            prompt_indices.append(idx)
+                        full_completion = str(item.get("completion_full", ""))
+                        has_python = bool(self._has_valid_python_block(full_completion))
+                        item["has_python_in_rollout"] = bool(has_python)
+                        item["split_completion_prompt"] = ""
+
+                        # stage rollouts already include <python>: directly parse rollout completion.
+                        if has_python:
+                            item["trajectory"] = self._trajectory_from_rollout_completion(child, full_completion)
+                            item["answer_rollout_suffix"] = ""
+                            continue
+
+                        if auto_complete_enabled and (not has_python):
+                            partial = child.to_partial_trajectory()
+                            partial.trajectory_id = str(uuid.uuid4())
+                            completion_prompt = self.prompt_builder.build_completion(task, child.stage, partial)
+                            item["split_completion_prompt"] = completion_prompt
+                            if completion_prompt.strip():
+                                prompts.append(completion_prompt)
+                                prompt_indices.append(idx)
+                        else:
+                            # auto_complete disabled: keep original rollout parse result.
+                            item["trajectory"] = self._trajectory_from_rollout_completion(child, full_completion)
 
                     completion_texts: list[str | None] = []
                     if prompts:
@@ -355,6 +371,9 @@ class FourStageMCTS:
                     average_complete_sec = total_complete_sec / max(1, len(prepared_items))
 
                     for idx, item in enumerate(prepared_items):
+                        if item.get("trajectory") is not None:
+                            item["complete_sec"] = average_complete_sec
+                            continue
                         child = item["child"]
                         completion_text = str(mapped_texts[idx] or "")
                         item["answer_rollout_suffix"] = completion_text
@@ -362,13 +381,59 @@ class FourStageMCTS:
                         if completion_text.strip():
                             item["trajectory"] = self._trajectory_from_rollout_completion(child, completion_text)
                         else:
-                            item["trajectory"] = self.rollout_to_code(task, child)
+                            # completion rollout returned empty: keep original rollout parsing fallback
+                            item["trajectory"] = self._trajectory_from_rollout_completion(
+                                child,
+                                str(item.get("completion_full", "")),
+                            )
                     return
 
-                for item in prepared_items:
+                # Non-split path: parse from rollout output first, then optionally
+                # auto-complete only those without valid <python>...</python>.
+                prompts: list[str] = []
+                prompt_indices: list[int] = []
+                for idx, item in enumerate(prepared_items):
                     child = item["child"]
                     completion_text = str(item.get("completion_full", ""))
                     item["trajectory"] = self._complete_for_reward_from_rollout(task, child, completion_text)
+                    has_python = bool(self._has_valid_python_block(completion_text))
+                    item["has_python_in_rollout"] = bool(has_python)
+                    item["split_completion_prompt"] = ""
+                    if auto_complete_enabled and next_stage != Stage.CODE and (not has_python):
+                        partial = child.to_partial_trajectory()
+                        partial.trajectory_id = str(uuid.uuid4())
+                        completion_prompt = self.prompt_builder.build_completion(task, child.stage, partial)
+                        item["split_completion_prompt"] = completion_prompt
+                        if completion_prompt.strip():
+                            prompts.append(completion_prompt)
+                            prompt_indices.append(idx)
+
+                completion_texts: list[str | None] = []
+                if prompts:
+                    batch_method = getattr(self.backend, "generate_auxiliary_texts", None)
+                    if callable(batch_method):
+                        completion_texts = list(
+                            batch_method(
+                                prompts,
+                                max_new_tokens=int(getattr(self.backend, "max_new_tokens", 2048) or 2048),
+                                temperature=float(getattr(self.backend, "temperature", 0.0) or 0.0),
+                                top_p=float(getattr(self.backend, "top_p", 1.0) or 1.0),
+                                prefer_vllm=bool(self._active_grpo_config.use_vllm) if self._active_grpo_config is not None else False,
+                                vllm_mode=str(self._active_grpo_config.vllm_mode) if self._active_grpo_config is not None else "",
+                            )
+                        )
+                    else:
+                        completion_texts = []
+                for local_idx, prepared_idx in enumerate(prompt_indices):
+                    completion_text = str(completion_texts[local_idx] or "") if local_idx < len(completion_texts) else ""
+                    prepared_items[prepared_idx]["answer_rollout_suffix"] = completion_text
+                    if completion_text.strip():
+                        child = prepared_items[prepared_idx]["child"]
+                        prepared_items[prepared_idx]["trajectory"] = self._trajectory_from_rollout_completion(
+                            child,
+                            completion_text,
+                        )
+
                 total_complete_sec = float(time.perf_counter() - complete_t0)
                 average_complete_sec = total_complete_sec / max(1, len(prepared_items))
                 for item in prepared_items:
@@ -405,6 +470,8 @@ class FourStageMCTS:
                         reward_list.append(RewardBreakdown(r1=0.0, r2=0.0, r3=0.0, r4=0.0, total=0.0))
 
                 rewards: list[float] = []
+                filter_mask: list[bool] = []
+                filter_rollout_enabled = bool(self._filter_rollout_enabled())
                 per_item_reward_sec = reward_sec_total / max(1, len(prepared_items))
 
                 for item, reward in zip(prepared_items, reward_list, strict=False):
@@ -423,22 +490,40 @@ class FourStageMCTS:
                     }
                     callback_timings.append({"rollout_index": int(item["rollout_index"]), **timing_payload})
 
-                    group_rollouts.append(
-                        {
-                            "rollout_index": int(item["rollout_index"]),
-                            "child": item["child"],
-                            "trajectory": completed,
-                            "reward_obj": reward,
-                            "reward_total": float(reward.total),
-                            "timing": timing_payload,
-                            "prompt_base": base_prompt,
-                            "prompt_full": prompt,
-                            "completion_full": str(item["completion_full"]),
-                            "answer_current_stage": str(item["answer_current_stage"]),
-                            "answer_rollout_suffix": str(item["answer_rollout_suffix"]),
-                        }
-                    )
+                    execution_meta = (reward.metadata or {}).get("execution", {})
+                    keep_rollout = (not filter_rollout_enabled) or (not self._rollout_has_execution_error(execution_meta))
+                    filter_mask.append(bool(keep_rollout))
+                    if keep_rollout:
+                        group_rollouts.append(
+                            {
+                                "rollout_index": int(item["rollout_index"]),
+                                "child": item["child"],
+                                "trajectory": completed,
+                                "reward_obj": reward,
+                                "reward_total": float(reward.total),
+                                "timing": timing_payload,
+                                "prompt_base": base_prompt,
+                                "prompt_full": prompt,
+                                "completion_full": str(item["completion_full"]),
+                                "answer_current_stage": str(item["answer_current_stage"]),
+                                "answer_rollout_suffix": str(item["answer_rollout_suffix"]),
+                                "has_python_in_rollout": bool(item.get("has_python_in_rollout", False)),
+                            }
+                        )
                     rewards.append(float(reward.total))
+
+                setattr(_batch_reward_callback, "_last_filter_mask", list(filter_mask))
+                setattr(_batch_reward_callback, "_last_filter_enabled", bool(filter_rollout_enabled))
+                setattr(
+                    _batch_reward_callback,
+                    "_last_filter_stats",
+                    {
+                        "enabled": bool(filter_rollout_enabled),
+                        "kept": int(sum(1 for keep in filter_mask if keep)),
+                        "dropped": int(sum(1 for keep in filter_mask if not keep)),
+                        "total": int(len(filter_mask)),
+                    },
+                )
 
                 return rewards
 
@@ -2775,6 +2860,31 @@ class FourStageMCTS:
             return float(tol)
         except Exception:
             return 0.005
+
+    def _auto_complete_enabled(self) -> bool:
+        return bool(getattr(self.config, "auto_complete", False))
+
+    def _filter_rollout_enabled(self) -> bool:
+        return bool(getattr(self.config, "filter_rollout", False))
+
+    @staticmethod
+    def _has_valid_python_block(text: str) -> bool:
+        cleaned = FourStageMCTS._normalize_text_block(text)
+        block = FourStageMCTS._extract_tag_block(cleaned, tag="python", min_len=21)
+        return len(str(block or "").strip()) > 20
+
+    @staticmethod
+    def _rollout_has_execution_error(execution_meta: Any) -> bool:
+        if not isinstance(execution_meta, dict):
+            return True
+        err_type = str(execution_meta.get("error_type", "") or "").strip()
+        if err_type:
+            return True
+        if bool(execution_meta.get("success", False)):
+            return False
+        if bool(execution_meta.get("r2_success", False)):
+            return False
+        return True
 
     def _within_rel_tol(self, a: float, b: float) -> bool:
         scale = max(abs(float(a)), abs(float(b)), 1.0)

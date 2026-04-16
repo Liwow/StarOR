@@ -34,6 +34,13 @@ class MCTSConfig:
     mcts_cluster_update: bool = True
     # Legacy typo alias, fallback-only compatibility (do not use in new scripts).
     mcts_cluster_updata: bool | None = None
+    # If True, for non-CODE stages: when rollout text does not contain a valid
+    # <python>...</python> block, trigger one completion rollout using
+    # completion templates to obtain executable code for reward evaluation.
+    auto_complete: bool = False
+    # If True, drop rollout items with execution errors from both MCTS node
+    # construction and GRPO update (infeasible/non-obj but non-error items are kept).
+    filter_rollout: bool = False
 
 
 @dataclass(slots=True)
@@ -59,6 +66,12 @@ class RewardConfig:
 
     #  Final reward weights 
     dynamic_reward: bool = False  # Enable dynamic reward schedule by MCTS iteration / code-entry
+    # Dynamic schedule weight vector for early phase (iter<=3), as "r1,r2,r3,r4".
+    early_weight: str = "0.3,0.4,0.2,0.1"
+    # Dynamic schedule weight vector for middle phase (4<=iter<=5), as "r1,r2,r3,r4".
+    mid_weight: str = "0.5,0.3,0.1,0.1"
+    # Dynamic schedule weight vector for final phase (iter>=6 or force_stage3), as "r1,r2,r3,r4".
+    final_weight: str = "0.6,0.2,0.1,0.1"
     r1_weight: float = 0.6  # Weight for r1 in final reward
     r2_weight: float = 0.1  # Weight for r2 in final reward
     r1_obj_scale_fail_multiplier: float = 0.2  # Multiplier on r1 weight when obj-scale check fails
