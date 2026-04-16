@@ -414,53 +414,62 @@ Translate the finalized model faithfully and do not redesign it.
 
 DEFAULT_COMPLETION_TEMPLATES: dict[Stage, str] = {
         Stage.SCHEMA: f"""
-    You are an optimization expert. The current stage has already fixed the type analysis and sets for this optimization problem.
+You are an optimization expert. The current stage has already fixed the type analysis and sets for this optimization problem.
 
-    Here is the specific description of the optimization problem:
-    {{task_description}}
+Here is the specific description of the optimization problem:
+{{task_description}}
 
-    Here are the type analysis and sets that have already been fixed:
-    {{schema_skill_str}}
+Here are the type analysis and sets that have already been fixed:
+{{schema_skill_str}}
 
-    Please complete the remaining formulation by defining parameters, variables, objective, constraints, and finally the executable Gurobi Python code within <python> ... </python>.
+You thought think first in <thought>, complete the remaining formulation by defining parameters, variables, objective, constraints, and at last output the executable Gurobi Python code within <python> ... </python>.
+{CODE_NOTICE}
 
-    {CODE_NOTICE}
-    """.strip(),
+The required order from this point is:
+1. <thought>
+2. <python>
+""".strip(),
         Stage.SET_PARAM_VAR: f"""
-    You are an optimization expert. The current stage has already fixed the parameters and variables for this optimization problem.
+You are an optimization expert. The current stage has already fixed the parameters and variables for this optimization problem.
 
-    Here is the specific description of the optimization problem:
-    {{task_description}}
+Here is the specific description of the optimization problem:
+{{task_description}}
 
-    Here are the type analysis and sets that have already been defined:
-    {{schema_skill_str}}
+Here are the type analysis and sets that have already been defined:
+{{schema_skill_str}}
 
-    Here are the parameters and variables that have already been fixed:
-    {{set_param_var_str}}
+Here are the parameters and variables that have already been fixed:
+{{set_param_var_str}}
 
-    Please complete the remaining formulation by defining the objective, constraints, and finally the executable Gurobi Python code within <python> ... </python>.
+You thought think first in <thought>, complete the remaining formulation by defining objective, constraints, and at last output the executable Gurobi Python code within <python> ... </python>.
+{CODE_NOTICE}
 
-    {CODE_NOTICE}
-    """.strip(),
+The required order from this point is:
+1. <thought>
+2. <python>
+""".strip(),
         Stage.OBJ_CONS: f"""
-    You are an optimization expert. The mathematical formulation has already been fixed.
+You are an optimization expert. The mathematical formulation has already been fixed.
 
-    Here is the specific description of the optimization problem:
-    {{task_description}}
+Here is the specific description of the optimization problem:
+{{task_description}}
 
-    Here are the type analysis and sets that have already been defined:
-    {{schema_skill_str}}
+Here are the type analysis and sets that have already been defined:
+{{schema_skill_str}}
 
-    Here are the parameters and variables that have already been defined:
-    {{set_param_var_str}}
+Here are the parameters and variables that have already been defined:
+{{set_param_var_str}}
 
-    Here are the objective and constraints that have already been fixed:
-    {{obj_cons_str}}
+Here are the objective and constraints that have already been fixed:
+{{obj_cons_str}}
 
-    Please provide the corresponding executable Gurobi Python code within <python> ... </python>.
+You thought think first in <thought>, and then output the executable Gurobi Python code within <python> ... </python>.
+{CODE_NOTICE}
 
-    {CODE_NOTICE}
-    """.strip(),
+The required order from this point is:
+1. <thought>
+2. <python>
+""".strip(),
         Stage.CODE: "",
     }
 
