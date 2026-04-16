@@ -250,8 +250,8 @@ def main() -> int:
     )
     parser.add_argument("--folder1", type=str, default="", help="First log folder, e.g. outputs/log1")
     parser.add_argument("--folder2", type=str, default="", help="Second log folder, e.g. outputs/log2")
-    parser.add_argument("--log1", type=str, default="", help="Alias of --folder1")
-    parser.add_argument("--log2", type=str, default="", help="Alias of --folder2")
+    parser.add_argument("--log1", type=str, default="outputs/logs_k-8_TTRL-true_stage-update-true_r3-true_DYNAMIC-R-true_refine-true_repair-2", help="Alias of --folder1")
+    parser.add_argument("--log2", type=str, default="outputs/logs_TTRL-false_r3-true_refine-true_repair-2_codeGATE-true", help="Alias of --folder2")
     parser.add_argument("--tol", type=float, default=1e-4, help="Relative error threshold for correctness")
     parser.add_argument(
         "--dataset",
@@ -262,7 +262,7 @@ def main() -> int:
     parser.add_argument(
         "--datasets",
         type=str,
-        default="",
+        default="OptMATH_Bench_166",
         help="Comma-separated dataset folder names, e.g. OptMATH,NL4OPT",
     )
     parser.add_argument(

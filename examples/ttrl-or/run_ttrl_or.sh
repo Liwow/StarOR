@@ -1,22 +1,22 @@
 set -x
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=3
 # export RAY_DEBUG_POST_MORTEM=1
 DATA_ROOT="${HOME}/code/TTRL-OR/data"
 SAMPLE_RUN=false
 SAMPLE_SEED=42
 sample_size=150
 MCTS_CLUSTER_UPDATE=true
-
 CODE_REFINE=true
 CODE_REPAIR=2
 CODE_ENTRY_SECOND_ATTEMPT=true
 CODE_ENTRY_SAME_CLUSTER_SUPPRESS_WEIGHT=0.6
 USE_TTRL=false
 STAGE_UPDATE=true
-r3_reward=true
+r3_reward=false
 r4_reward=true
-DYNAMIC_REWARD=false
-log_dir="outputs/logs_TTRL-${USE_TTRL}_r3-${r3_reward}_refine-${CODE_REFINE}_repair-${CODE_REPAIR}_codeGATE-${CODE_ENTRY_SECOND_ATTEMPT}"
+DYNAMIC_REWARD=true
+k=8
+log_dir="outputs/logs_k=${k}_TTRL-${USE_TTRL}_stage-update=${STAGE_UPDATE}_r3-${r3_reward}_DYNAMIC-R=${DYNAMIC_REWARD}_refine-${CODE_REFINE}_repair-${CODE_REPAIR}"
 EXTRA_ARGS=()
 LORA_RANK=16
 LORA_ALPHA=32
@@ -64,11 +64,11 @@ fi
 model_name='Qwen/Qwen3-4B-Instruct-2507'
 MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
 # MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_or_qwen3_4b_int_cp513_v1"
-dataset="NL4OPT.jsonl"
+# dataset="NL4OPT.jsonl"
 # dataset="NL4LP.jsonl"
 # dataset="MAMO_ComplexLP_fixed.jsonl"
 # dataset="IndustryOR_fixedV2.jsonl"
-# dataset="OptMATH_Bench_166.jsonl"
+dataset="OptMATH_Bench_166.jsonl"
 
 # dataset="MAMO_EasyLP_fixed.jsonl" #sample
 # dataset="OptiBench.jsonl"
@@ -117,7 +117,7 @@ python -m verl.trainer.main_ppo \
     data.custom_cls.path='pkg://verl.utils.dataset.ttrl_or_dataset' \
     data.custom_cls.name=TTRLORDataset \
     data.ttrl_or_max_numeric_features=32 \
-    data.ttrl_or_key_param_top_k=8 \
+    data.ttrl_or_key_param_top_k=16 \
     data.train_batch_size=1 \
     data.max_prompt_length=3000 \
     data.max_response_length=7000 \
@@ -145,9 +145,9 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.max_model_len=16384 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.32 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.35 \
     actor_rollout_ref.rollout.free_cache_engine=False \
-    actor_rollout_ref.rollout.n=8 \
+    actor_rollout_ref.rollout.n=${k} \
     actor_rollout_ref.rollout.temperature=1.0 \
     actor_rollout_ref.rollout.top_p=0.95 \
     actor_rollout_ref.rollout.load_format=safetensors \
