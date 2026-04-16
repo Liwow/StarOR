@@ -163,6 +163,14 @@ algorithm:
       # Legacy typo alias, fallback-only compatibility (prefer mcts_cluster_update).
       mcts_cluster_updata: null
 
+      # Auto-complete missing python code for non-CODE stage rollouts.
+      # Only triggers when rollout text has no valid <python>...</python> block.
+      auto_complete: False
+
+      # Filter rollout items with execution errors from MCTS+GRPO.
+      # Infeasible/non-obj but non-error items are still kept.
+      filter_rollout: False
+
     # Reward settings migrated from TTRL-OR.
     reward:
 
@@ -207,6 +215,15 @@ algorithm:
 
       # Enable dynamic reward schedule by MCTS iteration / code-entry.
       dynamic_reward: False
+
+      # Dynamic schedule weights (r1,r2,r3,r4) for early phase (iter<=3).
+      early_weight: "0.3,0.4,0.2,0.1"
+
+      # Dynamic schedule weights (r1,r2,r3,r4) for middle phase (iter 4~5).
+      mid_weight: "0.5,0.3,0.1,0.1"
+
+      # Dynamic schedule weights (r1,r2,r3,r4) for final phase (iter>=6 or code-seen).
+      final_weight: "0.6,0.2,0.1,0.1"
 
       # Weight of r1 in final reward.
       r1_weight: 0.6
