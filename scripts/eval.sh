@@ -2,13 +2,13 @@ cd ~
 WORK_DIR="code/TTRL-OR"
 
 # TTRL false
-# log_dir="code/TTRL-OR/outputs/logs_k-8_TTRL-false_stage-update-true_r3-false_DYNAMIC-R-true_refine-true_repair-2"
+log_dir="code/TTRL-OR/outputs/logs_k-8_TTRL-false_stage-update-true_r3-false_DYNAMIC-R-true_refine-true_repair-2"
 
-log_dir="code/TTRL-OR/outputs/logs_k-8_TTRL-false_stage-update-true_r3-true_DYNAMIC-R-true_refine-true_repair-2"
+# log_dir="code/TTRL-OR/outputs/logs_k-8_TTRL-false_stage-update-true_r3-true_DYNAMIC-R-true_refine-true_repair-2"
 # log_dir="code/TTRL-OR/outputs/logs_TTRL-false_r3-true_refine-true_repair-2_codeGATE-true"
 
 # TTRL true
-log_dir="code/TTRL-OR/outputs/logs_k-8_TTRL-true_stage-update-true_r3-true_DYNAMIC-R-true_refine-true_repair-2"
+# log_dir="code/TTRL-OR/outputs/logs_k-8_TTRL-true_stage-update-true_r3-true_DYNAMIC-R-true_refine-true_repair-2"
 # log_dir="code/TTRL-OR/outputs/logs_TTRL-true_r3-true_refine-true_repair-2_codeGATE-true"
 
 
