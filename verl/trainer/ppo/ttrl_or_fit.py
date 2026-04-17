@@ -238,23 +238,47 @@ class VerlRayPolicyBackend:
 
     def _actor_ppo_mini_batch_size(self) -> int:
         actor_cfg = getattr(getattr(self.trainer.config, "actor_rollout_ref", None), "actor", None)
+        rollout_cfg = getattr(getattr(self.trainer.config, "actor_rollout_ref", None), "rollout", None)
+
         if actor_cfg is None:
-            return 1
-        value = None
-        if isinstance(actor_cfg, dict):
-            value = actor_cfg.get("ppo_mini_batch_size", None)
+            base_mini_batch_size = 1
         else:
-            value = getattr(actor_cfg, "ppo_mini_batch_size", None)
-            if value is None and hasattr(actor_cfg, "get"):
-                try:
-                    value = actor_cfg.get("ppo_mini_batch_size", None)
-                except Exception:
-                    value = None
+            value = None
+            if isinstance(actor_cfg, dict):
+                value = actor_cfg.get("ppo_mini_batch_size", None)
+            else:
+                value = getattr(actor_cfg, "ppo_mini_batch_size", None)
+                if value is None and hasattr(actor_cfg, "get"):
+                    try:
+                        value = actor_cfg.get("ppo_mini_batch_size", None)
+                    except Exception:
+                        value = None
+            try:
+                base_mini_batch_size = int(value or 1)
+            except Exception:
+                base_mini_batch_size = 1
+
+        rollout_n_value = None
+        if rollout_cfg is not None:
+            if isinstance(rollout_cfg, dict):
+                rollout_n_value = rollout_cfg.get("n", None)
+            else:
+                rollout_n_value = getattr(rollout_cfg, "n", None)
+                if rollout_n_value is None and hasattr(rollout_cfg, "get"):
+                    try:
+                        rollout_n_value = rollout_cfg.get("n", None)
+                    except Exception:
+                        rollout_n_value = None
         try:
-            mini_batch_size = int(value or 1)
+            rollout_n = int(rollout_n_value or 1)
         except Exception:
-            mini_batch_size = 1
-        return max(1, mini_batch_size)
+            rollout_n = 1
+        rollout_n = max(1, rollout_n)
+
+        # Keep exactly aligned with RayPPOTrainer._update_actor:
+        # ppo_mini_batch_size = actor.ppo_mini_batch_size * rollout.n
+        effective_mini_batch_size = int(base_mini_batch_size) * int(rollout_n)
+        return max(1, effective_mini_batch_size)
 
     @staticmethod
     def _stage_anchor_tags(stage: Stage) -> list[str]:
