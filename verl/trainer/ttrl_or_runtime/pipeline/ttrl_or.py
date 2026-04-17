@@ -560,6 +560,12 @@ class TTRLORRunner:
         best_prior = best.get("prior", {}) if isinstance(best, dict) else {}
         rollout_group = payload.get("rollout_group", []) if isinstance(payload, dict) else []
         code_terminal = payload.get("code_terminal", {}) if isinstance(payload, dict) else {}
+        best_answer = best.get("answer", {}) if isinstance(best.get("answer", {}), dict) else {}
+        best_auto_complete = (
+            best_answer.get("auto_complete", {})
+            if isinstance(best_answer.get("auto_complete", {}), dict)
+            else {}
+        )
 
         lines = [
             f"# Iter {iter_idx} | Stage {stage}",
@@ -618,6 +624,13 @@ class TTRLORRunner:
                     f"r1={reward_i.get('r1', '')} r2={reward_i.get('r2', '')} r3={reward_i.get('r3', '')} r4={reward_i.get('r4', '')} "
                     f"backprop_sec={timing_i.get('backprop_sec', '')}"
                 )
+                auto_complete_i = item.get("auto_complete", {}) if isinstance(item.get("auto_complete", {}), dict) else {}
+                lines.append(
+                    f"  auto_complete: enabled={auto_complete_i.get('enabled', '')} "
+                    f"requested={auto_complete_i.get('requested', '')} applied={auto_complete_i.get('applied', '')} "
+                    f"status={auto_complete_i.get('status', '')} "
+                    f"has_python_in_rollout={auto_complete_i.get('has_python_in_rollout', '')}"
+                )
                 lines.append(
                     f"  exec_success={execution_i.get('success', '')} effective_success={execution_i.get('effective_success', '')} "
                     f"parsed_obj={execution_i.get('parsed_obj_answer', '')} has_valid_obj={r1_debug_i.get('has_valid_obj', '')} "
@@ -631,6 +644,19 @@ class TTRLORRunner:
                     f"r4_lp_vars={((r4_debug_i.get('lp_model_debug', {}) or {}).get('num_vars', ''))} "
                     f"r4_lp_constrs={((r4_debug_i.get('lp_model_debug', {}) or {}).get('num_constrs', ''))}"
                 )
+                if auto_complete_i.get("requested", False):
+                    lines.extend(
+                        [
+                            "  auto_complete_prompt:",
+                            "  ```text",
+                            str(auto_complete_i.get("completion_prompt", "")),
+                            "  ```",
+                            "  auto_complete_answer:",
+                            "  ```text",
+                            str(auto_complete_i.get("completion_answer", "")),
+                            "  ```",
+                        ]
+                    )
         else:
             lines.append("- none")
 
@@ -648,6 +674,7 @@ class TTRLORRunner:
                 f"- r4_debug: structure_gate={((reward.get('r4_debug', {}) or {}).get('structure_gate', ''))}, extracted={(((reward.get('r4_debug', {}) or {}).get('structure_gate_debug', {}) or {}).get('extracted', ''))}, structural_pass={(((reward.get('r4_debug', {}) or {}).get('structure_gate_debug', {}) or {}).get('passes', ''))}",
                 f"- r4_lp_debug: ready={((reward.get('r4_debug', {}) or {}).get('lp_model_ready', ''))}, reason={(((reward.get('r4_debug', {}) or {}).get('lp_model_debug', {}) or {}).get('reason', ''))}, vars={(((reward.get('r4_debug', {}) or {}).get('lp_model_debug', {}) or {}).get('num_vars', ''))}, constrs={(((reward.get('r4_debug', {}) or {}).get('lp_model_debug', {}) or {}).get('num_constrs', ''))}",
                 f"- code_execution: success={((best.get('code_execution', {}) or {}).get('success', ''))}, effective_success={((best.get('code_execution', {}) or {}).get('effective_success', ''))}, parsed_obj={((best.get('code_execution', {}) or {}).get('parsed_obj_answer', ''))}",
+                f"- auto_complete: enabled={best_auto_complete.get('enabled', '')}, requested={best_auto_complete.get('requested', '')}, applied={best_auto_complete.get('applied', '')}, status={best_auto_complete.get('status', '')}",
                 f"- r3_debug: source={best_r3_debug.get('source', '')}, reason={best_r3_debug.get('reason', '')}, pass={best_r3_debug.get('passed_cases', '')}/{best_r3_debug.get('num_cases', '')}, weighted={best_r3_debug.get('weighted_pass_sum', '')}",
                 "",
                 "### Prompt",
@@ -658,6 +685,14 @@ class TTRLORRunner:
                 "### Answer",
                 "```text",
                 str((best.get('answer', {}) or {}).get("full", "")),
+                "```",
+                "",
+                "### Auto Completion (Best Rollout)",
+                "```text",
+                str(best_auto_complete.get("completion_prompt", "")),
+                "```",
+                "```text",
+                str(best_auto_complete.get("completion_answer", "")),
                 "```",
                 "",
                 "### Timing (sec)",
