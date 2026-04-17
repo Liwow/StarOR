@@ -236,6 +236,26 @@ class VerlRayPolicyBackend:
     def _filter_rollout_enabled(self) -> bool:
         return bool(getattr(self.pipeline_config.mcts, "filter_rollout", False))
 
+    def _actor_ppo_mini_batch_size(self) -> int:
+        actor_cfg = getattr(getattr(self.trainer.config, "actor_rollout_ref", None), "actor", None)
+        if actor_cfg is None:
+            return 1
+        value = None
+        if isinstance(actor_cfg, dict):
+            value = actor_cfg.get("ppo_mini_batch_size", None)
+        else:
+            value = getattr(actor_cfg, "ppo_mini_batch_size", None)
+            if value is None and hasattr(actor_cfg, "get"):
+                try:
+                    value = actor_cfg.get("ppo_mini_batch_size", None)
+                except Exception:
+                    value = None
+        try:
+            mini_batch_size = int(value or 1)
+        except Exception:
+            mini_batch_size = 1
+        return max(1, mini_batch_size)
+
     @staticmethod
     def _stage_anchor_tags(stage: Stage) -> list[str]:
         # Use the LAST stage tag in each stage group as anchor.
@@ -728,6 +748,77 @@ class VerlRayPolicyBackend:
             config=self.trainer.config.algorithm,
         )
 
+        actor_batch_align_info: dict[str, Any] = {
+            "mini_batch_size": int(self._actor_ppo_mini_batch_size()),
+            "before": int(len(batch)),
+            "after": int(len(batch)),
+            "padding_size": 0,
+            "applied": False,
+            "reason": "already_divisible",
+        }
+        mini_batch_size = int(actor_batch_align_info["mini_batch_size"])
+        if mini_batch_size > 1 and int(len(batch)) > 0:
+            remainder = int(len(batch)) % mini_batch_size
+            if remainder != 0:
+                pad_size = int(mini_batch_size - remainder)
+                actor_batch_align_info.update(
+                    {
+                        "padding_size": int(pad_size),
+                        "reason": "pad_to_mini_batch_multiple",
+                    }
+                )
+                try:
+                    # FILTER_ROLLOUT can reduce valid samples (e.g., 3 out of k=8),
+                    # while actor update requires batch_size % ppo_mini_batch_size == 0.
+                    # Pad by repeating the first sample to satisfy trainer constraints.
+                    batch.padding(padding_size=pad_size, padding_candidate="first")
+                    actor_batch_align_info["applied"] = True
+                    actor_batch_align_info["after"] = int(len(batch))
+                except Exception as exc:  # noqa: BLE001
+                    actor_batch_align_info.update(
+                        {
+                            "applied": False,
+                            "after": int(len(batch)),
+                            "reason": f"padding_failed:{type(exc).__name__}",
+                            "error": str(exc),
+                        }
+                    )
+
+        if mini_batch_size > 1 and int(len(batch)) % mini_batch_size != 0:
+            generations: list[Generation] = []
+            prior = 1.0 / float(max(1, len(completions)))
+            for ridx, text in enumerate(completions):
+                orig_idx = int(kept_original_indices[ridx]) if ridx < len(kept_original_indices) else int(ridx)
+                generations.append(
+                    Generation(
+                        text=str(text or ""),
+                        prior=prior,
+                        metadata={
+                            "backend": "verl",
+                            "rollout_index": orig_idx,
+                            "reward_total": float(rewards[ridx]),
+                        },
+                    )
+                )
+            report = {
+                "updated": False,
+                "backend": "verl",
+                "stage": stage.value,
+                "num_samples": len(generations),
+                "use_ttrl": True,
+                "reason": "actor_batch_size_not_divisible_after_filter",
+                "stage_update": stage_update_info,
+                "filter_rollout": filter_rollout_info,
+                "actor_batch_align": actor_batch_align_info,
+                "timing": {
+                    "rollout_vllm_infer_sec": float(rollout_infer_sec),
+                    "old_log_prob_forward_sec": float(old_log_prob_forward_sec),
+                    "actor_update_sec": 0.0,
+                    "grpo_group_total_sec": float(time.perf_counter() - group_t0),
+                },
+            }
+            return generations, report
+
         actor_update_t0 = time.perf_counter()
         actor_output = self.trainer._update_actor(batch)
         actor_update_sec = float(time.perf_counter() - actor_update_t0)
@@ -761,6 +852,7 @@ class VerlRayPolicyBackend:
             "use_ttrl": True,
             "stage_update": stage_update_info,
             "filter_rollout": filter_rollout_info,
+            "actor_batch_align": actor_batch_align_info,
             "metrics": {**actor_metrics, **kl_metrics},
             "timing": {
                 "rollout_vllm_infer_sec": float(rollout_infer_sec),

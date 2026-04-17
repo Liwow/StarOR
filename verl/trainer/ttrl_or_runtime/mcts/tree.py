@@ -494,6 +494,25 @@ class FourStageMCTS:
                     keep_rollout = (not filter_rollout_enabled) or (not self._rollout_has_execution_error(execution_meta))
                     filter_mask.append(bool(keep_rollout))
                     if keep_rollout:
+                        auto_complete_enabled = bool(self._auto_complete_enabled())
+                        has_python_in_rollout = bool(item.get("has_python_in_rollout", False))
+                        completion_prompt_text = str(item.get("split_completion_prompt", "") or "")
+                        completion_answer_text = str(item.get("answer_rollout_suffix", "") or "")
+                        auto_complete_requested = bool(auto_complete_enabled and (not has_python_in_rollout))
+                        auto_complete_prompt_nonempty = bool(completion_prompt_text.strip())
+                        auto_complete_answer_nonempty = bool(completion_answer_text.strip())
+                        auto_complete_applied = bool(
+                            auto_complete_requested and auto_complete_prompt_nonempty and auto_complete_answer_nonempty
+                        )
+                        auto_complete_status = "disabled_or_not_needed"
+                        if auto_complete_requested:
+                            if not auto_complete_prompt_nonempty:
+                                auto_complete_status = "requested_but_no_prompt"
+                            elif auto_complete_answer_nonempty:
+                                auto_complete_status = "applied_with_answer"
+                            else:
+                                auto_complete_status = "requested_but_empty_answer"
+
                         group_rollouts.append(
                             {
                                 "rollout_index": int(item["rollout_index"]),
@@ -507,7 +526,14 @@ class FourStageMCTS:
                                 "completion_full": str(item["completion_full"]),
                                 "answer_current_stage": str(item["answer_current_stage"]),
                                 "answer_rollout_suffix": str(item["answer_rollout_suffix"]),
-                                "has_python_in_rollout": bool(item.get("has_python_in_rollout", False)),
+                                "has_python_in_rollout": bool(has_python_in_rollout),
+                                "split_completion_prompt": completion_prompt_text,
+                                "auto_complete_enabled": bool(auto_complete_enabled),
+                                "auto_complete_requested": bool(auto_complete_requested),
+                                "auto_complete_applied": bool(auto_complete_applied),
+                                "auto_complete_status": str(auto_complete_status),
+                                "auto_complete_prompt_nonempty": bool(auto_complete_prompt_nonempty),
+                                "auto_complete_answer_nonempty": bool(auto_complete_answer_nonempty),
                             }
                         )
                     rewards.append(float(reward.total))
@@ -692,6 +718,17 @@ class FourStageMCTS:
                         "timing": rollout_timing,
                         "prior": child.prior,
                         "completion_preview": child.text[:240],
+                        "auto_complete": {
+                            "enabled": bool(rollout.get("auto_complete_enabled", False)),
+                            "requested": bool(rollout.get("auto_complete_requested", False)),
+                            "applied": bool(rollout.get("auto_complete_applied", False)),
+                            "status": str(rollout.get("auto_complete_status", "")),
+                            "has_python_in_rollout": bool(rollout.get("has_python_in_rollout", False)),
+                            "prompt_nonempty": bool(rollout.get("auto_complete_prompt_nonempty", False)),
+                            "answer_nonempty": bool(rollout.get("auto_complete_answer_nonempty", False)),
+                            "completion_prompt": str(rollout.get("split_completion_prompt", "")),
+                            "completion_answer": str(rollout.get("answer_rollout_suffix", "")),
+                        },
                     }
                 )
 
@@ -946,6 +983,15 @@ class FourStageMCTS:
                         "full": str(best_rollout.get("completion_full", "")),
                         "current_stage": str(best_rollout.get("answer_current_stage", "")),
                         "rollout_suffix": str(best_rollout.get("answer_rollout_suffix", "")),
+                        "auto_complete": {
+                            "enabled": bool(best_rollout.get("auto_complete_enabled", False)),
+                            "requested": bool(best_rollout.get("auto_complete_requested", False)),
+                            "applied": bool(best_rollout.get("auto_complete_applied", False)),
+                            "status": str(best_rollout.get("auto_complete_status", "")),
+                            "has_python_in_rollout": bool(best_rollout.get("has_python_in_rollout", False)),
+                            "completion_prompt": str(best_rollout.get("split_completion_prompt", "")),
+                            "completion_answer": str(best_rollout.get("answer_rollout_suffix", "")),
+                        },
                     },
                     "trajectory_content": {
                         stage.value: best_rollout_traj.outputs.get(stage, "")
