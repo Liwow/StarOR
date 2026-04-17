@@ -4,24 +4,30 @@ export CUDA_VISIBLE_DEVICES=3
 DATA_ROOT="${HOME}/code/TTRL-OR/data"
 SAMPLE_RUN=false
 SAMPLE_SEED=42
-sample_size=150
+sample_size=200
 MCTS_CLUSTER_UPDATE=true
 CODE_REFINE=true
 CODE_REPAIR=2
 CODE_ENTRY_SECOND_ATTEMPT=true
 CODE_ENTRY_SAME_CLUSTER_SUPPRESS_WEIGHT=0.6
-USE_TTRL=false
+AUTO_COMPLETE=true
+FILTER_ROLLOUT=true
+
+USE_TTRL=true
+
 STAGE_UPDATE=true
-AUTO_COMPLETE=false
-FILTER_ROLLOUT=false
-r3_reward=false
+
+r3_reward=true
 r4_reward=true
 DYNAMIC_REWARD=true
+multi_reward=true
 EARLY_WEIGHT='[0.3,0.4,0.2,0.1]'
 MID_WEIGHT='[0.5,0.3,0.1,0.1]'
 FINAL_WEIGHT='[0.6,0.2,0.1,0.1]'
+
 k=8
-log_dir="outputs/logs_k=${k}_TTRL-${USE_TTRL}_stage-update=${STAGE_UPDATE}_r3-${r3_reward}_DYNAMIC-R=${DYNAMIC_REWARD}_refine-${CODE_REFINE}_repair-${CODE_REPAIR}"
+
+log_dir="outputs/logs_k=${k}_TTRL-${USE_TTRL}_stage-update=${STAGE_UPDATE}_r3-${r3_reward}_DYNAMIC-R=${DYNAMIC_REWARD}_multi-R=${multi_reward}_refine-${CODE_REFINE}_repair-${CODE_REPAIR}"
 EXTRA_ARGS=()
 LORA_RANK=16
 LORA_ALPHA=32
@@ -51,6 +57,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ "${multi_reward}" != "true" ]]; then
+    echo "using major voting reward"
+    EARLY_WEIGHT='[1.0,0,0,0]'
+    MID_WEIGHT='[1.0,0,0,0]'
+    FINAL_WEIGHT='[1.0,0,0,0]'
+    r3_reward=false
+    r4_reward=false
+fi
+
 SAMPLE_RUN="$(echo "${SAMPLE_RUN}" | tr '[:upper:]' '[:lower:]')"
 if [[ "${SAMPLE_RUN}" != "true" && "${SAMPLE_RUN}" != "false" ]]; then
     echo "[run_ttrl_or.sh] --sample_run must be true or false, got: ${SAMPLE_RUN}"
@@ -65,10 +80,6 @@ if [[ "$(echo "${USE_TTRL}" | tr '[:upper:]' '[:lower:]')" == "false" ]]; then
     LORA_ALPHA=0
 fi
 
-# model_name='Qwen/Qwen2.5-7B-Instruct'
-model_name='Qwen/Qwen3-4B-Instruct-2507'
-MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
-# MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_or_qwen3_4b_int_cp513_v1"
 # dataset="NL4OPT.jsonl"
 # dataset="NL4LP.jsonl"
 # dataset="MAMO_ComplexLP_fixed.jsonl"
@@ -83,6 +94,11 @@ DATA_PATH="$DATA_ROOT/$dataset"
 DATA_SETS="[$DATA_ROOT/IndustryOR_fixedV2.jsonl, $DATA_ROOT/MAMO_ComplexLP_fixed.jsonl,$DATA_ROOT/OptMATH_Bench_166.jsonl, $DATA_ROOT/NL4OPT.jsonl, $DATA_ROOT/NL4LP.jsonl, $DATA_ROOT/ComplexOR.jsonl]"
 
 TRAIN_FILES="$DATA_PATH"
+
+# model_name='Qwen/Qwen2.5-7B-Instruct'
+model_name='Qwen/Qwen3-4B-Instruct-2507'
+MODEL_NAME_OR_PATH="${HOME}/model/${model_name}"
+# MODEL_NAME_OR_PATH="${oss_path}/checkpoint/sft_or_qwen3_4b_int_cp513_v1"
 
 python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
