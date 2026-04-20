@@ -4,32 +4,35 @@
 # 核心脚本文件名
 SCRIPT_NAME="tools/best_of_n_vllm_infer.py"
 
-MODEL_NAME="/home/ljj516475/model/Qwen/Qwen3-4B-Instruct-2507"
+MODEL_NAME="generator"
 
 # API 配置
-BASE_URL="http://127.0.0.1:8000/v1"
+BASE_URL="http://127.0.0.1:8082/v1"
 API_KEY="EMPTY"
 
 # 推理参数
-N_VALUE=1             # Best-of-N
-PARALLEL_SIZE=150        # 并发请求数
+N_VALUE=8             # Best-of-N
+PARALLEL_SIZE=20        # 并发请求数
 TEMPERATURE=0.7
-MAX_TOKENS=5000         # 足够长以容纳 Gurobi 代码
+MAX_TOKENS=6144        # 足够长以容纳 Gurobi 代码
 EXEC_TIMEOUT=30         # 每个代码运行最长 30 秒
 
 # 日志目录
 LOG_DIR="outputs/best_of_n_logs_${N_VALUE}"
 
 # 数据集列表
+# DATASETS=(
+#     "data/ComplexOR.jsonl"
+#     "data/IndustryOR_fixedV2.jsonl"
+#     "data/OptMATH_Bench_166.jsonl"
+#     "data/MAMO_ComplexLP_fixed.jsonl"
+#     "data/MAMO_EasyLP_fixed.jsonl"
+#     "data/NL4OPT.jsonl"
+#     "data/OptiBench.jsonl"
+#     "data/NL4LP.jsonl"
+# )
 DATASETS=(
-    "data/ComplexOR.jsonl"
-    "data/IndustryOR_fixedV2.jsonl"
     "data/OptMATH_Bench_166.jsonl"
-    "data/MAMO_ComplexLP_fixed.jsonl"
-    "data/MAMO_EasyLP_fixed.jsonl"
-    "data/NL4OPT.jsonl"
-    "data/OptiBench.jsonl"
-    "data/NL4LP.jsonl"
 )
 
 # ================= 执行逻辑 =================

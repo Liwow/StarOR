@@ -9,9 +9,9 @@ MCTS_CLUSTER_UPDATE=true
 CODE_REFINE=true
 CODE_REPAIR=2
 CODE_ENTRY_SECOND_ATTEMPT=true
-CODE_ENTRY_SAME_CLUSTER_SUPPRESS_WEIGHT=0.6
+CODE_ENTRY_SAME_CLUSTER_SUPPRESS_WEIGHT=0.5
 AUTO_COMPLETE=true
-FILTER_ROLLOUT=true
+FILTER_ROLLOUT=false
 
 USE_TTRL=true
 
@@ -20,14 +20,14 @@ STAGE_UPDATE=true
 r3_reward=true
 r4_reward=true
 DYNAMIC_REWARD=true
-multi_reward=true
-EARLY_WEIGHT='[0.3,0.4,0.2,0.1]'
+EARLY_WEIGHT='[0.2,0.5,0.2,0.1]'
 MID_WEIGHT='[0.5,0.3,0.1,0.1]'
 FINAL_WEIGHT='[0.6,0.2,0.1,0.1]'
 
+multi_reward=true
 k=8
 
-log_dir="outputs/logs_k=${k}_TTRL-${USE_TTRL}_stage-update=${STAGE_UPDATE}_r3-${r3_reward}_DYNAMIC-R=${DYNAMIC_REWARD}_multi-R=${multi_reward}_refine-${CODE_REFINE}_repair-${CODE_REPAIR}"
+log_dir="outputs/logs_k=${k}_f=${FILTER_ROLLOUT}_ac=${AUTO_COMPLETE}_TTRL-${USE_TTRL}_stage-update=${STAGE_UPDATE}_r3-${r3_reward}_DYNAMIC-R=${DYNAMIC_REWARD}_multi-R=${multi_reward}_refine-${CODE_REFINE}_repair-${CODE_REPAIR}"
 EXTRA_ARGS=()
 LORA_RANK=16
 LORA_ALPHA=32
