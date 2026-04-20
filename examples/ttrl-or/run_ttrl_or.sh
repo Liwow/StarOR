@@ -1,5 +1,5 @@
 set -x
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=1
 # export RAY_DEBUG_POST_MORTEM=1
 DATA_ROOT="${HOME}/code/TTRL-OR/data"
 SAMPLE_RUN=false
@@ -11,7 +11,7 @@ CODE_REPAIR=2
 CODE_ENTRY_SECOND_ATTEMPT=true
 CODE_ENTRY_SAME_CLUSTER_SUPPRESS_WEIGHT=0.5
 AUTO_COMPLETE=true
-FILTER_ROLLOUT=false
+FILTER_ROLLOUT=true
 
 USE_TTRL=true
 
@@ -83,8 +83,8 @@ fi
 # dataset="NL4OPT.jsonl"
 # dataset="NL4LP.jsonl"
 # dataset="MAMO_ComplexLP_fixed.jsonl"
-# dataset="IndustryOR_fixedV2.jsonl"
-dataset="OptMATH_Bench_166.jsonl"
+dataset="IndustryOR_fixedV2.jsonl"
+# dataset="OptMATH_Bench_166.jsonl"
 
 # dataset="MAMO_EasyLP_fixed.jsonl" #sample
 # dataset="OptiBench.jsonl"

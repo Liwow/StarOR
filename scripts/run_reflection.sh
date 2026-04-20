@@ -5,18 +5,18 @@
 SCRIPT_NAME="tools/reflection_vllm_infer.py"
 
 # 模型名称/路径
-MODEL_NAME="/home/ljj516475/model/Qwen/Qwen3-4B-Instruct-2507"
+MODEL_NAME="generator"
 
 # API 配置
-BASE_URL="http://127.0.0.1:8000/v1"
+BASE_URL="http://127.0.0.1:8082/v1"
 API_KEY="EMPTY"
 
 # --- Reflexion 核心推理参数 ---
-MAX_TRIALS=2            # 每个问题最多允许反思/重试的次数 (建议 3-5)
+MAX_TRIALS=10           # 每个问题最多允许反思/重试的次数 (建议 3-5)
 PARALLEL_SIZE=50        # 同时处理多少个题目 (并发数)
 TEMPERATURE=0.4         # 反思模式建议低温度，保持逻辑稳定性
-MAX_TOKENS=3500         # 单次生成的最大长度
-EXEC_TIMEOUT=40         # 运行 Gurobi 代码的超时时间 (秒)
+MAX_TOKENS=5000         # 单次生成的最大长度
+EXEC_TIMEOUT=60         # 运行 Gurobi 代码的超时时间 (秒)
 TIMEOUT=300             # 请求 API 的整体超时时间 (秒)
 
 # 日志与结果输出目录
