@@ -211,19 +211,17 @@ class FourStageMCTS:
                         selected=selected,
                         records=records,
                     )
-                    path_suppress_node_ids = self._collect_path_node_ids(selected, include_root=False)
-                    suppress_node_ids = set(cluster_suppress_node_ids) | set(path_suppress_node_ids)
+                    suppress_node_ids = set(cluster_suppress_node_ids)
                     suppress_weight = self._code_entry_suppress_weight()
                     code_entry_one_shot_suppression = {
                         "target_iter": int(iter_idx + 1),
                         "node_ids": sorted(suppress_node_ids),
                         "cluster_node_ids": sorted(cluster_suppress_node_ids),
-                        "path_node_ids": sorted(path_suppress_node_ids),
                         "weight": float(suppress_weight),
                         "source_node_id": selected_node_id,
                         "source_stage": selected.stage.value if selected.stage else "<ROOT>",
                         "source_attempt": int(attempt),
-                        "scope": "cluster_plus_first_code_path_once",
+                        "scope": "cluster_only_once",
                         "cluster_debug": dict(suppress_meta),
                     }
                     iter_payload = {
@@ -447,6 +445,7 @@ class FourStageMCTS:
 
                 reward_t0 = time.perf_counter()
                 trajectories = [item["trajectory"] for item in prepared_items]
+                filter_rollout_enabled = bool(self._filter_rollout_enabled())
                 # Attach per-iteration dynamic reward context for reward calculator.
                 iter_num = int(iter_idx) + 1
                 for t in trajectories:
@@ -458,26 +457,66 @@ class FourStageMCTS:
                     meta["__mcts_stage__"] = str(next_stage.value)
                     t.metadata = meta
                 score_group = getattr(self.rewarder, "score_rollout_group", None)
-                if callable(score_group):
-                    reward_list = list(score_group(stage=next_stage, trajectories=trajectories, explored=stage_archive))
-                else:
-                    reward_list = [self.rewarder.provisional_reward(t, stage_archive) for t in trajectories]
-                reward_sec_total = float(time.perf_counter() - reward_t0)
 
-                if len(reward_list) != len(prepared_items):
-                    reward_list = reward_list[: len(prepared_items)]
-                    while len(reward_list) < len(prepared_items):
-                        reward_list.append(RewardBreakdown(r1=0.0, r2=0.0, r3=0.0, r4=0.0, total=0.0))
+                def _normalize_rewards(items: list[RewardBreakdown], target_len: int) -> list[RewardBreakdown]:
+                    out = list(items[:target_len])
+                    while len(out) < target_len:
+                        out.append(RewardBreakdown(r1=0.0, r2=0.0, r3=0.0, r4=0.0, total=0.0))
+                    return out
+
+                def _score_group_with_optional_commit(
+                    group_trajectories: list[Trajectory],
+                    *,
+                    commit: bool,
+                ) -> list[RewardBreakdown]:
+                    if callable(score_group):
+                        try:
+                            return list(
+                                score_group(
+                                    stage=next_stage,
+                                    trajectories=group_trajectories,
+                                    explored=stage_archive,
+                                    commit=bool(commit),
+                                )
+                            )
+                        except TypeError:
+                            return list(score_group(stage=next_stage, trajectories=group_trajectories, explored=stage_archive))
+                    return [self.rewarder.provisional_reward(t, stage_archive) for t in group_trajectories]
+
+                if callable(score_group) and filter_rollout_enabled:
+                    pre_reward_list = _normalize_rewards(
+                        _score_group_with_optional_commit(trajectories, commit=False),
+                        len(prepared_items),
+                    )
+                    keep_mask_pre: list[bool] = []
+                    for reward in pre_reward_list:
+                        execution_meta = (reward.metadata or {}).get("execution", {})
+                        keep_mask_pre.append(not self._rollout_has_execution_error(execution_meta))
+                    keep_indices = [idx for idx, keep in enumerate(keep_mask_pre) if keep]
+
+                    reward_list = list(pre_reward_list)
+                    if keep_indices:
+                        kept_trajectories = [trajectories[idx] for idx in keep_indices]
+                        kept_reward_list = _normalize_rewards(
+                            _score_group_with_optional_commit(kept_trajectories, commit=True),
+                            len(keep_indices),
+                        )
+                        for local_idx, orig_idx in enumerate(keep_indices):
+                            reward_list[orig_idx] = kept_reward_list[local_idx]
+                else:
+                    reward_list = _normalize_rewards(
+                        _score_group_with_optional_commit(trajectories, commit=True),
+                        len(prepared_items),
+                    )
+                reward_sec_total = float(time.perf_counter() - reward_t0)
 
                 rewards: list[float] = []
                 filter_mask: list[bool] = []
-                filter_rollout_enabled = bool(self._filter_rollout_enabled())
                 per_item_reward_sec = reward_sec_total / max(1, len(prepared_items))
 
                 for item, reward in zip(prepared_items, reward_list, strict=False):
                     completed = item["trajectory"]
                     completed.reward = reward
-                    stage_archive.append(completed)
 
                     exec_sec = float((reward.metadata or {}).get("exec_elapsed_sec", 0.0) or 0.0)
                     callback_total_sec = float(time.perf_counter() - float(item["callback_started"]))
@@ -494,6 +533,7 @@ class FourStageMCTS:
                     keep_rollout = (not filter_rollout_enabled) or (not self._rollout_has_execution_error(execution_meta))
                     filter_mask.append(bool(keep_rollout))
                     if keep_rollout:
+                        stage_archive.append(completed)
                         auto_complete_enabled = bool(self._auto_complete_enabled())
                         has_python_in_rollout = bool(item.get("has_python_in_rollout", False))
                         completion_prompt_text = str(item.get("split_completion_prompt", "") or "")
@@ -1641,16 +1681,6 @@ class FourStageMCTS:
         return None
 
     @staticmethod
-    def _collect_path_node_ids(node: SearchNode, *, include_root: bool = False) -> set[str]:
-        out: set[str] = set()
-        cur: SearchNode | None = node
-        while cur is not None:
-            if include_root or cur.parent is not None:
-                out.add(str(cur.node_id))
-            cur = cur.parent
-        return out
-
-    @staticmethod
     def _normalize_priors(values: list[float]) -> list[float]:
         if not values:
             return []
@@ -1776,7 +1806,7 @@ class FourStageMCTS:
                 peer_ids.append(sibling_id)
                 if sibling_id in seen_ids:
                     continue
-                sibling.update(level_reward)
+                sibling.update(level_reward, visit_delta=level_weight)
                 seen_ids.add(sibling_id)
                 touched_ids.append(sibling_id)
                 total_updated += 1
@@ -3098,8 +3128,5 @@ class FourStageMCTS:
 
         cleaned = "\n".join(code_lines).strip()
         return cleaned
-
-
-
 
 

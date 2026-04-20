@@ -127,11 +127,7 @@ python -m verl.trainer.main_ppo \
     algorithm.ttrl_or.reward.gurobi_time_limit_sec=30 \
     algorithm.ttrl_or.reward.robustness_cases=3 \
     algorithm.ttrl_or.reward.cluster_scope=local \
-    algorithm.ttrl_or.reward.r1_weight=0.6 \
-    algorithm.ttrl_or.reward.r2_weight=0.2 \
     algorithm.ttrl_or.reward.r1_obj_scale_fail_multiplier=0.5 \
-    algorithm.ttrl_or.reward.r3_weight=0.1 \
-    algorithm.ttrl_or.reward.r4_weight=0.1 \
     algorithm.ttrl_or.reward.structure_gate_min=1.0 \
     algorithm.ttrl_or.dataset.sample_run=${SAMPLE_RUN} \
     algorithm.ttrl_or.dataset.sample_seed=${SAMPLE_SEED} \
@@ -190,5 +186,4 @@ python -m verl.trainer.main_ppo \
     trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
     trainer.total_epochs=1 "${EXTRA_ARGS[@]}"
-
 
