@@ -54,16 +54,64 @@ class OpenAICompatClient:
 
 # --- 提示词模板 ---
 
-SYSTEM_PROMPT = "You are an expert Operations Research engineer and Gurobi optimizer."
+SYSTEM_PROMPT = """
+You are a helpful Assistant with expertise in operations research and the Gurobi solver. 
+When the User provides an OR question, you will analyze it, build a detailed mathematical model, and provide the Gurobi code to solve it.
+"""
 
 def get_initial_prompt(question):
-    return f"Answer the following mathematical modeling question:\n{question}\nYou should directly output the final python code using Gurobi within <python> tags."
+    prompt = f"""Answer the following mathematical modeling question:
+{question}
+You should directly output the final python code using Gurobi to solve the mathematical modeling question within <python>.
+For example:
+<python>
+import gurobipy as gp
+from gurobipy import GRB
+
+# Create model
+model = gp.Model()
+......(here is core modeling code)
+
+model.optimize()
+
+status = model.status
+if status == GRB.OPTIMAL:
+    optimal = model.objVal
+    print(f"Optimal value: {{optimal}}")
+else:
+    print(f"Model status: {{status}}")
+</python>
+"""
+    return prompt
 
 def get_reflection_prompt(code, error):
     return f"Your previous Gurobi code failed.\n[Code]:\n{code}\n[Error]:\n{error}\nAnalyze why it failed and provide a fix."
 
 def get_retry_prompt(question, reflection):
-    return f"Question: {question}\n[Reflection]: {reflection}\nProvide the corrected Gurobi code in <python> tags."
+    return f"""Answer the following mathematical modeling question:
+{question}
+And here is the reflection based the last error round:
+{reflection}
+
+You should directly output the final python code using Gurobi to solve the mathematical modeling question within <python>.
+For example:
+<python>
+import gurobipy as gp
+from gurobipy import GRB
+
+# Create model
+model = gp.Model()
+......(here is core modeling code)
+
+model.optimize()
+
+status = model.status
+if status == GRB.OPTIMAL:
+    optimal = model.objVal
+    print(f"Optimal value: {{optimal}}")
+else:
+    print(f"Model status: {{status}}")
+</python>"""
 
 # --- 执行引擎 ---
 def truncate_feedback(text: str, max_chars: int = 1500) -> str:

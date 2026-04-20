@@ -34,7 +34,7 @@ log_dir="code/TTRL-OR/outputs/logs_k-8_f-false_ac-true_TTRL-true_stage-update-tr
 
 
 # log_dir="code/TTRL-OR/outputs/ttrl_or_logs"
-# log_dir="code/TTRL-OR/logs/run/model_default_Qwen3-4B-Instruct-2507_old_cot"
+log_dir="code/TTRL-OR/logs/run/model_default_Qwen3-4B-Instruct-2507_old_cot"
 
 
 
