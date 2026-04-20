@@ -466,15 +466,20 @@ class TTRLRewardCalculator(RewardCalculator):
 
         dynamic_enabled = bool(getattr(self.config, "dynamic_reward", False))
         if not dynamic_enabled:
+            # Static-mode rule:
+            # when dynamic_reward is disabled, directly use final_weight as the
+            # fixed reward weights for all iterations.
+            w1, w2, w3, w4 = final_w
             return {
                 "dynamic_reward": False,
-                "phase": "static",
+                "phase": "static_from_final_weight",
                 "iter": int(current_iter),
                 "force_stage3": False,
-                "r1": float(self.config.r1_weight),
-                "r2": float(self.config.r2_weight),
-                "r3": float(self.config.r3_weight),
-                "r4": float(self.config.r4_weight),
+                "r1": float(w1),
+                "r2": float(w2),
+                "r3": float(w3),
+                "r4": float(w4),
+                "configured_final_weight": [float(x) for x in final_w],
             }
 
         metadata = trajectory.metadata if isinstance(trajectory.metadata, dict) else {}
@@ -1422,7 +1427,6 @@ class TTRLRewardCalculator(RewardCalculator):
                 int(num_constrs),
             )
         return None
-
 
 
 
