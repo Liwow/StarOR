@@ -22,8 +22,8 @@ When the User provides an OR question, you will analyze it, build a detailed mat
 def code_prompt(question):
     prompt = f"""Answer the following mathematical modeling question:
 {question}
-You should directly output the final python code using Gurobi to solve the mathematical modeling question within <python>.
-For example:
+You should think first and then directly output the final python code using Gurobi to solve the mathematical modeling question within <python>.
+code example:
 <python>
 import gurobipy as gp
 from gurobipy import GRB
@@ -66,7 +66,10 @@ def sanitize_component(text: str) -> str:
     return cleaned or "unknown"
 
 def is_close(a: float, b: float, *, rel_tol: float, abs_tol: float) -> bool:
-    return abs(float(a) - float(b)) <= float(abs_tol) + float(rel_tol) * max(abs(float(a)), abs(float(b)), 1.0)
+    try:
+        return abs(float(a) - float(b)) <= float(abs_tol) + float(rel_tol) * max(abs(float(a)), abs(float(b)), 1.0)
+    except:
+        return False
 
 def parse_numeric(value: Any) -> float | None:
     if isinstance(value, (int, float)):
@@ -84,20 +87,18 @@ def parse_numeric(value: Any) -> float | None:
     return None
 
 def extract_python_code(text: str) -> str | None:
-    """提取 <python> 标签中的代码"""
     match = re.search(r"<python>(.*?)</python>", text, re.DOTALL)
     if match:
         return match.group(1).strip()
     return None
     
 def execute_and_extract_optimal(code: str, timeout: int = 30) -> float | None:
-    """运行 Python 代码并提取 Optimal value 或 Best objective"""
+    # 使用 delete=False 确保在多线程环境下文件写入和读取的稳定性
     with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as tf:
         tf.write(code)
         temp_file_path = tf.name
 
     try:
-        # 运行子进程
         result = subprocess.run(
             ["python", temp_file_path],
             capture_output=True,
@@ -105,44 +106,24 @@ def execute_and_extract_optimal(code: str, timeout: int = 30) -> float | None:
             timeout=timeout
         )
         output = result.stdout
-        stderr = result.stderr # 有时错误信息也很重要
         
-        # 定义数字部分的正则（支持整数、浮点数、科学计数法）
         num_pattern = r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
-
-        # 策略 1: 寻找用户代码中 print(f"Optimal value: {optimal}") 的输出
-        # 兼容可能有空格或冒号的情况
         opt_match = re.search(rf"Optimal value:?\s*({num_pattern})", output, re.IGNORECASE)
         if opt_match:
-            try:
-                return float(opt_match.group(1))
-            except ValueError:
-                pass
+            return float(opt_match.group(1))
 
-        # 策略 2: 寻找 Gurobi 标准输出日志中的 "Best objective 3.040000000000e+04"
-        # Gurobi 输出通常形如: Best objective 3.040000000000e+04, best bound ...
         best_obj_match = re.search(rf"Best objective\s+:?\s*({num_pattern})", output, re.IGNORECASE)
         if best_obj_match:
-            try:
-                return float(best_obj_match.group(1))
-            except ValueError:
-                pass
+            return float(best_obj_match.group(1))
 
-        # 如果 stdout 没找到，尝试在 stderr 中找（有时 logging 会输出到 stderr）
-        best_obj_match_err = re.search(rf"Best objective\s+:?\s*({num_pattern})", stderr, re.IGNORECASE)
-        if best_obj_match_err:
-            try:
-                return float(best_obj_match_err.group(1))
-            except ValueError:
-                pass
-
-    except subprocess.TimeoutExpired:
-        print(f"Execution timed out after {timeout}s")
-    except Exception as e:
-        print(f"Execution error: {e}")
+    except Exception:
+        pass
     finally:
         if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
+            try:
+                os.remove(temp_file_path)
+            except:
+                pass
     return None
 
 def cluster_vote(
@@ -186,8 +167,24 @@ def pick_first_nonempty(row: dict[str, Any], keys: list[str]) -> tuple[str, Any]
             return key, value
     return "", None
 
-import time
-import socket  # 导入用于捕获底层超时
+# --- 新增：代码执行的工作单元 ---
+def execution_worker(idx: int, text: str, timeout: int, save_raw: bool) -> dict[str, Any]:
+    code = extract_python_code(text)
+    obj = None
+    exec_success = False
+    
+    if code:
+        obj = execute_and_extract_optimal(code, timeout=timeout)
+        if obj is not None:
+            exec_success = True
+            
+    return {
+        "index": idx,
+        "has_code": bool(code),
+        "exec_success": exec_success,
+        "obj": obj,
+        "text_preview": text if save_raw else text[:200]
+    }
 
 class OpenAICompatClient:
     def __init__(self, *, model: str, api_key: str, base_url: str, timeout: int = 600):
@@ -199,7 +196,7 @@ class OpenAICompatClient:
         self.endpoint = f"{base}/chat/completions"
         self.timeout = int(timeout)
 
-    def chat_n(self, max_retries: int = 3, **kwargs) -> list[str]:
+    def chat_n(self, max_retries: int = 3, **kwargs) -> dict[str, Any]:
         payload = {
             "model": self.model,
             "n": int(kwargs.get("n", 1)),
@@ -213,47 +210,30 @@ class OpenAICompatClient:
         }
         
         data = json.dumps(payload).encode("utf-8")
-        proxy_handler = urllib.request.ProxyHandler({}) 
-        opener = urllib.request.build_opener(proxy_handler)
-        
         req = urllib.request.Request(
             self.endpoint,
             data=data,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"},
             method="POST",
         )
 
-        last_error = None
         for attempt in range(max_retries):
             try:
-                # 每次重试稍微增加一点超时时间
-                current_timeout = self.timeout + (attempt * 60)
-                with opener.open(req, timeout=current_timeout) as resp:
+                start_time = time.time()
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    end_time = time.time()
                     body = json.loads(resp.read().decode("utf-8"))
                     choices = body.get("choices", [])
-                    if not choices:
-                        raise RuntimeError("API returned empty choices")
-                    return [c["message"]["content"] for c in choices]
-            
-            except (urllib.error.HTTPError, urllib.error.URLError, socket.timeout, Exception) as e:
-                last_error = e
-                # 如果是 429 (Rate Limit) 或超时，才进行重试
-                status_code = getattr(e, 'code', None)
-                
-                # 打印重试信息
-                print(f"  [Attempt {attempt+1}/{max_retries}] Error: {e}. Retrying...")
-                
-                if attempt < max_retries - 1:
-                    # 指数退避：等待 2, 4, 8 秒...
-                    time.sleep(2 ** (attempt + 1))
-                    continue
-                else:
-                    break
-
-        raise RuntimeError(f"Failed after {max_retries} attempts. Last error: {last_error}")
+                    usage = body.get("usage", {})
+                    return {
+                        "contents": [c["message"]["content"] for c in choices],
+                        "api_duration": end_time - start_time,
+                        "completion_tokens": usage.get("completion_tokens", 0),
+                    }
+            except Exception as e:
+                if attempt == max_retries - 1: raise e
+                time.sleep(2 ** attempt)
+        return {"contents": [], "api_duration": 0, "completion_tokens": 0}
 
 def process_one(
     *,
@@ -264,16 +244,18 @@ def process_one(
     question_keys: list[str],
     answer_keys: list[str],
 ) -> dict[str, Any]:
-    q_key, q_val = pick_first_nonempty(row, question_keys)
-    a_key, a_val = pick_first_nonempty(row, answer_keys)
+    task_start_time = time.time()
+    
+    _, q_val = pick_first_nonempty(row, question_keys)
+    _, a_val = pick_first_nonempty(row, answer_keys)
     question = str(q_val or "").strip()
     gt_numeric = parse_numeric(a_val)
     
     system_prompt, user_prompt = build_prompt(question)
 
-    # 1. 获取 LLM 生成的 N 个候选回复
+    # 1. 获取 LLM 生成 (N 个结果)
     try:
-        outputs = client.chat_n(
+        api_res = client.chat_n(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             n=args.n,
@@ -281,33 +263,33 @@ def process_one(
             top_p=args.top_p,
             max_tokens=args.max_tokens,
         )
+        outputs = api_res["contents"]
+        api_duration = api_res["api_duration"]
+        completion_tokens = api_res["completion_tokens"]
     except Exception as e:
         return {"source_index": source_index, "status": "failed", "error": str(e)}
 
-    # 2. 依次提取代码并执行
-    candidate_objs: list[float] = []
+    # 2. 并行执行提取到的 Python 代码 (沙盒执行)
     candidates_detail = []
+    candidate_objs = []
+    
+    # 在单个样本内启动线程池以并行执行 N 个代码
+    # 使用 min(len(outputs), 16) 防止线程过多
+    with ThreadPoolExecutor(max_workers=len(outputs)) as executor:
+        futures = [
+            executor.submit(execution_worker, i, text, args.exec_timeout, args.save_raw_text)
+            for i, text in enumerate(outputs)
+        ]
+        for f in as_completed(futures):
+            res = f.result()
+            candidates_detail.append(res)
+            if res["exec_success"] and res["obj"] is not None:
+                candidate_objs.append(res["obj"])
 
-    for idx, text in enumerate(outputs):
-        code = extract_python_code(text)
-        obj = None
-        exec_success = False
-        
-        if code:
-            obj = execute_and_extract_optimal(code, timeout=args.exec_timeout)
-            if obj is not None:
-                candidate_objs.append(obj)
-                exec_success = True
-        
-        candidates_detail.append({
-            "index": idx,
-            "has_code": bool(code),
-            "exec_success": exec_success,
-            "obj": obj,
-            "text_preview": text[:200] if not args.save_raw_text else text
-        })
+    # 按原始索引排序详情
+    candidates_detail.sort(key=lambda x: x["index"])
 
-    # 3. 多数投票 (使用执行结果)
+    # 3. 多数投票
     voted_obj, vote_count, vote_clusters = cluster_vote(
         candidate_objs,
         rel_tol=args.vote_rel_tol,
@@ -319,6 +301,8 @@ def process_one(
     if voted_obj is not None and gt_numeric is not None:
         hit = is_close(voted_obj, gt_numeric, rel_tol=args.gt_rel_tol, abs_tol=args.gt_abs_tol)
 
+    task_end_time = time.time()
+    
     return {
         "source_index": source_index,
         "sample_id": row.get(args.id_key, source_index),
@@ -330,7 +314,13 @@ def process_one(
         "n_executed_ok": len(candidate_objs),
         "hit": hit,
         "candidates": candidates_detail,
-        "vote_clusters": vote_clusters
+        "vote_clusters": vote_clusters,
+        "metrics": {
+            "task_duration": task_end_time - task_start_time,
+            "api_call_duration": api_duration,
+            "total_completion_tokens": completion_tokens,
+            "avg_tokens_per_gen": completion_tokens / len(outputs) if outputs else 0
+        }
     }
 
 def build_prompt(question: str) -> tuple[str, str]:
@@ -341,22 +331,29 @@ def load_seen_indices(path: Path) -> set[int]:
     seen = set()
     with path.open("r", encoding="utf-8") as f:
         for line in f:
-            try:
-                seen.add(json.loads(line)["source_index"])
+            try: seen.add(json.loads(line)["source_index"])
             except: continue
     return seen
 
 def build_summary(log_path: Path) -> dict[str, Any]:
     total, comparable, hits = 0, 0, 0
     executed_ok = 0
+    sum_task_duration = 0.0
+    sum_completion_tokens = 0
+    total_generations = 0
+    
     for _, row in iter_jsonl(log_path):
         if row.get("status") != "ok": continue
         total += 1
-        if row.get("n_executed_ok", 0) > 0:
-            executed_ok += 1
+        if row.get("n_executed_ok", 0) > 0: executed_ok += 1
         if row.get("voted_obj") is not None and row.get("gt_obj") is not None:
             comparable += 1
             if row.get("hit"): hits += 1
+            
+        m = row.get("metrics", {})
+        sum_task_duration += m.get("task_duration", 0)
+        sum_completion_tokens += m.get("total_completion_tokens", 0)
+        total_generations += row.get("n_received", 0)
             
     return {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -364,14 +361,13 @@ def build_summary(log_path: Path) -> dict[str, Any]:
         "tasks_with_successful_exec": executed_ok,
         "comparable_with_gt": comparable,
         "total_hits": hits,
-        "exec_rate": (executed_ok / total if total > 0 else 0),
-        "hit_rate_on_comparable": (hits / comparable if comparable > 0 else 0),
-        "overall_accuracy": (hits / total if total > 0 else 0)
+        "overall_accuracy": (hits / total if total > 0 else 0),
+        "avg_task_completion_time": (sum_task_duration / total if total > 0 else 0),
+        "avg_completion_tokens_per_gen": (sum_completion_tokens / total_generations if total_generations > 0 else 0)
     }
 
 def main():
     parser = argparse.ArgumentParser()
-    # ... (参数部分保持不变)
     parser.add_argument("--input", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--base-url", default="http://127.0.0.1:8000/v1")
@@ -381,7 +377,7 @@ def main():
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--max-tokens", type=int, default=8192)
     parser.add_argument("--exec-timeout", type=int, default=30)
-    parser.add_argument("--parallel", type=int, default=10)
+    parser.add_argument("--parallel", type=int, default=10) # 同时处理多少个题目
     parser.add_argument("--id-key", default="id")
     parser.add_argument("--question-keys", default="input,question,en_question,prompt")
     parser.add_argument("--answer-keys", default="answer,en_answer,gt,output")
@@ -396,7 +392,7 @@ def main():
     input_path = Path(args.input)
     base_log_name = f"voted_{sanitize_component(input_path.stem)}_{sanitize_component(args.model)}"
     log_path = Path(args.log_dir) / f"{base_log_name}.jsonl"
-    summary_path = Path(args.log_dir) / f"{base_log_name}.summary.json" # 新增摘要路径
+    summary_path = Path(args.log_dir) / f"{base_log_name}.summary.json"
     
     seen = load_seen_indices(log_path)
     question_keys = args.question_keys.split(",")
@@ -408,6 +404,7 @@ def main():
     print(f"Starting: {len(tasks)} new tasks, logging to {log_path}")
 
     try:
+        # 外部 ThreadPoolExecutor 用于并行处理不同的数据行
         with ThreadPoolExecutor(max_workers=args.parallel) as pool:
             future_to_idx = {
                 pool.submit(process_one, source_index=idx, row=row, client=client, args=args, 
@@ -416,33 +413,25 @@ def main():
             }
             
             completed_count = 0
-            for i, future in enumerate(as_completed(future_to_idx)):
+            for future in as_completed(future_to_idx):
                 res = future.result()
                 append_jsonl(log_path, res)
                 completed_count += 1
                 
-                # 每 5 个打印一次实时统计
                 if completed_count % 5 == 0 or completed_count == len(tasks):
                     current_stats = build_summary(log_path)
                     print(f"Progress: {completed_count}/{len(tasks)} | "
-                          f"ExecRate: {current_stats['exec_rate']:.2%} | "
-                          f"HitRate: {current_stats['hit_rate_on_comparable']:.2%} "
-                          f"({current_stats['total_hits']}/{current_stats['comparable_with_gt']})")
+                          f"Acc: {current_stats['overall_accuracy']:.2%} | "
+                          f"AvgTaskTime: {current_stats['avg_task_completion_time']:.2f}s")
 
     except KeyboardInterrupt:
-        print("\nInterrupted by user. Calculating final stats for completed tasks...")
+        print("\nInterrupted.")
     finally:
-        # 无论成功、失败或中途退出，都保存并打印摘要
         if log_path.exists():
             summary = build_summary(log_path)
             with open(summary_path, "w", encoding="utf-8") as f:
                 json.dump(summary, f, indent=4, ensure_ascii=False)
-            
-            print("\n" + "="*30)
-            print(f"Final Summary Saved to: {summary_path}")
-            for k, v in summary.items():
-                print(f"{k}: {v}")
-            print("="*30)
+            print(f"\nFinal Accuracy: {summary['overall_accuracy']:.4f}")
 
 if __name__ == "__main__":
     main()
