@@ -322,8 +322,32 @@ def main() -> int:
             "自动读取 runtime_summary.json/md 或 runtime.json/md。"
         )
     )
-    parser.add_argument("input_dir", type=str, help="数据集日志文件夹（可为单数据集目录或包含多个数据集的上层目录）")
-    parser.add_argument("--out", type=str, default="", help="可选：输出汇总 JSON 路径")
+    # dataset_root = "outputs/logs_k-8_f-false_ac-true_TTRL-true_stage-update-true_r3-true_DYNAMIC-R-true_multi-R-true_refine-true_repair-2/model_default_Qwen3-4B-Instruct-2507"
+    
+    # dataset_root = "outputs/logs_k-8_TTRL-true_stage-update-true_r3-true_DYNAMIC-R-true_refine-true_repair-2/model_default_Qwen3-4B-Instruct-2507"
+    # dataset_root = "outputs/logs_k-8_TTRL-true_stage-update-true_r3-true_DYNAMIC-R-true_multi-R-false_refine-true_repair-2/model_default_Qwen3-4B-Instruct-2507_sample"
+
+    # dataset_root = "outputs/logs_k-8_TTRL-true_stage-update-true_r3-false_DYNAMIC-R-true_multi-R-false_refine-true_repair-2/model_default_Qwen3-4B-Instruct-2507"
+    # dataset_root = "outputs/logs_k-8_TTRL-true_stage-update-true_r3-true_DYNAMIC-R-true_multi-R-false_refine-true_repair-2/model_default_Qwen3-4B-Instruct-2507"
+    # dataset_root = "outputs/logs_k-8_TTRL-true_stage-update-true_r3-true_DYNAMIC-R-true_multi-R-false_refine-true_repair-2/model_default_Qwen3-4B-Instruct-2507_sample"
+    
+    # dataset_root = "outputs/logs_TTRL-false_r3-true_refine-true_repair-2_codeGATE-true/model_default_Qwen3-4B-Instruct-2507"
+    dataset_root = "outputs/logs_TTRL-false_r3-true_refine-true_repair-2_codeGATE-true/model_default_Qwen3-4B-Instruct-2507_sample"
+
+    dataset_root = "outputs/logs_k-2_f-false_ac-true_TTRL-true_stage-update-true_r3-true_DYNAMIC-R-true_multi-R-true_refine-true_repair-2/model_default_Qwen3-4B-Instruct-2507"
+    dataset_root = "outputs/logs_k-4_f-false_ac-true_TTRL-true_stage-update-true_r3-true_DYNAMIC-R-true_multi-R-true_refine-true_repair-2/model_default_Qwen3-4B-Instruct-2507"
+    # dataset_root = "outputs/logs_k-16_f-false_ac-true_TTRL-true_stage-update-true_r3-true_DYNAMIC-R-true_multi-R-true_refine-true_repair-2/model_default_Qwen3-4B-Instruct-2507"
+    # dataset_root = "outputs/logs_k-32_f-false_ac-true_TTRL-true_stage-update-true_r3-true_DYNAMIC-R-true_multi-R-true_refine-true_repair-2/model_default_Qwen3-4B-Instruct-2507"
+
+
+    # dataset_path = f"{dataset_root}/IndustryOR_fixedV2"
+    dataset_path = f"{dataset_root}/OptMATH_Bench_166"
+    # dataset_path = f"{dataset_root}/NL4OPT"
+    # dataset_path = f"{dataset_root}/MAMO_ComplexLP_fixed"
+    # dataset_path = f"{dataset_root}/MAMO_EasyLP_fixed"
+
+    parser.add_argument("--input_dir", type=str, default=f"{dataset_path}", help="数据集日志文件夹（可为单数据集目录或包含多个数据集的上层目录）")
+    parser.add_argument("--out", type=str, default="outputs/cost", help="可选：输出汇总 JSON 路径")
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir).expanduser().resolve()

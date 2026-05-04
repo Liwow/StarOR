@@ -12,3 +12,4 @@ wandb/
 train_data.mcts_stage.jsonl
 paper/
 NeurIPS_2026_or/
+*.zip
