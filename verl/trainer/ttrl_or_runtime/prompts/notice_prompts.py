@@ -95,7 +95,6 @@ PARA_VAR_NOTICE = """
   - x: description (domain)
 
 3. Naming rules:
-- set names must be short, lowercase, no spaces.
 - parameter names must be concise and consistent with sets/entities.
 - variable names must be concise and consistent with later symbolic modeling.
 - use the same terminology as previous stages.
