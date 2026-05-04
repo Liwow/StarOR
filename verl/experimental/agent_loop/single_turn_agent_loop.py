@@ -41,6 +41,9 @@ class SingleTurnAgentLoop(AgentLoopBase):
 
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
         messages = list(kwargs["raw_prompt"])
+        request_sampling_params = dict(sampling_params)
+        if bool(kwargs.get("no_lora_adapter", False)) and str(self.rollout_config.name).strip().lower() == "vllm":
+            request_sampling_params["no_lora_adapter"] = True
 
         # 1. extract images and videos from messages
         multi_modal_data = await self.process_vision_info(messages)
@@ -60,7 +63,7 @@ class SingleTurnAgentLoop(AgentLoopBase):
             output: TokenOutput = await self.server_manager.generate(
                 request_id=uuid4().hex,
                 prompt_ids=prompt_ids,
-                sampling_params=sampling_params,
+                sampling_params=request_sampling_params,
                 image_data=images,
                 video_data=videos,
             )

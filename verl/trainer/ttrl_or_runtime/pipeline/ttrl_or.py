@@ -174,6 +174,32 @@ class TTRLORRunner:
                     f"forward_compute_sec={timing.get('forward_compute_sec', timing.get('old_log_prob_forward_sec', 'n/a'))} "
                     f"iter_sec={timing.get('iteration_total_sec', 'n/a')}"
                 )
+                code_terminal = payload.get("code_terminal", {}) if isinstance(payload, dict) else {}
+                if isinstance(code_terminal, dict) and bool(code_terminal.get("enabled", False)):
+                    trace = code_terminal.get("trace", {}) if isinstance(code_terminal.get("trace", {}), dict) else {}
+                    initial_issue = trace.get("initial_issue", {}) if isinstance(trace.get("initial_issue", {}), dict) else {}
+                    final_issue = trace.get("final_issue", {}) if isinstance(trace.get("final_issue", {}), dict) else {}
+                    steps = trace.get("steps", []) if isinstance(trace.get("steps", []), list) else []
+                    print(
+                        f"[CODE_TERMINAL][task={task.task_id}] iter={iter_idx} "
+                        f"repair_max={trace.get('code_repair_max', code_terminal.get('code_repair_max', 'n/a'))} "
+                        f"repair_steps={len(steps)} fallback={code_terminal.get('fallback_to_original_logic', False)} "
+                        f"initial_issue={initial_issue.get('kind', '')}:{initial_issue.get('reason', '')} "
+                        f"final_issue={final_issue.get('kind', '')}:{final_issue.get('reason', '')}"
+                    )
+                    for step in steps:
+                        if not isinstance(step, dict):
+                            continue
+                        issue_before = step.get("issue_before", {}) if isinstance(step.get("issue_before", {}), dict) else {}
+                        issue_after = step.get("issue_after", {}) if isinstance(step.get("issue_after", {}), dict) else {}
+                        reward_step = step.get("reward", {}) if isinstance(step.get("reward", {}), dict) else {}
+                        print(
+                            f"[CODE_TERMINAL][task={task.task_id}] iter={iter_idx} "
+                            f"repair_round={step.get('round', '')} kind={step.get('kind', '')} "
+                            f"issue_before={issue_before.get('kind', '')}:{issue_before.get('reason', '')} "
+                            f"issue_after={issue_after.get('kind', '')}:{issue_after.get('reason', '')} "
+                            f"reward_total={reward_step.get('total', '')}"
+                        )
 
             search_result = mcts.search(task=task, grpo_config=self.config.grpo, iteration_callback=_on_iteration_log)
             if iter_live_writer is not None:
@@ -370,6 +396,7 @@ class TTRLORRunner:
         mcts_stats_path = run_dir / "mcts_stats.json"
         iter_logs_path = run_dir / "mcts_iterations.json"
         iter_logs_md_path = run_dir / "mcts_iterations.md"
+        code_terminal_repairs_path = run_dir / "code_terminal_repairs.json"
         result_path = run_dir / "result.json"
         runtime_path = run_dir / "runtime_summary.json"
         runtime_md_path = run_dir / "runtime_summary.md"
@@ -401,6 +428,23 @@ class TTRLORRunner:
             "".join(self._format_iteration_markdown(item) for item in iteration_logs),
             encoding="utf-8",
         )
+        code_terminal_repairs: list[dict[str, Any]] = []
+        for item in iteration_logs:
+            if not isinstance(item, dict):
+                continue
+            code_terminal = item.get("code_terminal", {})
+            if not isinstance(code_terminal, dict) or not bool(code_terminal.get("enabled", False)):
+                continue
+            trace_payload = code_terminal.get("trace", {})
+            code_terminal_repairs.append(
+                {
+                    "iter": item.get("iter"),
+                    "stage": item.get("stage"),
+                    "code_terminal": code_terminal,
+                    "trace": trace_payload if isinstance(trace_payload, dict) else {},
+                }
+            )
+        _write_json_file(code_terminal_repairs_path, code_terminal_repairs)
 
         traj_payload = []
         for traj in trajectories:
@@ -490,6 +534,7 @@ class TTRLORRunner:
             "mcts_iterations_md": str(iter_logs_md_path.resolve()),
             "mcts_stats": str(mcts_stats_path.resolve()),
             "final_trajectories": str(trajectories_path.resolve()),
+            "code_terminal_repairs": str(code_terminal_repairs_path.resolve()),
             "best_code": str(best_code_path.resolve()),
             "result_json": str(result_path.resolve()),
             "runtime_summary": str(runtime_path.resolve()),
@@ -514,6 +559,13 @@ class TTRLORRunner:
         selection_path = selection.get("selection_path", []) if isinstance(selection, dict) else []
         best_prior = best.get("prior", {}) if isinstance(best, dict) else {}
         rollout_group = payload.get("rollout_group", []) if isinstance(payload, dict) else []
+        code_terminal = payload.get("code_terminal", {}) if isinstance(payload, dict) else {}
+        best_answer = best.get("answer", {}) if isinstance(best.get("answer", {}), dict) else {}
+        best_auto_complete = (
+            best_answer.get("auto_complete", {})
+            if isinstance(best_answer.get("auto_complete", {}), dict)
+            else {}
+        )
 
         lines = [
             f"# Iter {iter_idx} | Stage {stage}",
@@ -572,6 +624,13 @@ class TTRLORRunner:
                     f"r1={reward_i.get('r1', '')} r2={reward_i.get('r2', '')} r3={reward_i.get('r3', '')} r4={reward_i.get('r4', '')} "
                     f"backprop_sec={timing_i.get('backprop_sec', '')}"
                 )
+                auto_complete_i = item.get("auto_complete", {}) if isinstance(item.get("auto_complete", {}), dict) else {}
+                lines.append(
+                    f"  auto_complete: enabled={auto_complete_i.get('enabled', '')} "
+                    f"requested={auto_complete_i.get('requested', '')} applied={auto_complete_i.get('applied', '')} "
+                    f"status={auto_complete_i.get('status', '')} "
+                    f"has_python_in_rollout={auto_complete_i.get('has_python_in_rollout', '')}"
+                )
                 lines.append(
                     f"  exec_success={execution_i.get('success', '')} effective_success={execution_i.get('effective_success', '')} "
                     f"parsed_obj={execution_i.get('parsed_obj_answer', '')} has_valid_obj={r1_debug_i.get('has_valid_obj', '')} "
@@ -585,6 +644,19 @@ class TTRLORRunner:
                     f"r4_lp_vars={((r4_debug_i.get('lp_model_debug', {}) or {}).get('num_vars', ''))} "
                     f"r4_lp_constrs={((r4_debug_i.get('lp_model_debug', {}) or {}).get('num_constrs', ''))}"
                 )
+                if auto_complete_i.get("requested", False):
+                    lines.extend(
+                        [
+                            "  auto_complete_prompt:",
+                            "  ```text",
+                            str(auto_complete_i.get("completion_prompt", "")),
+                            "  ```",
+                            "  auto_complete_answer:",
+                            "  ```text",
+                            str(auto_complete_i.get("completion_answer", "")),
+                            "  ```",
+                        ]
+                    )
         else:
             lines.append("- none")
 
@@ -602,6 +674,7 @@ class TTRLORRunner:
                 f"- r4_debug: structure_gate={((reward.get('r4_debug', {}) or {}).get('structure_gate', ''))}, extracted={(((reward.get('r4_debug', {}) or {}).get('structure_gate_debug', {}) or {}).get('extracted', ''))}, structural_pass={(((reward.get('r4_debug', {}) or {}).get('structure_gate_debug', {}) or {}).get('passes', ''))}",
                 f"- r4_lp_debug: ready={((reward.get('r4_debug', {}) or {}).get('lp_model_ready', ''))}, reason={(((reward.get('r4_debug', {}) or {}).get('lp_model_debug', {}) or {}).get('reason', ''))}, vars={(((reward.get('r4_debug', {}) or {}).get('lp_model_debug', {}) or {}).get('num_vars', ''))}, constrs={(((reward.get('r4_debug', {}) or {}).get('lp_model_debug', {}) or {}).get('num_constrs', ''))}",
                 f"- code_execution: success={((best.get('code_execution', {}) or {}).get('success', ''))}, effective_success={((best.get('code_execution', {}) or {}).get('effective_success', ''))}, parsed_obj={((best.get('code_execution', {}) or {}).get('parsed_obj_answer', ''))}",
+                f"- auto_complete: enabled={best_auto_complete.get('enabled', '')}, requested={best_auto_complete.get('requested', '')}, applied={best_auto_complete.get('applied', '')}, status={best_auto_complete.get('status', '')}",
                 f"- r3_debug: source={best_r3_debug.get('source', '')}, reason={best_r3_debug.get('reason', '')}, pass={best_r3_debug.get('passed_cases', '')}/{best_r3_debug.get('num_cases', '')}, weighted={best_r3_debug.get('weighted_pass_sum', '')}",
                 "",
                 "### Prompt",
@@ -612,6 +685,14 @@ class TTRLORRunner:
                 "### Answer",
                 "```text",
                 str((best.get('answer', {}) or {}).get("full", "")),
+                "```",
+                "",
+                "### Auto Completion (Best Rollout)",
+                "```text",
+                str(best_auto_complete.get("completion_prompt", "")),
+                "```",
+                "```text",
+                str(best_auto_complete.get("completion_answer", "")),
                 "```",
                 "",
                 "### Timing (sec)",
@@ -632,6 +713,54 @@ class TTRLORRunner:
                 "",
             ]
         )
+        if isinstance(code_terminal, dict) and bool(code_terminal.get("enabled", False)):
+            trace = code_terminal.get("trace", {}) if isinstance(code_terminal.get("trace", {}), dict) else {}
+            initial_issue = trace.get("initial_issue", {}) if isinstance(trace.get("initial_issue", {}), dict) else {}
+            final_issue = trace.get("final_issue", {}) if isinstance(trace.get("final_issue", {}), dict) else {}
+            initial_candidate = trace.get("initial_candidate", {}) if isinstance(trace.get("initial_candidate", {}), dict) else {}
+            final_candidate = trace.get("final_candidate", {}) if isinstance(trace.get("final_candidate", {}), dict) else {}
+            steps = trace.get("steps", []) if isinstance(trace.get("steps", []), list) else []
+            lines.extend(
+                [
+                    "## Code Terminal",
+                    f"- enabled: {code_terminal.get('enabled', False)}",
+                    f"- fallback_to_original_logic: {code_terminal.get('fallback_to_original_logic', False)}",
+                    f"- trajectory_id: {code_terminal.get('trajectory_id', '')}",
+                    f"- reward_total: {code_terminal.get('reward_total', '')}",
+                    f"- obj_answer: {code_terminal.get('obj_answer', '')}",
+                    f"- code_refine_enabled: {trace.get('code_refine_enabled', '')}",
+                    f"- code_repair_max: {trace.get('code_repair_max', '')}",
+                    f"- initial_need_repair: {trace.get('initial_need_repair', '')}",
+                    f"- initial_issue: {initial_issue.get('kind', '')} / {initial_issue.get('reason', '')}",
+                    f"- final_issue: {final_issue.get('kind', '')} / {final_issue.get('reason', '')}",
+                    f"- initial_candidate: traj={initial_candidate.get('trajectory_id', '')}, obj={initial_candidate.get('obj_answer', '')}, reward={initial_candidate.get('reward_total', '')}, code_len={initial_candidate.get('code_len', '')}",
+                    f"- final_candidate: traj={final_candidate.get('trajectory_id', '')}, obj={final_candidate.get('obj_answer', '')}, reward={final_candidate.get('reward_total', '')}, code_len={final_candidate.get('code_len', '')}",
+                ]
+            )
+            if steps:
+                lines.append("")
+                lines.append("### Repair Steps")
+                for idx, step in enumerate(steps, start=1):
+                    issue_before = step.get("issue_before", {}) if isinstance(step.get("issue_before", {}), dict) else {}
+                    issue_after = step.get("issue_after", {}) if isinstance(step.get("issue_after", {}), dict) else {}
+                    reward_step = step.get("reward", {}) if isinstance(step.get("reward", {}), dict) else {}
+                    lines.extend(
+                        [
+                            f"- step={idx} kind={step.get('kind', '')} round={step.get('round', '')} parsed_code_len={step.get('parsed_code_len', '')} prior={step.get('prior', '')}",
+                            f"  issue_before={issue_before.get('kind', '')}/{issue_before.get('reason', '')} "
+                            f"issue_after={issue_after.get('kind', '')}/{issue_after.get('reason', '')} "
+                            f"reward_total={reward_step.get('total', '')}",
+                            "  prompt:",
+                            "  ```text",
+                            str(step.get("prompt", "")),
+                            "  ```",
+                            "  answer:",
+                            "  ```text",
+                            str(step.get("answer", "")),
+                            "  ```",
+                        ]
+                    )
+            lines.extend(["", "---", ""])
         return "\n".join(lines)
 
     @staticmethod

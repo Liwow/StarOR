@@ -22,12 +22,25 @@ class MCTSConfig:
     code_refine: bool = True
     # CODE terminal repair rounds (0 means disable repair).
     code_repair: int = 0
+    # Require two consecutive "attempts to enter CODE" on the same node
+    # before actually entering CODE.
+    code_entry_second_attempt: bool = True
+    # One-shot suppression weight (PUCT multiplier) applied on next selection
+    # to the global same-cluster nodes after the first CODE-entry attempt.
+    code_entry_same_cluster_suppress_weight: float = 0.7
     # Enable cluster-linked MCTS backprop update:
     # besides normal selected-path backprop, also update same-cluster siblings
     # (and same-cluster ancestor-layer siblings with decay).
     mcts_cluster_update: bool = True
     # Legacy typo alias, fallback-only compatibility (do not use in new scripts).
     mcts_cluster_updata: bool | None = None
+    # If True, for non-CODE stages: when rollout text does not contain a valid
+    # <python>...</python> block, trigger one completion rollout using
+    # completion templates to obtain executable code for reward evaluation.
+    auto_complete: bool = False
+    # If True, drop rollout items with execution errors from both MCTS node
+    # construction and GRPO update (infeasible/non-obj but non-error items are kept).
+    filter_rollout: bool = False
 
 
 @dataclass(slots=True)
@@ -52,6 +65,13 @@ class RewardConfig:
     r4_decay: float = 0.95  # Decay factor for historical structural counts
 
     #  Final reward weights 
+    dynamic_reward: bool = False  # Enable dynamic reward schedule by MCTS iteration / code-entry
+    # Dynamic schedule weight vector for early phase (iter<=3), as "r1,r2,r3,r4".
+    early_weight: str = "0.3,0.4,0.2,0.1"
+    # Dynamic schedule weight vector for middle phase (4<=iter<=5), as "r1,r2,r3,r4".
+    mid_weight: str = "0.5,0.3,0.1,0.1"
+    # Dynamic schedule weight vector for final phase (iter>=6 or force_stage3), as "r1,r2,r3,r4".
+    final_weight: str = "0.6,0.2,0.1,0.1"
     r1_weight: float = 0.6  # Weight for r1 in final reward
     r2_weight: float = 0.1  # Weight for r2 in final reward
     r1_obj_scale_fail_multiplier: float = 0.2  # Multiplier on r1 weight when obj-scale check fails
@@ -62,6 +82,13 @@ class RewardConfig:
 
 @dataclass(slots=True)
 class GRPOConfig:
+    # Master switch of TTRL training behavior.
+    # True: run GRPO update with LoRA policy.
+    # False: pure MCTS inference mode (no LoRA inference, no GRPO update).
+    use_ttrl: bool = True
+    # When True, GRPO update only uses tokens up to current stage content
+    # (e.g., keep <thought> + current stage tags, drop trailing <python> tail).
+    stage_update: bool = False
     learning_rate: float = 5e-5
     group_size: int = 3  # Alias of num_generations in GRPO literature.
     kl_coef: float = 0.001  # KL penalty coefficient beta.

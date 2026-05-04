@@ -224,12 +224,21 @@ class TTRLRewardCalculator(RewardCalculator):
                 r1_weight_scale = float(self.config.r1_obj_scale_fail_multiplier)
                 r1_obj_scale_penalized = True
 
-            # If r3 is disabled, fold r3 weight into r1 to keep total weight mass stable.
+            # Resolve base reward weights (static or dynamic schedule by MCTS iteration).
+            weight_plan = self._resolve_reward_weight_plan(trajectory=traj, current_iter=current_iter)
+            # Keep total weight mass stable with feature toggles:
+            # - if r3 is disabled, fold r3_weight into r2
+            # - if r4 is disabled, fold r4_weight into r1
             r3_enabled = bool(self.config.enable_r3_reward)
-            base_r1_weight = float(self.config.r1_weight)
-            base_r3_weight = float(self.config.r3_weight)
-            r1_weight_effective = base_r1_weight + (0.0 if r3_enabled else base_r3_weight)
+            r4_enabled = bool(self.config.enable_r4_reward)
+            base_r1_weight = float(weight_plan["r1"])
+            base_r2_weight = float(weight_plan["r2"])
+            base_r3_weight = float(weight_plan["r3"])
+            base_r4_weight = float(weight_plan["r4"])
+            r1_weight_effective = base_r1_weight + (0.0 if r4_enabled else base_r4_weight)
+            r2_weight_effective = base_r2_weight + (0.0 if r3_enabled else base_r3_weight)
             r3_weight_effective = base_r3_weight if r3_enabled else 0.0
+            r4_weight_effective = base_r4_weight if r4_enabled else 0.0
 
             total = self.combine_rewards(
                 r1=r1,
@@ -238,10 +247,10 @@ class TTRLRewardCalculator(RewardCalculator):
                 r4=r4,
                 reward_gate=reward_gate,
                 r1_weight=r1_weight_effective,
-                r2_weight=self.config.r2_weight,
+                r2_weight=r2_weight_effective,
                 r1_weight_scale=r1_weight_scale,
                 r3_weight=r3_weight_effective,
-                r4_weight=self.config.r4_weight,
+                r4_weight=r4_weight_effective,
             )
 
             common_meta = {
@@ -252,14 +261,22 @@ class TTRLRewardCalculator(RewardCalculator):
                 "total_reward_formula": "total_r = (w1*r1*r1_weight_scale) + (w2*r2) + (w3*r3) + (w4*r4); total=max(0,total_r)",
                 "total_reward_weights": {
                     "w1_r1": float(r1_weight_effective),
-                    "w2_r2": float(self.config.r2_weight),
+                    "w2_r2": float(r2_weight_effective),
                     "r1_obj_scale_fail_multiplier": float(self.config.r1_obj_scale_fail_multiplier),
                     "w3_r3": float(r3_weight_effective),
-                    "w4_r4": float(self.config.r4_weight),
+                    "w4_r4": float(r4_weight_effective),
                     "w1_base_r1": float(base_r1_weight),
+                    "w2_base_r2": float(base_r2_weight),
                     "w3_base_r3": float(base_r3_weight),
+                    "w4_base_r4": float(base_r4_weight),
                     "r3_enabled": bool(r3_enabled),
-                    "r3_weight_folded_into_r1": bool(not r3_enabled),
+                    "r4_enabled": bool(r4_enabled),
+                    "r3_weight_folded_into_r2": bool(not r3_enabled),
+                    "r4_weight_folded_into_r1": bool(not r4_enabled),
+                    "dynamic_reward": bool(weight_plan.get("dynamic_reward", False)),
+                    "dynamic_phase": str(weight_plan.get("phase", "")),
+                    "dynamic_force_stage3": bool(weight_plan.get("force_stage3", False)),
+                    "dynamic_iter": int(weight_plan.get("iter", current_iter)),
                 },
                 "total_reward_terms": {
                     "r1": float(r1),
@@ -438,6 +455,113 @@ class TTRLRewardCalculator(RewardCalculator):
         )
         total_r = total_r_raw
         return max(0.0, total_r)
+
+    def _resolve_reward_weight_plan(self, trajectory: Trajectory, current_iter: int) -> dict[str, Any]:
+        default_early = (0.3, 0.4, 0.2, 0.1)
+        default_mid = (0.5, 0.3, 0.1, 0.1)
+        default_final = (0.6, 0.2, 0.1, 0.1)
+        early_w = self._parse_dynamic_stage_weight(getattr(self.config, "early_weight", None), default_early)
+        mid_w = self._parse_dynamic_stage_weight(getattr(self.config, "mid_weight", None), default_mid)
+        final_w = self._parse_dynamic_stage_weight(getattr(self.config, "final_weight", None), default_final)
+
+        dynamic_enabled = bool(getattr(self.config, "dynamic_reward", False))
+        if not dynamic_enabled:
+            # Static-mode rule:
+            # when dynamic_reward is disabled, directly use final_weight as the
+            # fixed reward weights for all iterations.
+            w1, w2, w3, w4 = final_w
+            return {
+                "dynamic_reward": False,
+                "phase": "static_from_final_weight",
+                "iter": int(current_iter),
+                "force_stage3": False,
+                "r1": float(w1),
+                "r2": float(w2),
+                "r3": float(w3),
+                "r4": float(w4),
+                "configured_final_weight": [float(x) for x in final_w],
+            }
+
+        metadata = trajectory.metadata if isinstance(trajectory.metadata, dict) else {}
+        iter_num = int(metadata.get("__mcts_iter__", current_iter) or current_iter)
+        force_stage3 = bool(metadata.get("__dynamic_reward_force_stage3__", False))
+
+        if force_stage3:
+            phase = "late_or_code_seen"
+            w1, w2, w3, w4 = final_w
+        elif iter_num <= 3:
+            phase = "early"
+            w1, w2, w3, w4 = early_w
+        elif iter_num <= 5:
+            phase = "middle"
+            w1, w2, w3, w4 = mid_w
+        else:
+            phase = "late"
+            w1, w2, w3, w4 = final_w
+
+        return {
+            "dynamic_reward": True,
+            "phase": phase,
+            "iter": int(iter_num),
+            "force_stage3": bool(force_stage3),
+            "r1": float(w1),
+            "r2": float(w2),
+            "r3": float(w3),
+            "r4": float(w4),
+            "configured_early_weight": [float(x) for x in early_w],
+            "configured_mid_weight": [float(x) for x in mid_w],
+            "configured_final_weight": [float(x) for x in final_w],
+        }
+
+    @staticmethod
+    def _parse_dynamic_stage_weight(raw: Any, default: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+        def _to_float(value: Any) -> float | None:
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, (int, float)):
+                v = float(value)
+                return v if math.isfinite(v) else None
+            if isinstance(value, str):
+                s = value.strip()
+                if not s:
+                    return None
+                try:
+                    v = float(s)
+                    return v if math.isfinite(v) else None
+                except Exception:
+                    return None
+            return None
+
+        parsed: list[float] = []
+        if isinstance(raw, (list, tuple)):
+            parsed = [x for x in (_to_float(v) for v in raw) if x is not None]
+        elif isinstance(raw, dict):
+            ordered = [raw.get("r1"), raw.get("r2"), raw.get("r3"), raw.get("r4")]
+            parsed = [x for x in (_to_float(v) for v in ordered) if x is not None]
+        elif isinstance(raw, str):
+            text = raw.strip()
+            if text:
+                obj = None
+                try:
+                    obj = json.loads(text)
+                except Exception:
+                    obj = None
+                if isinstance(obj, (list, tuple)):
+                    parsed = [x for x in (_to_float(v) for v in obj) if x is not None]
+                elif isinstance(obj, dict):
+                    ordered = [obj.get("r1"), obj.get("r2"), obj.get("r3"), obj.get("r4")]
+                    parsed = [x for x in (_to_float(v) for v in ordered) if x is not None]
+                else:
+                    tokens = [tok for tok in re.split(r"[,\s;|]+", text) if tok.strip()]
+                    parsed = [x for x in (_to_float(tok) for tok in tokens) if x is not None]
+
+        if len(parsed) != 4:
+            return default
+        if any((not math.isfinite(float(x))) for x in parsed):
+            return default
+        if sum(float(x) for x in parsed) <= 0.0:
+            return default
+        return (float(parsed[0]), float(parsed[1]), float(parsed[2]), float(parsed[3]))
 
     def _use_local_cluster_scope(self) -> bool:
         return str(self.config.cluster_scope or "global").strip().lower() == "local"
@@ -1303,7 +1427,6 @@ class TTRLRewardCalculator(RewardCalculator):
                 int(num_constrs),
             )
         return None
-
 
 
 

@@ -14,7 +14,7 @@ class SearchNode:
     parent: SearchNode | None = None
     node_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     children: list[SearchNode] = field(default_factory=list)
-    visits: int = 0
+    visits: float = 0.0
     value_sum: float = 0.0
     prompt: str = ""
 
@@ -25,9 +25,12 @@ class SearchNode:
     def add_child(self, child: SearchNode) -> None:
         self.children.append(child)
 
-    def update(self, reward: float) -> None:
-        self.visits += 1
-        self.value_sum += reward
+    def update(self, reward: float, visit_delta: float = 1.0) -> None:
+        delta = float(visit_delta)
+        if delta < 0.0:
+            delta = 0.0
+        self.visits += delta
+        self.value_sum += float(reward)
 
     def to_partial_trajectory(self) -> Trajectory:
         cur: SearchNode | None = self
@@ -44,4 +47,3 @@ class SearchNode:
             priors=priors,
             metadata={"source_node": self.node_id},
         )
-

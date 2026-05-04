@@ -137,6 +137,7 @@ class vLLMOmniHttpServer(vLLMHttpServer):
     ) -> DiffusionOutput:
         """Generate sequence with token-in-image-out."""
         prompt_ids = normalize_token_ids(prompt_ids)
+        no_lora_adapter = bool(sampling_params.pop("no_lora_adapter", False))
 
         multi_modal_data = {}
         if image_data is not None:
@@ -146,7 +147,7 @@ class vLLMOmniHttpServer(vLLMHttpServer):
 
         # Add lora request
         lora_request = None
-        if self.lora_as_adapter:
+        if self.lora_as_adapter and not no_lora_adapter:
             # Make sure we also check that the lora is already loaded in the engine
             lora_loaded = VLLM_LORA_INT_ID in await self.engine.list_loras()
             if lora_loaded:

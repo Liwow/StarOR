@@ -101,6 +101,11 @@ class FourStageMCTS:
         best_trajectory: Trajectory | None = None
         best_reward = float("-inf")
         selection_history: list[tuple[tuple[str, str], str]] = []
+        code_entry_attempt_total: int = 0
+        code_entry_one_shot_suppression: dict[str, Any] | None = None
+        # Once MCTS first attempts to enter CODE (including deferred gate),
+        # dynamic reward should immediately switch to late-phase weights.
+        dynamic_reward_force_stage3: bool = False
 
         stage_archives: dict[Stage, list[Trajectory]] = {stage: [] for stage in self.stage_order}
 
@@ -116,6 +121,21 @@ class FourStageMCTS:
         for iter_idx in range(max(1, int(self.config.max_iterations))):
             iter_t0 = time.perf_counter()
             selection_t0 = time.perf_counter()
+            active_code_suppress_node_ids: set[str] = set()
+            active_code_suppress_weight = 1.0
+            active_code_suppress_info: dict[str, Any] = {}
+            if code_entry_one_shot_suppression is not None:
+                target_iter = int(code_entry_one_shot_suppression.get("target_iter", -1))
+                if int(iter_idx) == target_iter:
+                    active_code_suppress_node_ids = {
+                        str(x) for x in (code_entry_one_shot_suppression.get("node_ids", []) or []) if str(x).strip()
+                    }
+                    active_code_suppress_weight = float(
+                        code_entry_one_shot_suppression.get("weight", self._code_entry_suppress_weight())
+                    )
+                    active_code_suppress_info = dict(code_entry_one_shot_suppression)
+                elif int(iter_idx) > target_iter:
+                    code_entry_one_shot_suppression = None
             blocked_repeat_threshold = self._blocked_sibling_threshold()
             stuck_state = self._blocked_sibling_state(selection_history, blocked_repeat_threshold)
             blocked_group = stuck_state["group"] if stuck_state is not None else None
@@ -134,6 +154,8 @@ class FourStageMCTS:
                 selection_root,
                 soft_block_group=blocked_group,
                 soft_block_weight=soft_block_weight,
+                extra_suppress_node_ids=active_code_suppress_node_ids,
+                extra_suppress_weight=active_code_suppress_weight,
             )
             if not ranked_leaves and force_applied:
                 selection_root = root
@@ -142,6 +164,8 @@ class FourStageMCTS:
                     selection_root,
                     soft_block_group=blocked_group,
                     soft_block_weight=soft_block_weight,
+                    extra_suppress_node_ids=active_code_suppress_node_ids,
+                    extra_suppress_weight=active_code_suppress_weight,
                 )
             if not ranked_leaves:
                 stop_info = {
@@ -158,17 +182,81 @@ class FourStageMCTS:
                 selection_root,
                 soft_block_group=blocked_group,
                 soft_block_weight=soft_block_weight,
+                extra_suppress_node_ids=active_code_suppress_node_ids,
+                extra_suppress_weight=active_code_suppress_weight,
             )
+            if code_entry_one_shot_suppression is not None and int(iter_idx) == int(
+                code_entry_one_shot_suppression.get("target_iter", -1)
+            ):
+                code_entry_one_shot_suppression = None
 
             next_stage = self._next_stage(selected.stage)
             if next_stage is None:
                 continue
+            if next_stage == Stage.CODE:
+                dynamic_reward_force_stage3 = True
             selected_group_key = self._selection_group_key(selected)
             if selected_group_key is not None:
                 selection_history.append((selected_group_key, str(selected.node_id)))
             selection_sec = float(time.perf_counter() - selection_t0)
             selected_q_before_group = float(selected.q_value)
             selected_visits_before_group = int(selected.visits)
+
+            if next_stage == Stage.CODE and self._second_code_entry_enabled():
+                selected_node_id = str(selected.node_id)
+                code_entry_attempt_total = int(code_entry_attempt_total) + 1
+                attempt = int(code_entry_attempt_total)
+                if attempt < 2:
+                    cluster_suppress_node_ids, suppress_meta = self._build_global_same_cluster_node_ids(
+                        selected=selected,
+                        records=records,
+                    )
+                    suppress_node_ids = set(cluster_suppress_node_ids)
+                    suppress_weight = self._code_entry_suppress_weight()
+                    code_entry_one_shot_suppression = {
+                        "target_iter": int(iter_idx + 1),
+                        "node_ids": sorted(suppress_node_ids),
+                        "cluster_node_ids": sorted(cluster_suppress_node_ids),
+                        "weight": float(suppress_weight),
+                        "source_node_id": selected_node_id,
+                        "source_stage": selected.stage.value if selected.stage else "<ROOT>",
+                        "source_attempt": int(attempt),
+                        "scope": "cluster_only_once",
+                        "cluster_debug": dict(suppress_meta),
+                    }
+                    iter_payload = {
+                        "iter": int(iter_idx),
+                        "stage": "obj-con-code-gate",
+                        "selection": {
+                            "selected_parent": {
+                                "node_id": selected.node_id,
+                                "stage": selected.stage.value if selected.stage else "<ROOT>",
+                                "puct_score": float(selected_score),
+                                "value_before_group": float(selected_q_before_group),
+                                "visits_before_group": int(selected_visits_before_group),
+                                "content": selected.text,
+                            },
+                            "selection_path": selection_path,
+                        },
+                        "code_entry_gate": {
+                            "enabled": True,
+                            "second_attempt_required": True,
+                            "decision": "defer_first_attempt",
+                            "attempt": int(attempt),
+                            "attempt_scope": "global_per_sample",
+                            "target_node_id": selected_node_id,
+                            "one_shot_suppression": dict(code_entry_one_shot_suppression),
+                            "active_suppression_this_iter": dict(active_code_suppress_info),
+                        },
+                        "timing": {
+                            "mcts_selection_sec": float(time.perf_counter() - selection_t0),
+                            "iteration_total_sec": float(time.perf_counter() - iter_t0),
+                        },
+                    }
+                    iteration_logs.append(iter_payload)
+                    if iteration_callback is not None:
+                        iteration_callback(iter_payload)
+                    continue
 
             prompt_t0 = time.perf_counter()
             selected_traj = None if selected.stage is None else selected.to_partial_trajectory()
@@ -226,19 +314,35 @@ class FourStageMCTS:
 
                 complete_t0 = time.perf_counter()
                 average_complete_sec = 0.0
+                auto_complete_enabled = bool(self._auto_complete_enabled())
 
                 if self.split_rollout_completion and next_stage != Stage.CODE:
                     prompts: list[str] = []
                     prompt_indices: list[int] = []
                     for idx, item in enumerate(prepared_items):
                         child = item["child"]
-                        partial = child.to_partial_trajectory()
-                        partial.trajectory_id = str(uuid.uuid4())
-                        completion_prompt = self.prompt_builder.build_completion(task, child.stage, partial)
-                        item["split_completion_prompt"] = completion_prompt
-                        if completion_prompt.strip():
-                            prompts.append(completion_prompt)
-                            prompt_indices.append(idx)
+                        full_completion = str(item.get("completion_full", ""))
+                        has_python = bool(self._has_valid_python_block(full_completion))
+                        item["has_python_in_rollout"] = bool(has_python)
+                        item["split_completion_prompt"] = ""
+
+                        # stage rollouts already include <python>: directly parse rollout completion.
+                        if has_python:
+                            item["trajectory"] = self._trajectory_from_rollout_completion(child, full_completion)
+                            item["answer_rollout_suffix"] = ""
+                            continue
+
+                        if auto_complete_enabled and (not has_python):
+                            partial = child.to_partial_trajectory()
+                            partial.trajectory_id = str(uuid.uuid4())
+                            completion_prompt = self.prompt_builder.build_completion(task, child.stage, partial)
+                            item["split_completion_prompt"] = completion_prompt
+                            if completion_prompt.strip():
+                                prompts.append(completion_prompt)
+                                prompt_indices.append(idx)
+                        else:
+                            # auto_complete disabled: keep original rollout parse result.
+                            item["trajectory"] = self._trajectory_from_rollout_completion(child, full_completion)
 
                     completion_texts: list[str | None] = []
                     if prompts:
@@ -265,6 +369,9 @@ class FourStageMCTS:
                     average_complete_sec = total_complete_sec / max(1, len(prepared_items))
 
                     for idx, item in enumerate(prepared_items):
+                        if item.get("trajectory") is not None:
+                            item["complete_sec"] = average_complete_sec
+                            continue
                         child = item["child"]
                         completion_text = str(mapped_texts[idx] or "")
                         item["answer_rollout_suffix"] = completion_text
@@ -272,13 +379,59 @@ class FourStageMCTS:
                         if completion_text.strip():
                             item["trajectory"] = self._trajectory_from_rollout_completion(child, completion_text)
                         else:
-                            item["trajectory"] = self.rollout_to_code(task, child)
+                            # completion rollout returned empty: keep original rollout parsing fallback
+                            item["trajectory"] = self._trajectory_from_rollout_completion(
+                                child,
+                                str(item.get("completion_full", "")),
+                            )
                     return
 
-                for item in prepared_items:
+                # Non-split path: parse from rollout output first, then optionally
+                # auto-complete only those without valid <python>...</python>.
+                prompts: list[str] = []
+                prompt_indices: list[int] = []
+                for idx, item in enumerate(prepared_items):
                     child = item["child"]
                     completion_text = str(item.get("completion_full", ""))
                     item["trajectory"] = self._complete_for_reward_from_rollout(task, child, completion_text)
+                    has_python = bool(self._has_valid_python_block(completion_text))
+                    item["has_python_in_rollout"] = bool(has_python)
+                    item["split_completion_prompt"] = ""
+                    if auto_complete_enabled and next_stage != Stage.CODE and (not has_python):
+                        partial = child.to_partial_trajectory()
+                        partial.trajectory_id = str(uuid.uuid4())
+                        completion_prompt = self.prompt_builder.build_completion(task, child.stage, partial)
+                        item["split_completion_prompt"] = completion_prompt
+                        if completion_prompt.strip():
+                            prompts.append(completion_prompt)
+                            prompt_indices.append(idx)
+
+                completion_texts: list[str | None] = []
+                if prompts:
+                    batch_method = getattr(self.backend, "generate_auxiliary_texts", None)
+                    if callable(batch_method):
+                        completion_texts = list(
+                            batch_method(
+                                prompts,
+                                max_new_tokens=int(getattr(self.backend, "max_new_tokens", 2048) or 2048),
+                                temperature=float(getattr(self.backend, "temperature", 0.0) or 0.0),
+                                top_p=float(getattr(self.backend, "top_p", 1.0) or 1.0),
+                                prefer_vllm=bool(self._active_grpo_config.use_vllm) if self._active_grpo_config is not None else False,
+                                vllm_mode=str(self._active_grpo_config.vllm_mode) if self._active_grpo_config is not None else "",
+                            )
+                        )
+                    else:
+                        completion_texts = []
+                for local_idx, prepared_idx in enumerate(prompt_indices):
+                    completion_text = str(completion_texts[local_idx] or "") if local_idx < len(completion_texts) else ""
+                    prepared_items[prepared_idx]["answer_rollout_suffix"] = completion_text
+                    if completion_text.strip():
+                        child = prepared_items[prepared_idx]["child"]
+                        prepared_items[prepared_idx]["trajectory"] = self._trajectory_from_rollout_completion(
+                            child,
+                            completion_text,
+                        )
+
                 total_complete_sec = float(time.perf_counter() - complete_t0)
                 average_complete_sec = total_complete_sec / max(1, len(prepared_items))
                 for item in prepared_items:
@@ -292,25 +445,78 @@ class FourStageMCTS:
 
                 reward_t0 = time.perf_counter()
                 trajectories = [item["trajectory"] for item in prepared_items]
+                filter_rollout_enabled = bool(self._filter_rollout_enabled())
+                # Attach per-iteration dynamic reward context for reward calculator.
+                iter_num = int(iter_idx) + 1
+                for t in trajectories:
+                    if t is None:
+                        continue
+                    meta = t.metadata if isinstance(t.metadata, dict) else {}
+                    meta["__mcts_iter__"] = int(iter_num)
+                    meta["__dynamic_reward_force_stage3__"] = bool(dynamic_reward_force_stage3)
+                    meta["__mcts_stage__"] = str(next_stage.value)
+                    t.metadata = meta
                 score_group = getattr(self.rewarder, "score_rollout_group", None)
-                if callable(score_group):
-                    reward_list = list(score_group(stage=next_stage, trajectories=trajectories, explored=stage_archive))
+
+                def _normalize_rewards(items: list[RewardBreakdown], target_len: int) -> list[RewardBreakdown]:
+                    out = list(items[:target_len])
+                    while len(out) < target_len:
+                        out.append(RewardBreakdown(r1=0.0, r2=0.0, r3=0.0, r4=0.0, total=0.0))
+                    return out
+
+                def _score_group_with_optional_commit(
+                    group_trajectories: list[Trajectory],
+                    *,
+                    commit: bool,
+                ) -> list[RewardBreakdown]:
+                    if callable(score_group):
+                        try:
+                            return list(
+                                score_group(
+                                    stage=next_stage,
+                                    trajectories=group_trajectories,
+                                    explored=stage_archive,
+                                    commit=bool(commit),
+                                )
+                            )
+                        except TypeError:
+                            return list(score_group(stage=next_stage, trajectories=group_trajectories, explored=stage_archive))
+                    return [self.rewarder.provisional_reward(t, stage_archive) for t in group_trajectories]
+
+                if callable(score_group) and filter_rollout_enabled:
+                    pre_reward_list = _normalize_rewards(
+                        _score_group_with_optional_commit(trajectories, commit=False),
+                        len(prepared_items),
+                    )
+                    keep_mask_pre: list[bool] = []
+                    for reward in pre_reward_list:
+                        execution_meta = (reward.metadata or {}).get("execution", {})
+                        keep_mask_pre.append(not self._rollout_has_execution_error(execution_meta))
+                    keep_indices = [idx for idx, keep in enumerate(keep_mask_pre) if keep]
+
+                    reward_list = list(pre_reward_list)
+                    if keep_indices:
+                        kept_trajectories = [trajectories[idx] for idx in keep_indices]
+                        kept_reward_list = _normalize_rewards(
+                            _score_group_with_optional_commit(kept_trajectories, commit=True),
+                            len(keep_indices),
+                        )
+                        for local_idx, orig_idx in enumerate(keep_indices):
+                            reward_list[orig_idx] = kept_reward_list[local_idx]
                 else:
-                    reward_list = [self.rewarder.provisional_reward(t, stage_archive) for t in trajectories]
+                    reward_list = _normalize_rewards(
+                        _score_group_with_optional_commit(trajectories, commit=True),
+                        len(prepared_items),
+                    )
                 reward_sec_total = float(time.perf_counter() - reward_t0)
 
-                if len(reward_list) != len(prepared_items):
-                    reward_list = reward_list[: len(prepared_items)]
-                    while len(reward_list) < len(prepared_items):
-                        reward_list.append(RewardBreakdown(r1=0.0, r2=0.0, r3=0.0, r4=0.0, total=0.0))
-
                 rewards: list[float] = []
+                filter_mask: list[bool] = []
                 per_item_reward_sec = reward_sec_total / max(1, len(prepared_items))
 
                 for item, reward in zip(prepared_items, reward_list, strict=False):
                     completed = item["trajectory"]
                     completed.reward = reward
-                    stage_archive.append(completed)
 
                     exec_sec = float((reward.metadata or {}).get("exec_elapsed_sec", 0.0) or 0.0)
                     callback_total_sec = float(time.perf_counter() - float(item["callback_started"]))
@@ -323,22 +529,67 @@ class FourStageMCTS:
                     }
                     callback_timings.append({"rollout_index": int(item["rollout_index"]), **timing_payload})
 
-                    group_rollouts.append(
-                        {
-                            "rollout_index": int(item["rollout_index"]),
-                            "child": item["child"],
-                            "trajectory": completed,
-                            "reward_obj": reward,
-                            "reward_total": float(reward.total),
-                            "timing": timing_payload,
-                            "prompt_base": base_prompt,
-                            "prompt_full": prompt,
-                            "completion_full": str(item["completion_full"]),
-                            "answer_current_stage": str(item["answer_current_stage"]),
-                            "answer_rollout_suffix": str(item["answer_rollout_suffix"]),
-                        }
-                    )
+                    execution_meta = (reward.metadata or {}).get("execution", {})
+                    keep_rollout = (not filter_rollout_enabled) or (not self._rollout_has_execution_error(execution_meta))
+                    filter_mask.append(bool(keep_rollout))
+                    if keep_rollout:
+                        stage_archive.append(completed)
+                        auto_complete_enabled = bool(self._auto_complete_enabled())
+                        has_python_in_rollout = bool(item.get("has_python_in_rollout", False))
+                        completion_prompt_text = str(item.get("split_completion_prompt", "") or "")
+                        completion_answer_text = str(item.get("answer_rollout_suffix", "") or "")
+                        auto_complete_requested = bool(auto_complete_enabled and (not has_python_in_rollout))
+                        auto_complete_prompt_nonempty = bool(completion_prompt_text.strip())
+                        auto_complete_answer_nonempty = bool(completion_answer_text.strip())
+                        auto_complete_applied = bool(
+                            auto_complete_requested and auto_complete_prompt_nonempty and auto_complete_answer_nonempty
+                        )
+                        auto_complete_status = "disabled_or_not_needed"
+                        if auto_complete_requested:
+                            if not auto_complete_prompt_nonempty:
+                                auto_complete_status = "requested_but_no_prompt"
+                            elif auto_complete_answer_nonempty:
+                                auto_complete_status = "applied_with_answer"
+                            else:
+                                auto_complete_status = "requested_but_empty_answer"
+
+                        group_rollouts.append(
+                            {
+                                "rollout_index": int(item["rollout_index"]),
+                                "child": item["child"],
+                                "trajectory": completed,
+                                "reward_obj": reward,
+                                "reward_total": float(reward.total),
+                                "timing": timing_payload,
+                                "prompt_base": base_prompt,
+                                "prompt_full": prompt,
+                                "completion_full": str(item["completion_full"]),
+                                "answer_current_stage": str(item["answer_current_stage"]),
+                                "answer_rollout_suffix": str(item["answer_rollout_suffix"]),
+                                "has_python_in_rollout": bool(has_python_in_rollout),
+                                "split_completion_prompt": completion_prompt_text,
+                                "auto_complete_enabled": bool(auto_complete_enabled),
+                                "auto_complete_requested": bool(auto_complete_requested),
+                                "auto_complete_applied": bool(auto_complete_applied),
+                                "auto_complete_status": str(auto_complete_status),
+                                "auto_complete_prompt_nonempty": bool(auto_complete_prompt_nonempty),
+                                "auto_complete_answer_nonempty": bool(auto_complete_answer_nonempty),
+                            }
+                        )
                     rewards.append(float(reward.total))
+
+                setattr(_batch_reward_callback, "_last_filter_mask", list(filter_mask))
+                setattr(_batch_reward_callback, "_last_filter_enabled", bool(filter_rollout_enabled))
+                setattr(
+                    _batch_reward_callback,
+                    "_last_filter_stats",
+                    {
+                        "enabled": bool(filter_rollout_enabled),
+                        "kept": int(sum(1 for keep in filter_mask if keep)),
+                        "dropped": int(sum(1 for keep in filter_mask if not keep)),
+                        "total": int(len(filter_mask)),
+                    },
+                )
 
                 return rewards
 
@@ -358,7 +609,14 @@ class FourStageMCTS:
             rollout_group_t0 = time.perf_counter()
             if next_stage == Stage.CODE:
                 code_k = max(1, int(grpo_config.num_generations))
-                generations = list(self.backend.generate(next_stage, prompt_messages or prompt, code_k))
+                generations = list(
+                    self._backend_generate(
+                        next_stage,
+                        prompt_messages or prompt,
+                        code_k,
+                        no_lora_adapter=True,
+                    )
+                )
                 completion_texts = [str(gen.text or "") for gen in generations]
                 if completion_texts:
                     rewards = list(_batch_reward_callback(prompt, completion_texts))
@@ -384,7 +642,10 @@ class FourStageMCTS:
                 )
             rollout_group_wall_sec = float(time.perf_counter() - rollout_group_t0)
 
-            callback_total_sec = float(sum(t.get("callback_total_sec", 0.0) for t in callback_timings))
+            # Callback timing is measured per rollout item. Since reward callbacks are executed in parallel,
+            # wall time should be approximated by max(item_time) instead of sum(item_time).
+            callback_total_sum_sec = float(sum(t.get("callback_total_sec", 0.0) for t in callback_timings))
+            callback_total_sec = float(max([0.0] + [float(t.get("callback_total_sec", 0.0) or 0.0) for t in callback_timings]))
             callback_exec_sec = float(sum(t.get("code_execution_sec", 0.0) for t in callback_timings))
             callback_complete_sec = float(sum(t.get("rollout_to_code_sec", 0.0) for t in callback_timings))
             callback_reward_sec = float(sum(t.get("reward_compute_sec", 0.0) for t in callback_timings))
@@ -409,21 +670,9 @@ class FourStageMCTS:
                     iteration_logs.append(iter_payload)
                     if iteration_callback is not None:
                         iteration_callback(iter_payload)
-                    stop_info = {
-                        "reason": "expanded_to_code",
-                        "iteration": iter_idx,
-                        "stage": next_stage.value,
-                        "node_id": selected.node_id,
-                        "trajectory_id": "",
-                        "reward_total": None,
-                        "code_terminal": dict(iter_payload["code_terminal"]),
-                    }
-                    return self._finalize_result(
-                        root=root,
-                        records=records,
-                        stop_info=stop_info,
-                        iteration_logs=iteration_logs,
-                    )
+                    # CODE produced no rollout candidates: do not early-stop.
+                    # Continue search so sibling branches can still be explored.
+                    continue
                 continue
 
             resolved_priors, prior_source = self._resolve_child_priors(
@@ -509,6 +758,17 @@ class FourStageMCTS:
                         "timing": rollout_timing,
                         "prior": child.prior,
                         "completion_preview": child.text[:240],
+                        "auto_complete": {
+                            "enabled": bool(rollout.get("auto_complete_enabled", False)),
+                            "requested": bool(rollout.get("auto_complete_requested", False)),
+                            "applied": bool(rollout.get("auto_complete_applied", False)),
+                            "status": str(rollout.get("auto_complete_status", "")),
+                            "has_python_in_rollout": bool(rollout.get("has_python_in_rollout", False)),
+                            "prompt_nonempty": bool(rollout.get("auto_complete_prompt_nonempty", False)),
+                            "answer_nonempty": bool(rollout.get("auto_complete_answer_nonempty", False)),
+                            "completion_prompt": str(rollout.get("split_completion_prompt", "")),
+                            "completion_answer": str(rollout.get("answer_rollout_suffix", "")),
+                        },
                     }
                 )
 
@@ -724,6 +984,7 @@ class FourStageMCTS:
                         "content": selected.text,
                     },
                     "selection_path": selection_path,
+                    "code_entry_suppression_active": dict(active_code_suppress_info),
                     "leaf_candidates": [
                         {
                             "node_id": node.node_id,
@@ -762,6 +1023,15 @@ class FourStageMCTS:
                         "full": str(best_rollout.get("completion_full", "")),
                         "current_stage": str(best_rollout.get("answer_current_stage", "")),
                         "rollout_suffix": str(best_rollout.get("answer_rollout_suffix", "")),
+                        "auto_complete": {
+                            "enabled": bool(best_rollout.get("auto_complete_enabled", False)),
+                            "requested": bool(best_rollout.get("auto_complete_requested", False)),
+                            "applied": bool(best_rollout.get("auto_complete_applied", False)),
+                            "status": str(best_rollout.get("auto_complete_status", "")),
+                            "has_python_in_rollout": bool(best_rollout.get("has_python_in_rollout", False)),
+                            "completion_prompt": str(best_rollout.get("split_completion_prompt", "")),
+                            "completion_answer": str(best_rollout.get("answer_rollout_suffix", "")),
+                        },
                     },
                     "trajectory_content": {
                         stage.value: best_rollout_traj.outputs.get(stage, "")
@@ -804,6 +1074,7 @@ class FourStageMCTS:
                     "grpo_train_runtime_sec": grpo_train_runtime_sec,
                     "grpo_group_total_sec": grpo_group_total_sec,
                     "reward_callback_total_sec": callback_total_sec,
+                    "reward_callback_total_sum_sec": callback_total_sum_sec,
                     "old_log_prob_forward_sec": forward_compute_sec,
                     "actor_update_sec": grpo_update_sec,
                     "completion_parse_total_sec": callback_parse_sec,
@@ -819,8 +1090,6 @@ class FourStageMCTS:
                 "grpo_update": dict(grpo_report),
             }
             iteration_logs.append(iter_payload)
-            if iteration_callback is not None:
-                iteration_callback(iter_payload)
 
             if next_stage == Stage.CODE:
                 terminal_payload = self._run_code_terminal_refine(
@@ -832,24 +1101,33 @@ class FourStageMCTS:
                     current_iter=iter_idx,
                 )
                 iter_payload["code_terminal"] = dict(terminal_payload)
+                if iteration_callback is not None:
+                    iteration_callback(iter_payload)
                 fallback_to_original = bool(terminal_payload.get("fallback_to_original_logic", False))
-                final_tid = "" if fallback_to_original else str(terminal_payload.get("trajectory_id", ""))
-                final_reward = None if fallback_to_original else terminal_payload.get("reward_total")
-                stop_info = {
-                    "reason": "expanded_to_code",
-                    "iteration": iter_idx,
-                    "stage": next_stage.value,
-                    "node_id": selected.node_id,
-                    "trajectory_id": final_tid,
-                    "reward_total": final_reward,
-                    "code_terminal": dict(terminal_payload),
-                }
-                return self._finalize_result(
-                    root=root,
-                    records=records,
-                    stop_info=stop_info,
-                    iteration_logs=iteration_logs,
-                )
+                if not fallback_to_original:
+                    final_tid = str(terminal_payload.get("trajectory_id", ""))
+                    final_reward = terminal_payload.get("reward_total")
+                    stop_info = {
+                        "reason": "expanded_to_code",
+                        "iteration": iter_idx,
+                        "stage": next_stage.value,
+                        "node_id": selected.node_id,
+                        "trajectory_id": final_tid,
+                        "reward_total": final_reward,
+                        "code_terminal": dict(terminal_payload),
+                    }
+                    return self._finalize_result(
+                        root=root,
+                        records=records,
+                        stop_info=stop_info,
+                        iteration_logs=iteration_logs,
+                    )
+                # CODE(plus optional repair) still has no valid obj: continue MCTS search.
+                # This lets sibling branches keep exploring until max_iterations or a CODE-success appears.
+                continue
+
+            if iteration_callback is not None:
+                iteration_callback(iter_payload)
 
             recent_consensus_stop = self._check_recent_obj_consensus(records=records, current_iter=iter_idx)
             if recent_consensus_stop is not None:
@@ -916,6 +1194,23 @@ class FourStageMCTS:
             "reason": "backend_has_no_internal_grpo_rollout",
         }
         return generations, report
+
+    def _backend_generate(
+        self,
+        stage: Stage,
+        prompt: Any,
+        n: int,
+        *,
+        no_lora_adapter: bool = False,
+    ) -> list[Generation]:
+        method = getattr(self.backend, "generate")
+        try:
+            return list(method(stage=stage, prompt=prompt, n=n, no_lora_adapter=bool(no_lora_adapter)))
+        except TypeError:
+            try:
+                return list(method(stage, prompt, n, no_lora_adapter=bool(no_lora_adapter)))
+            except TypeError:
+                return list(method(stage, prompt, n))
 
     @staticmethod
     def _split_rollout_completion(text: str) -> tuple[str, str]:
@@ -1134,9 +1429,13 @@ class FourStageMCTS:
         root: SearchNode,
         soft_block_group: tuple[str, str] | None = None,
         soft_block_weight: float = 0.6,
+        extra_suppress_node_ids: set[str] | None = None,
+        extra_suppress_weight: float = 1.0,
     ) -> tuple[SearchNode, float, list[dict[str, Any]]]:
         cur = root
         selection_path: list[dict[str, Any]] = []
+        suppress_ids = {str(x) for x in (extra_suppress_node_ids or set()) if str(x).strip()}
+        suppress_weight = float(max(0.0, min(1.0, extra_suppress_weight)))
 
         while cur.children:
             candidate_scores: list[tuple[SearchNode, float]] = []
@@ -1146,6 +1445,10 @@ class FourStageMCTS:
                 score = float(self.selector.score(cur, child))
                 if self._node_matches_selection_group(child, soft_block_group):
                     score *= float(max(0.0, soft_block_weight))
+                suppress_applied = False
+                if suppress_ids and self._node_is_under_node_ids(child, suppress_ids):
+                    score *= suppress_weight
+                    suppress_applied = True
                 candidate_scores.append((child, score))
 
             if not candidate_scores:
@@ -1162,6 +1465,11 @@ class FourStageMCTS:
                         'stage': (soft_block_group[1] if soft_block_group else ''),
                         'soft_weight': float(max(0.0, soft_block_weight)),
                     },
+                    'one_shot_suppression': {
+                        'enabled': bool(suppress_ids),
+                        'node_count': int(len(suppress_ids)),
+                        'weight': float(suppress_weight),
+                    },
                     'candidates': [
                         {
                             'node_id': node.node_id,
@@ -1171,6 +1479,9 @@ class FourStageMCTS:
                             'visits': int(node.visits),
                             'prior': float(node.prior),
                             'soft_block_applied': bool(self._node_matches_selection_group(node, soft_block_group)),
+                            'one_shot_suppression_applied': bool(
+                                suppress_ids and self._node_is_under_node_ids(node, suppress_ids)
+                            ),
                             'content': node.text,
                         }
                         for node, score in candidate_scores
@@ -1188,6 +1499,8 @@ class FourStageMCTS:
         root: SearchNode,
         soft_block_group: tuple[str, str] | None = None,
         soft_block_weight: float = 0.6,
+        extra_suppress_node_ids: set[str] | None = None,
+        extra_suppress_weight: float = 1.0,
     ) -> list[tuple[SearchNode, float]]:
         leaves = [
             node
@@ -1195,14 +1508,18 @@ class FourStageMCTS:
             if self._next_stage(node.stage) is not None
         ]
         ranked = self._rank_leaves(leaves)
-        if soft_block_group is None:
+        if soft_block_group is None and not extra_suppress_node_ids:
             return ranked
         out: list[tuple[SearchNode, float]] = []
         weight = float(max(0.0, soft_block_weight))
+        suppress_ids = {str(x) for x in (extra_suppress_node_ids or set()) if str(x).strip()}
+        suppress_weight = float(max(0.0, min(1.0, extra_suppress_weight)))
         for node, score in ranked:
             adjusted = float(score)
             if self._leaf_is_under_soft_block_group(node, soft_block_group):
                 adjusted *= weight
+            if suppress_ids and self._node_is_under_node_ids(node, suppress_ids):
+                adjusted *= suppress_weight
             out.append((node, adjusted))
         out.sort(key=lambda item: item[1], reverse=True)
         return out
@@ -1243,6 +1560,20 @@ class FourStageMCTS:
             cur = cur.parent
         return False
 
+    @staticmethod
+    def _node_is_under_node_ids(
+        node: SearchNode,
+        node_ids: set[str],
+    ) -> bool:
+        if not node_ids:
+            return False
+        cur: SearchNode | None = node
+        while cur is not None:
+            if str(cur.node_id) in node_ids:
+                return True
+            cur = cur.parent
+        return False
+
     def _blocked_sibling_threshold(self) -> int:
         group_k = max(2, int(getattr(self._active_grpo_config, 'num_generations', 0) or 0)) if self._active_grpo_config is not None else 1
         return max(2, group_k // 2)
@@ -1277,6 +1608,64 @@ class FourStageMCTS:
             return max(0.0, min(1.0, float(raw)))
         except Exception:
             return 0.6
+
+    def _second_code_entry_enabled(self) -> bool:
+        raw = getattr(self.config, "code_entry_second_attempt", True)
+        try:
+            return bool(raw)
+        except Exception:
+            return True
+
+    def _code_entry_suppress_weight(self) -> float:
+        raw = getattr(self.config, "code_entry_same_cluster_suppress_weight", 0.7)
+        try:
+            return max(0.0, min(1.0, float(raw)))
+        except Exception:
+            return 0.7
+
+    def _build_global_same_cluster_node_ids(
+        self,
+        *,
+        selected: SearchNode,
+        records: list[StageExpansionRecord],
+    ) -> tuple[set[str], dict[str, Any]]:
+        selected_node_id = str(selected.node_id)
+        latest_by_node: dict[str, StageExpansionRecord] = {}
+        for rec in records:
+            node_id = str(rec.node_id)
+            prev = latest_by_node.get(node_id)
+            if prev is None or int(rec.iteration) > int(prev.iteration):
+                latest_by_node[node_id] = rec
+            elif int(rec.iteration) == int(prev.iteration):
+                if float(self._record_reward_total(rec)) > float(self._record_reward_total(prev)):
+                    latest_by_node[node_id] = rec
+
+        selected_rec = latest_by_node.get(selected_node_id)
+        selected_obj = self._record_obj_answer(selected_rec) if selected_rec is not None else None
+        if selected_obj is None:
+            return {
+                selected_node_id,
+            }, {
+                "mode": "fallback_selected_only_no_obj",
+                "selected_obj": None,
+                "matched": 1,
+                "considered_nodes": int(len(latest_by_node)),
+            }
+
+        node_ids: set[str] = {selected_node_id}
+        for node_id, rec in latest_by_node.items():
+            obj = self._record_obj_answer(rec)
+            if obj is None:
+                continue
+            if self._within_rel_tol(float(obj), float(selected_obj)):
+                node_ids.add(str(node_id))
+
+        return node_ids, {
+            "mode": "global_cross_stage_obj_cluster",
+            "selected_obj": float(selected_obj),
+            "matched": int(len(node_ids)),
+            "considered_nodes": int(len(latest_by_node)),
+        }
 
     @staticmethod
     def _find_node_by_id(root: SearchNode, node_id: str) -> SearchNode | None:
@@ -1417,7 +1806,7 @@ class FourStageMCTS:
                 peer_ids.append(sibling_id)
                 if sibling_id in seen_ids:
                     continue
-                sibling.update(level_reward)
+                sibling.update(level_reward, visit_delta=level_weight)
                 seen_ids.add(sibling_id)
                 touched_ids.append(sibling_id)
                 total_updated += 1
@@ -2232,57 +2621,21 @@ class FourStageMCTS:
                 "fallback_to_original_logic": True,
             }
 
-        valid_items = [
-            item
-            for item in candidate_items
-            if isinstance(item.get("obj"), (int, float)) and math.isfinite(float(item.get("obj")))
-        ]
-
-        selection_debug: dict[str, Any] = {}
-        if valid_items:
-            clusters: list[dict[str, Any]] = []
-            for item in valid_items:
-                obj = float(item["obj"])
-                matched = None
-                for cluster in clusters:
-                    if self._within_rel_tol(obj, float(cluster["leader"])):
-                        matched = cluster
-                        break
-                if matched is None:
-                    matched = {"leader": obj, "items": []}
-                    clusters.append(matched)
-                matched["items"].append(item)
-
-            clusters.sort(
-                key=lambda c: (
-                    int(len(c["items"])),
-                    max(float(c_item["reward"].total) for c_item in c["items"]),
-                    max(float(c_item["prior"]) for c_item in c["items"]),
-                ),
-                reverse=True,
-            )
-            chosen_cluster = clusters[0]
-            chosen_item = max(
-                chosen_cluster["items"],
-                key=lambda x: (float(x["reward"].total), float(x["prior"])),
-            )
-            selection_debug = {
-                "mode": "largest_obj_cluster",
-                "cluster_count": int(len(clusters)),
-                "chosen_cluster_leader": float(chosen_cluster["leader"]),
-                "chosen_cluster_size": int(len(chosen_cluster["items"])),
-                "tie_breaker": "reward_then_prior",
-            }
-        else:
-            chosen_item = max(
-                candidate_items,
-                key=lambda x: (float(x["reward"].total), float(x["prior"])),
-            )
-            selection_debug = {
-                "mode": "max_reward_prior_no_valid_obj_cluster",
-                "cluster_count": 0,
-                "tie_breaker": "reward_then_prior",
-            }
+        # CODE candidate selection rule: reward first, then prior.
+        # Do not force obj-cluster consensus at this step.
+        chosen_item = max(
+            candidate_items,
+            key=lambda x: (float(x["reward"].total), float(x["prior"])),
+        )
+        valid_obj_count = sum(
+            1 for item in candidate_items if isinstance(item.get("obj"), (int, float)) and math.isfinite(float(item.get("obj")))
+        )
+        selection_debug: dict[str, Any] = {
+            "mode": "max_reward_then_prior",
+            "candidate_count": int(len(candidate_items)),
+            "valid_obj_count": int(valid_obj_count),
+            "tie_breaker": "prior_when_reward_equal",
+        }
 
         candidate_traj = chosen_item["trajectory"]
         candidate_reward = chosen_item["reward"]
@@ -2297,8 +2650,10 @@ class FourStageMCTS:
             "steps": [],
         }
 
-        need_repair = not self._reward_has_valid_obj(candidate_reward)
         issue_kind, issue_reason = self._classify_terminal_issue(candidate_reward)
+        need_repair = (not self._reward_has_valid_obj(candidate_reward)) or issue_kind in {"error", "infeasible"}
+        terminal_trace["initial_issue"] = {"kind": issue_kind, "reason": issue_reason}
+        terminal_trace["initial_need_repair"] = bool(need_repair)
         for repair_idx in range(repair_rounds):
             if not need_repair:
                 break
@@ -2341,9 +2696,16 @@ class FourStageMCTS:
                 candidate_traj = repaired_traj
                 candidate_reward = repaired_reward
 
-            need_repair = not self._reward_has_valid_obj(candidate_reward)
             issue_kind, issue_reason = self._classify_terminal_issue(candidate_reward)
+            need_repair = (not self._reward_has_valid_obj(candidate_reward)) or issue_kind in {"error", "infeasible"}
             step_payload["candidate"] = self._terminal_candidate_summary(candidate_traj)
+            step_payload["reward"] = {
+                "r1": float(candidate_reward.r1 if candidate_reward is not None else 0.0),
+                "r2": float(candidate_reward.r2 if candidate_reward is not None else 0.0),
+                "r3": float(candidate_reward.r3 if candidate_reward is not None else 0.0),
+                "r4": float(candidate_reward.r4 if candidate_reward is not None else 0.0),
+                "total": float(candidate_reward.total if candidate_reward is not None else 0.0),
+            }
             step_payload["issue_after"] = {"kind": issue_kind, "reason": issue_reason}
             terminal_trace["steps"].append(step_payload)
 
@@ -2368,10 +2730,17 @@ class FourStageMCTS:
                 )
             )
 
-        fallback_to_original = not self._reward_has_valid_obj(candidate_reward)
+        final_has_valid_obj = bool(self._reward_has_valid_obj(candidate_reward))
+        final_issue_blocking = issue_kind in {"error", "infeasible"}
+        # Only stop at CODE when both conditions are met:
+        # 1) objective is valid; 2) final issue is not error/infeasible.
+        fallback_to_original = (not final_has_valid_obj) or final_issue_blocking
         terminal_trace["final_candidate"] = self._terminal_candidate_summary(candidate_traj)
         terminal_trace["final_issue"] = {"kind": issue_kind, "reason": issue_reason}
+        terminal_trace["final_has_valid_obj"] = bool(final_has_valid_obj)
+        terminal_trace["final_issue_blocking"] = bool(final_issue_blocking)
         terminal_trace["fallback_to_original_logic"] = bool(fallback_to_original)
+        terminal_trace["repair_logs"] = list(terminal_trace.get("steps", []))
 
         return {
             "enabled": True,
@@ -2444,7 +2813,7 @@ class FourStageMCTS:
 
     def _generate_code_candidate(self, prompt: Any) -> tuple[str, str, float]:
         try:
-            generations = self.backend.generate(Stage.CODE, prompt, 1)
+            generations = self._backend_generate(Stage.CODE, prompt, 1, no_lora_adapter=True)
         except Exception as exc:  # noqa: BLE001
             return f"[generation_error] {type(exc).__name__}: {exc}", "", 0.0
         if not generations:
@@ -2567,6 +2936,31 @@ class FourStageMCTS:
             return float(tol)
         except Exception:
             return 0.005
+
+    def _auto_complete_enabled(self) -> bool:
+        return bool(getattr(self.config, "auto_complete", False))
+
+    def _filter_rollout_enabled(self) -> bool:
+        return bool(getattr(self.config, "filter_rollout", False))
+
+    @staticmethod
+    def _has_valid_python_block(text: str) -> bool:
+        cleaned = FourStageMCTS._normalize_text_block(text)
+        block = FourStageMCTS._extract_tag_block(cleaned, tag="python", min_len=21)
+        return len(str(block or "").strip()) > 20
+
+    @staticmethod
+    def _rollout_has_execution_error(execution_meta: Any) -> bool:
+        if not isinstance(execution_meta, dict):
+            return True
+        err_type = str(execution_meta.get("error_type", "") or "").strip()
+        if err_type:
+            return True
+        if bool(execution_meta.get("success", False)):
+            return False
+        if bool(execution_meta.get("r2_success", False)):
+            return False
+        return True
 
     def _within_rel_tol(self, a: float, b: float) -> bool:
         scale = max(abs(float(a)), abs(float(b)), 1.0)
@@ -2734,8 +3128,5 @@ class FourStageMCTS:
 
         cleaned = "\n".join(code_lines).strip()
         return cleaned
-
-
-
 
 

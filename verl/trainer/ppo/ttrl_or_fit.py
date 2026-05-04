@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import uuid
 from copy import deepcopy
 from dataclasses import asdict
@@ -20,6 +21,7 @@ from verl.utils.model import compute_position_id_with_mask
 
 from verl.trainer.ttrl_or_runtime.config import PipelineConfig
 from verl.trainer.ttrl_or_runtime.dataset.loader import normalize_dataset_paths
+from verl.trainer.ttrl_or_runtime.mcts.tree import FourStageMCTS
 from verl.trainer.ttrl_or_runtime.pipeline.ttrl_or import TTRLORRunner
 from verl.trainer.ttrl_or_runtime.reward.r3_batch_planner import (
     attach_r3_plan_to_instance,
@@ -225,7 +227,240 @@ class VerlRayPolicyBackend:
         self._prior_use_ref = bool(prior_use_ref)
         self._prior_min_std = float(prior_min_std)
 
+    def _use_ttrl_enabled(self) -> bool:
+        return bool(getattr(self.pipeline_config.grpo, "use_ttrl", True))
+
+    def _stage_update_enabled(self) -> bool:
+        return bool(getattr(self.pipeline_config.grpo, "stage_update", False))
+
+    def _filter_rollout_enabled(self) -> bool:
+        return bool(getattr(self.pipeline_config.mcts, "filter_rollout", False))
+
+    def _actor_ppo_mini_batch_size(self) -> int:
+        actor_cfg = getattr(getattr(self.trainer.config, "actor_rollout_ref", None), "actor", None)
+        rollout_cfg = getattr(getattr(self.trainer.config, "actor_rollout_ref", None), "rollout", None)
+
+        if actor_cfg is None:
+            base_mini_batch_size = 1
+        else:
+            value = None
+            if isinstance(actor_cfg, dict):
+                value = actor_cfg.get("ppo_mini_batch_size", None)
+            else:
+                value = getattr(actor_cfg, "ppo_mini_batch_size", None)
+                if value is None and hasattr(actor_cfg, "get"):
+                    try:
+                        value = actor_cfg.get("ppo_mini_batch_size", None)
+                    except Exception:
+                        value = None
+            try:
+                base_mini_batch_size = int(value or 1)
+            except Exception:
+                base_mini_batch_size = 1
+
+        rollout_n_value = None
+        if rollout_cfg is not None:
+            if isinstance(rollout_cfg, dict):
+                rollout_n_value = rollout_cfg.get("n", None)
+            else:
+                rollout_n_value = getattr(rollout_cfg, "n", None)
+                if rollout_n_value is None and hasattr(rollout_cfg, "get"):
+                    try:
+                        rollout_n_value = rollout_cfg.get("n", None)
+                    except Exception:
+                        rollout_n_value = None
+        try:
+            rollout_n = int(rollout_n_value or 1)
+        except Exception:
+            rollout_n = 1
+        rollout_n = max(1, rollout_n)
+
+        # Keep exactly aligned with RayPPOTrainer._update_actor:
+        # ppo_mini_batch_size = actor.ppo_mini_batch_size * rollout.n
+        effective_mini_batch_size = int(base_mini_batch_size) * int(rollout_n)
+        return max(1, effective_mini_batch_size)
+
+    @staticmethod
+    def _stage_anchor_tags(stage: Stage) -> list[str]:
+        # Use the LAST stage tag in each stage group as anchor.
+        # Example: Stage2 -> Variables, Stage3 -> Constraints.
+        if stage == Stage.SCHEMA:
+            return ["Sets", "Set"]
+        if stage == Stage.SET_PARAM_VAR:
+            return ["Variables", "Variable"]
+        if stage == Stage.OBJ_CONS:
+            return ["Constraints", "Constraint"]
+        if stage == Stage.TYPE_HINT:
+            return ["Type"]
+        if stage == Stage.SETS:
+            return ["Sets", "Set"]
+        if stage == Stage.PARAMETERS:
+            return ["Parameters", "Parameter"]
+        if stage == Stage.VARIABLES:
+            return ["Variables", "Variable"]
+        if stage == Stage.OBJECTIVE:
+            return ["Objective"]
+        if stage == Stage.CONSTRAINTS:
+            return ["Constraints", "Constraint"]
+        return []
+
+    @staticmethod
+    def _find_stage_anchor_end(text: str, stage: Stage, min_len: int = 21) -> int:
+        raw = str(text or "")
+        if not raw:
+            return -1
+        required_len = max(21, int(min_len))
+        best_end = -1
+        for tag in VerlRayPolicyBackend._stage_anchor_tags(stage):
+            od = re.escape("<")
+            cd = re.escape(">")
+            open_re = re.compile(rf"{od}\s*{re.escape(tag)}\s*{cd}", flags=re.IGNORECASE)
+            close_re = re.compile(rf"{od}\s*/\s*{re.escape(tag)}\s*{cd}", flags=re.IGNORECASE)
+            open_matches = list(open_re.finditer(raw))
+            close_matches = list(close_re.finditer(raw))
+            if not open_matches or not close_matches:
+                continue
+            for close_match in close_matches:
+                close_start = int(close_match.start())
+                nearest_open = None
+                for open_match in reversed(open_matches):
+                    if int(open_match.end()) <= close_start:
+                        nearest_open = open_match
+                        break
+                if nearest_open is None:
+                    continue
+                content = raw[int(nearest_open.end()):close_start].strip()
+                if len(content) < required_len:
+                    continue
+                best_end = int(close_match.end())
+                break
+            if best_end >= 0:
+                break
+        return best_end
+
+    @staticmethod
+    def _extract_stage_update_text(stage: Stage, text: str) -> str:
+        raw_text = str(text or "")
+        cleaned = FourStageMCTS._normalize_text_block(raw_text)
+        if not cleaned:
+            return ""
+        anchor_end = VerlRayPolicyBackend._find_stage_anchor_end(cleaned, stage=stage, min_len=21)
+        if anchor_end < 0:
+            return ""
+        python_re = re.compile(r"<\s*python\s*>", flags=re.IGNORECASE)
+        python_match = python_re.search(cleaned, pos=int(anchor_end))
+        if python_match is None:
+            # No python tail to remove: keep the full original completion text.
+            return raw_text.strip()
+        prefix = cleaned[: int(python_match.start())].strip()
+        return prefix
+
+    @staticmethod
+    def _prefix_match_len(lhs: list[int], rhs: list[int]) -> int:
+        n = min(len(lhs), len(rhs))
+        i = 0
+        while i < n and int(lhs[i]) == int(rhs[i]):
+            i += 1
+        return i
+
+    def _build_stage_update_response_mask(
+        self,
+        *,
+        stage: Stage,
+        batch: DataProto,
+        completions: list[str],
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        base_mask = batch.batch.get("response_mask")
+        responses = batch.batch.get("responses")
+        if base_mask is None or responses is None:
+            return (
+                torch.zeros(0, dtype=torch.long),
+                {
+                    "enabled": True,
+                    "applied": False,
+                    "reason": "missing_response_mask_or_responses",
+                },
+            )
+
+        base_mask_cpu = base_mask.detach().cpu()
+        responses_cpu = responses.detach().cpu()
+        new_mask_cpu = torch.zeros_like(base_mask_cpu)
+
+        rows = int(base_mask_cpu.shape[0]) if base_mask_cpu.ndim >= 2 else 0
+        truncated_rows = 0
+        full_rows = 0
+        fallback_rows = 0
+        effective_tokens = 0
+        total_tokens = 0
+
+        for row_idx in range(rows):
+            valid_positions = torch.nonzero(base_mask_cpu[row_idx], as_tuple=False).flatten()
+            valid_len = int(valid_positions.numel())
+            if valid_len <= 0:
+                continue
+            total_tokens += int(valid_len)
+
+            full_text = str(completions[row_idx] if row_idx < len(completions) else "")
+            selected_text = self._extract_stage_update_text(stage, full_text)
+
+            # If stage tags are not valid/missing (e.g. <20 chars), keep full update
+            # to avoid accidentally masking out all learning signal.
+            if len(selected_text.strip()) < 21:
+                selected_len = int(valid_len)
+                full_rows += 1
+                fallback_rows += 1
+            elif selected_text.strip() == full_text.strip():
+                selected_len = int(valid_len)
+                full_rows += 1
+            else:
+                selected_ids = self.tokenizer(
+                    str(selected_text),
+                    add_special_tokens=False,
+                    return_attention_mask=False,
+                )["input_ids"]
+                response_ids = responses_cpu[row_idx][valid_positions].tolist()
+                match_len = self._prefix_match_len(list(selected_ids), response_ids)
+                if match_len <= 0:
+                    # Robust fallback when text-token alignment is imperfect.
+                    selected_len = min(int(valid_len), int(len(selected_ids)))
+                    if selected_len <= 0:
+                        selected_len = int(valid_len)
+                    fallback_rows += 1
+                else:
+                    selected_len = min(int(valid_len), int(match_len))
+
+                if selected_len < valid_len:
+                    truncated_rows += 1
+                else:
+                    full_rows += 1
+
+            effective_tokens += int(selected_len)
+            if selected_len > 0:
+                new_mask_cpu[row_idx, valid_positions[:selected_len]] = 1
+
+        applied = bool(rows > 0 and effective_tokens > 0)
+        info = {
+            "enabled": True,
+            "applied": bool(applied),
+            "stage": str(stage.value),
+            "rows": int(rows),
+            "rows_truncated": int(truncated_rows),
+            "rows_full": int(full_rows),
+            "rows_fallback": int(fallback_rows),
+            "total_tokens_before": int(total_tokens),
+            "total_tokens_after": int(effective_tokens),
+        }
+        if total_tokens > 0:
+            info["token_keep_ratio"] = float(effective_tokens) / float(total_tokens)
+        else:
+            info["token_keep_ratio"] = 0.0
+
+        new_mask = new_mask_cpu.to(device=base_mask.device, dtype=base_mask.dtype)
+        return new_mask, info
+
     def _sample_reset_enabled(self) -> bool:
+        if not self._use_ttrl_enabled():
+            return False
         return bool(self.pipeline_config.backend.reset_lora_on_begin_episode)
 
     def _has_episode_lora(self) -> bool:
@@ -255,21 +490,26 @@ class VerlRayPolicyBackend:
             print(f"[verl-or][WARN] actor LoRA sample reset failed: {type(exc).__name__}: {exc}")
         self._current_task_id = ""
 
-    def generate(self, stage: Stage, prompt: Any, n: int) -> list[Generation]:
+    def generate(self, stage: Stage, prompt: Any, n: int, *, no_lora_adapter: bool = False) -> list[Generation]:
         del stage
         messages = _prompt_to_messages(prompt)
+        effective_no_lora = bool(no_lora_adapter) or (not self._use_ttrl_enabled())
         outputs = self._generate_messages(
             [messages for _ in range(max(1, int(n)))],
             temperature=float(self.trainer.config.actor_rollout_ref.rollout.temperature),
             top_p=float(self.trainer.config.actor_rollout_ref.rollout.get("top_p", 1.0)),
             do_sample=True,
             max_new_tokens=int(self.pipeline_config.grpo.max_completion_length),
+            no_lora_adapter=effective_no_lora,
         )
         k = max(1, len(outputs))
         return [Generation(text=str(text or ""), prior=1.0 / float(k), metadata={"backend": "verl"}) for text in outputs]
 
     def score_action_priors(self, stage: Stage, prompt: Any, candidates: list[str]) -> list[float]:
         del stage
+        if not self._use_ttrl_enabled():
+            n = len(candidates)
+            return [1.0 / float(max(1, n))] * n
         if not self.pipeline_config.mcts.enable_prior or not candidates:
             n = len(candidates)
             return [1.0 / float(max(1, n))] * n
@@ -316,14 +556,18 @@ class VerlRayPolicyBackend:
         return {"updated": False, "backend": "verl", "reason": "manual_grpo_update_not_used"}
 
     def grpo_rollout_group(self, stage: Stage, prompt: Any, config, reward_callback):
+        group_t0 = time.perf_counter()
         messages = _prompt_to_messages(prompt)
         k = max(1, int(config.num_generations))
         rollout_temperature = float(self.trainer.config.actor_rollout_ref.rollout.temperature)
+        use_ttrl = self._use_ttrl_enabled()
+        no_lora_adapter = not use_ttrl
         current_step = int(self.trainer.global_steps) + 1
         self.trainer.global_steps = current_step
         prompt_batch = self._make_prompt_batch(
             [messages],
             extra_infos=[{"task_id": self._current_task_id, "stage": stage.value}],
+            no_lora_adapter=no_lora_adapter,
         )
         prompt_batch.meta_info["temperature"] = rollout_temperature
         prompt_batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4())], dtype=object)
@@ -335,7 +579,9 @@ class VerlRayPolicyBackend:
         gen_batch.meta_info["global_steps"] = current_step
         gen_batch.meta_info["max_new_tokens"] = int(config.max_completion_length)
         gen_batch_output = gen_batch.repeat(repeat_times=k, interleave=True)
+        rollout_infer_t0 = time.perf_counter()
         gen_output = self._rollout_generate(gen_batch_output)
+        rollout_infer_sec = float(time.perf_counter() - rollout_infer_t0)
 
         batch = prompt_batch.repeat(repeat_times=k, interleave=True)
         batch.meta_info["temperature"] = rollout_temperature
@@ -353,10 +599,149 @@ class VerlRayPolicyBackend:
             rewards = [float(reward_callback(prompt, text, ridx)) for ridx, text in enumerate(completions)]
         rewards = rewards[: len(completions)] + [0.0] * max(0, len(completions) - len(rewards))
 
+        kept_original_indices = list(range(len(completions)))
+        filter_rollout_info: dict[str, Any] = {
+            "enabled": bool(self._filter_rollout_enabled()),
+            "applied": False,
+            "reason": "disabled",
+            "num_total": int(len(completions)),
+            "num_kept": int(len(completions)),
+            "num_dropped": 0,
+        }
+        if bool(self._filter_rollout_enabled()):
+            raw_mask = None
+            raw_stats: dict[str, Any] = {}
+            if callable(batch_score):
+                raw_mask = getattr(batch_score, "_last_filter_mask", None)
+                raw_stats = dict(getattr(batch_score, "_last_filter_stats", {}) or {})
+
+            if isinstance(raw_mask, (list, tuple)) and len(raw_mask) == len(completions):
+                keep_mask = [bool(x) for x in raw_mask]
+                keep_indices = [idx for idx, keep in enumerate(keep_mask) if keep]
+                filter_rollout_info.update(
+                    {
+                        "enabled": True,
+                        "applied": True,
+                        "reason": "batch_filter_mask",
+                        "num_total": int(len(keep_mask)),
+                        "num_kept": int(len(keep_indices)),
+                        "num_dropped": int(len(keep_mask) - len(keep_indices)),
+                        "raw_filter_stats": raw_stats,
+                    }
+                )
+                kept_original_indices = keep_indices
+                if len(keep_indices) < len(completions):
+                    if keep_indices:
+                        batch = batch[keep_indices]
+                        completions = [completions[i] for i in keep_indices]
+                        rewards = [rewards[i] for i in keep_indices]
+                    else:
+                        completions = []
+                        rewards = []
+            else:
+                filter_rollout_info.update(
+                    {
+                        "enabled": True,
+                        "applied": False,
+                        "reason": "missing_or_invalid_batch_filter_mask",
+                        "raw_filter_stats": raw_stats,
+                    }
+                )
+
+        if len(completions) == 0:
+            report = {
+                "updated": False,
+                "backend": "verl",
+                "stage": stage.value,
+                "num_samples": 0,
+                "use_ttrl": bool(use_ttrl),
+                "reason": "all_rollouts_filtered_or_empty",
+                "stage_update": {
+                    "enabled": bool(self._stage_update_enabled()),
+                    "applied": False,
+                    "reason": "no_completion_after_filter",
+                },
+                "filter_rollout": filter_rollout_info,
+                "timing": {
+                    "rollout_vllm_infer_sec": float(rollout_infer_sec),
+                    "old_log_prob_forward_sec": 0.0,
+                    "actor_update_sec": 0.0,
+                    "grpo_group_total_sec": float(time.perf_counter() - group_t0),
+                },
+            }
+            return [], report
+
+        stage_update_info: dict[str, Any] = {
+            "enabled": bool(self._stage_update_enabled()),
+            "applied": False,
+            "reason": "disabled",
+        }
+        if use_ttrl and self._stage_update_enabled():
+            base_response_mask = batch.batch.get("response_mask")
+            stage_mask, stage_update_info = self._build_stage_update_response_mask(
+                stage=stage,
+                batch=batch,
+                completions=completions,
+            )
+            if bool(stage_update_info.get("applied", False)) and base_response_mask is not None:
+                # Compose masks explicitly: effective update region = response_mask AND stage_mask.
+                # This is safer than direct replacement if stage_mask construction changes in future.
+                effective_mask = (
+                    base_response_mask.to(dtype=torch.bool) & stage_mask.to(dtype=torch.bool)
+                ).to(dtype=base_response_mask.dtype)
+                batch.batch["response_mask"] = effective_mask
+                stage_update_info["mask_composition"] = "response_mask_and_stage_mask"
+                stage_update_info["effective_tokens_after_and"] = int(effective_mask.sum().item())
+            else:
+                stage_update_info.setdefault("reason", "build_mask_not_applied")
+        elif not use_ttrl and self._stage_update_enabled():
+            stage_update_info = {
+                "enabled": True,
+                "applied": False,
+                "reason": "use_ttrl_false_no_grpo_update",
+            }
+
         reward_tensor = self._terminal_reward_tensor(batch.batch["response_mask"], rewards)
         batch.batch["token_level_scores"] = reward_tensor
 
+        if not use_ttrl:
+            generations: list[Generation] = []
+            prior = 1.0 / float(max(1, len(completions)))
+            for ridx, text in enumerate(completions):
+                orig_idx = int(kept_original_indices[ridx]) if ridx < len(kept_original_indices) else int(ridx)
+                generations.append(
+                    Generation(
+                        text=str(text or ""),
+                        prior=prior,
+                        metadata={
+                            "backend": "verl",
+                            "rollout_index": orig_idx,
+                            "reward_total": float(rewards[ridx]),
+                            "use_ttrl": False,
+                        },
+                    )
+                )
+            report = {
+                "updated": False,
+                "backend": "verl",
+                "stage": stage.value,
+                "num_samples": len(generations),
+                "use_ttrl": False,
+                "reason": "use_ttrl_disabled_no_grpo_no_lora",
+                "stage_update": stage_update_info,
+                "filter_rollout": filter_rollout_info,
+                "timing": {
+                    "rollout_vllm_infer_sec": float(rollout_infer_sec),
+                    "old_log_prob_forward_sec": 0.0,
+                    "actor_update_sec": 0.0,
+                    "grpo_group_total_sec": float(time.perf_counter() - group_t0),
+                },
+            }
+            return generations, report
+
+        old_log_prob_t0 = time.perf_counter()
         old_log_prob, old_log_prob_mfu = self.trainer._compute_old_log_prob(batch)
+        old_log_prob_forward_sec = float(time.perf_counter() - old_log_prob_t0)
         batch = batch.union(old_log_prob)
 
         if self.trainer.use_reference_policy and "ref_log_prob" not in batch.batch.keys():
@@ -387,7 +772,80 @@ class VerlRayPolicyBackend:
             config=self.trainer.config.algorithm,
         )
 
+        actor_batch_align_info: dict[str, Any] = {
+            "mini_batch_size": int(self._actor_ppo_mini_batch_size()),
+            "before": int(len(batch)),
+            "after": int(len(batch)),
+            "padding_size": 0,
+            "applied": False,
+            "reason": "already_divisible",
+        }
+        mini_batch_size = int(actor_batch_align_info["mini_batch_size"])
+        if mini_batch_size > 1 and int(len(batch)) > 0:
+            remainder = int(len(batch)) % mini_batch_size
+            if remainder != 0:
+                pad_size = int(mini_batch_size - remainder)
+                actor_batch_align_info.update(
+                    {
+                        "padding_size": int(pad_size),
+                        "reason": "pad_to_mini_batch_multiple",
+                    }
+                )
+                try:
+                    # FILTER_ROLLOUT can reduce valid samples (e.g., 3 out of k=8),
+                    # while actor update requires batch_size % ppo_mini_batch_size == 0.
+                    # Pad by repeating the first sample to satisfy trainer constraints.
+                    batch.padding(padding_size=pad_size, padding_candidate="first")
+                    actor_batch_align_info["applied"] = True
+                    actor_batch_align_info["after"] = int(len(batch))
+                except Exception as exc:  # noqa: BLE001
+                    actor_batch_align_info.update(
+                        {
+                            "applied": False,
+                            "after": int(len(batch)),
+                            "reason": f"padding_failed:{type(exc).__name__}",
+                            "error": str(exc),
+                        }
+                    )
+
+        if mini_batch_size > 1 and int(len(batch)) % mini_batch_size != 0:
+            generations: list[Generation] = []
+            prior = 1.0 / float(max(1, len(completions)))
+            for ridx, text in enumerate(completions):
+                orig_idx = int(kept_original_indices[ridx]) if ridx < len(kept_original_indices) else int(ridx)
+                generations.append(
+                    Generation(
+                        text=str(text or ""),
+                        prior=prior,
+                        metadata={
+                            "backend": "verl",
+                            "rollout_index": orig_idx,
+                            "reward_total": float(rewards[ridx]),
+                        },
+                    )
+                )
+            report = {
+                "updated": False,
+                "backend": "verl",
+                "stage": stage.value,
+                "num_samples": len(generations),
+                "use_ttrl": True,
+                "reason": "actor_batch_size_not_divisible_after_filter",
+                "stage_update": stage_update_info,
+                "filter_rollout": filter_rollout_info,
+                "actor_batch_align": actor_batch_align_info,
+                "timing": {
+                    "rollout_vllm_infer_sec": float(rollout_infer_sec),
+                    "old_log_prob_forward_sec": float(old_log_prob_forward_sec),
+                    "actor_update_sec": 0.0,
+                    "grpo_group_total_sec": float(time.perf_counter() - group_t0),
+                },
+            }
+            return generations, report
+
+        actor_update_t0 = time.perf_counter()
         actor_output = self.trainer._update_actor(batch)
+        actor_update_sec = float(time.perf_counter() - actor_update_t0)
         actor_metrics_raw = dict(actor_output.meta_info.get("metrics", {}) or {})
         actor_metrics = reduce_metrics(actor_metrics_raw) if actor_metrics_raw else {}
         actor_metrics["perf/mfu/actor_infer"] = old_log_prob_mfu
@@ -397,13 +855,14 @@ class VerlRayPolicyBackend:
         generations: list[Generation] = []
         prior = 1.0 / float(max(1, len(completions)))
         for ridx, text in enumerate(completions):
+            orig_idx = int(kept_original_indices[ridx]) if ridx < len(kept_original_indices) else int(ridx)
             generations.append(
                 Generation(
                     text=str(text or ""),
                     prior=prior,
                     metadata={
                         "backend": "verl",
-                        "rollout_index": ridx,
+                        "rollout_index": orig_idx,
                         "reward_total": float(rewards[ridx]),
                     },
                 )
@@ -414,7 +873,17 @@ class VerlRayPolicyBackend:
             "backend": "verl",
             "stage": stage.value,
             "num_samples": len(generations),
+            "use_ttrl": True,
+            "stage_update": stage_update_info,
+            "filter_rollout": filter_rollout_info,
+            "actor_batch_align": actor_batch_align_info,
             "metrics": {**actor_metrics, **kl_metrics},
+            "timing": {
+                "rollout_vllm_infer_sec": float(rollout_infer_sec),
+                "old_log_prob_forward_sec": float(old_log_prob_forward_sec),
+                "actor_update_sec": float(actor_update_sec),
+                "grpo_group_total_sec": float(time.perf_counter() - group_t0),
+            },
         }
         return generations, report
 
@@ -468,6 +937,7 @@ class VerlRayPolicyBackend:
             top_p=float(top_p),
             do_sample=bool(float(temperature) > 0.0),
             max_new_tokens=int(max_new_tokens),
+            no_lora_adapter=not self._use_ttrl_enabled(),
         )
 
     def _rollout_generate(self, gen_batch: DataProto) -> DataProto:
@@ -492,12 +962,14 @@ class VerlRayPolicyBackend:
         top_p: float,
         do_sample: bool,
         max_new_tokens: int,
+        no_lora_adapter: bool = False,
     ) -> list[str | None]:
         if not messages_batch:
             return []
         prompt_batch = self._make_prompt_batch(
             messages_batch,
             extra_infos=[{"task_id": self._current_task_id, "kind": "aux"} for _ in messages_batch],
+            no_lora_adapter=bool(no_lora_adapter),
         )
         gen_batch = self.trainer._get_gen_batch(prompt_batch)
         gen_batch.meta_info["temperature"] = float(temperature)
@@ -514,6 +986,7 @@ class VerlRayPolicyBackend:
         messages_batch: list[list[dict[str, str]]],
         *,
         extra_infos: list[dict[str, Any]] | None = None,
+        no_lora_adapter: bool = False,
     ) -> DataProto:
         rows: list[dict[str, Any]] = []
         for idx, messages in enumerate(messages_batch):
@@ -528,6 +1001,7 @@ class VerlRayPolicyBackend:
                     "index": idx,
                     "tools_kwargs": {},
                     "interaction_kwargs": {},
+                    "no_lora_adapter": bool(no_lora_adapter),
                 }
             )
         batch_dict = verl_collate_fn(rows)
@@ -817,9 +1291,13 @@ def _prepare_r3_for_samples(raw_samples: list, runner: TTRLORRunner, rank: int, 
 def run_ttrl_or_fit(trainer, logger) -> None:
     trainer.global_steps = 0
     trainer._load_checkpoint()
-    trainer.checkpoint_manager.update_weights(trainer.global_steps)
-
     pipeline_config = build_pipeline_config_from_verl_config(trainer.config)
+    if bool(getattr(pipeline_config.grpo, "use_ttrl", True)):
+        trainer.checkpoint_manager.update_weights(trainer.global_steps)
+    else:
+        # In pure-MCTS mode (use_ttrl=False), skip eager rollout weight sync.
+        # vLLM is initialized from model path and does not require per-step policy syncing.
+        print("[verl-or][info] use_ttrl=false: skip initial checkpoint_manager.update_weights")
     model_log_root = _verl_model_log_root(pipeline_config)
     _write_run_config(pipeline_config, model_log_root)
     backend = VerlRayPolicyBackend(trainer, pipeline_config)

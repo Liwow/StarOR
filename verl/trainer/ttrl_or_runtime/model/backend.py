@@ -20,7 +20,7 @@ class PolicyBackend(ABC):
         """Drop temporary adapters after one task instance is complete."""
 
     @abstractmethod
-    def generate(self, stage: Stage, prompt: Any, n: int) -> list[Generation]:
+    def generate(self, stage: Stage, prompt: Any, n: int, *, no_lora_adapter: bool = False) -> list[Generation]:
         """Generate n candidates for a specific stage with prior probabilities."""
 
     def score_action_priors(self, stage: Stage, prompt: Any, candidates: list[str]) -> list[float]:
