@@ -11,3 +11,4 @@ outputs/
 wandb/
 train_data.mcts_stage.jsonl
 paper/
+*.zip
