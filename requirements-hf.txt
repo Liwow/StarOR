@@ -1,6 +1,5 @@
 torch
 transformers
-trl
 datasets
 accelerate
 pytest

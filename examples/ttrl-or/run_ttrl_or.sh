@@ -104,7 +104,7 @@ python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     algorithm.ttrl_or.enable=True \
     algorithm.ttrl_or.log_dir="${log_dir}" \
-    algorithm.ttrl_or.mcts.max_iterations=12 \
+    algorithm.ttrl_or.mcts.max_iterations=10 \
     algorithm.ttrl_or.mcts.c_puct=1.414 \
     algorithm.ttrl_or.mcts.enable_prior=True \
     algorithm.ttrl_or.mcts.blocked_sibling_soft_weight=0.6 \
@@ -186,4 +186,3 @@ python -m verl.trainer.main_ppo \
     trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
     trainer.total_epochs=1 "${EXTRA_ARGS[@]}"
-

@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from ttrl_or.prompts.notice_prompts import CODE_NOTICE, SYSTEM_INSTRUCTION, TYPE_SET_NOTICE
+from verl.trainer.ttrl_or_runtime.prompts.notice_prompts import CODE_NOTICE, SYSTEM_INSTRUCTION, TYPE_SET_NOTICE
 
 SECTION_SPECS: list[tuple[str, str]] = [
     ("Set", "Sets"),

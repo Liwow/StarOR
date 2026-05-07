@@ -303,7 +303,7 @@ Make sure:
 Put your output within <Sets></Sets>, <Parameters></Parameters>, and <Variables></Variables>.
 """
 
-OBJ_CON_NOTICE = """
+OBJ_CON_NOTICE = r"""
 # MANDATORY FORMAT RULES
 
 1. Objective format:

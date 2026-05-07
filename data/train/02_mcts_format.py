@@ -12,10 +12,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from ttrl_or.prompts import PromptBuilder
-from ttrl_or.prompts.notice_prompts import SYSTEM_INSTRUCTION
-from ttrl_or.prompts.templates import DEFAULT_ROLLOUT_TEMPLATES, DEFAULT_TEMPLATES
-from ttrl_or.types import DEFAULT_STAGE_ORDER, OptimizationTask, Stage, Trajectory
+from verl.trainer.ttrl_or_runtime.prompts import PromptBuilder
+from verl.trainer.ttrl_or_runtime.prompts.notice_prompts import SYSTEM_INSTRUCTION
+from verl.trainer.ttrl_or_runtime.prompts.templates import DEFAULT_ROLLOUT_TEMPLATES, DEFAULT_TEMPLATES
+from verl.trainer.ttrl_or_runtime.types import DEFAULT_STAGE_ORDER, OptimizationTask, Stage, Trajectory
 
 FULL_PROMPT_TEMPLATE = """You are a professional optimization problem analyst, proficient in extracting key elements from optimization problems described in natural language.
 I need you to help me to build  a detailed mathematical model and  provide a gurobi python code to solve it.

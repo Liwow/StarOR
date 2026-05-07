@@ -14,7 +14,6 @@ hf = [
   "torch>=2.2.0",
   "transformers>=4.46.0",
   "peft>=0.14.0",
-  "trl>=0.15.0",
   "datasets>=2.20.0",
   "accelerate>=0.34.0",
 ]
@@ -23,8 +22,7 @@ dev = ["pytest>=8.0.0"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 [tool.setuptools.packages.find]
-include = ["ttrl_or", "ttrl_or.*", "verl", "verl.*"]
+include = ["verl", "verl.*"]
 
 [tool.setuptools.package-data]
 verl = ["**/*.yaml", "**/*.yml", "**/*.json", "**/*.txt", "**/*.md"]
-ttrl_or = ["**/*.yaml", "**/*.yml", "**/*.json", "**/*.txt", "**/*.md"]

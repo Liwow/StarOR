@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ttrl_or.dataset import normalize_dataset_to_jsonl
+from verl.trainer.ttrl_or_runtime.dataset import normalize_dataset_to_jsonl
 
 
 def build_parser() -> argparse.ArgumentParser:
