@@ -14,3 +14,5 @@ paper/
 NeurIPS_2026_or/
 *.zip
 material
+DS_Store
+*.DS_Store
