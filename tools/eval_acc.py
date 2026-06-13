@@ -478,9 +478,9 @@ def _group_by_model(summaries: list[dict[str, Any]], tol: float, limit: int) -> 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Compute per-dataset accuracy from TTRL-OR logs: |obj-gt|/|gt| <= tol"
+        description="Compute per-dataset accuracy from StarOR logs: |obj-gt|/|gt| <= tol"
     )
-    parser.add_argument("--log-root", type=str, default="outputs/ttrl_or_logs", help="Root log directory")
+    parser.add_argument("--log-root", type=str, default="outputs/staror_logs", help="Root log directory")
     parser.add_argument(
         "--dataset-json",
         action="append",

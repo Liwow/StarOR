@@ -43,7 +43,7 @@ class NaiveRewardManager(RewardManagerBase):
         reward_model = data_item.non_tensor_batch.get("reward_model", {})
         if not isinstance(reward_model, dict):
             reward_model = {}
-        # Some custom pipelines, such as TTRL-OR, intentionally do not expose
+        # Some custom pipelines, such as StarOR, intentionally do not expose
         # ground-truth labels to the rollout/reward plumbing during generation.
         ground_truth = reward_model.get("ground_truth", None)
         extra_info = data_item.non_tensor_batch.get("extra_info", {})

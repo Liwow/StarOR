@@ -14,6 +14,6 @@
 
 from .rl_dataset import RLHFDataset
 from .rm_dataset import RMDataset
-from .ttrl_or_dataset import TTRLORDataset
+from .staror_dataset import StarORDataset
 
-__all__ = ["RLHFDataset", "RMDataset", "TTRLORDataset"]
+__all__ = ["RLHFDataset", "RMDataset", "StarORDataset"]

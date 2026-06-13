@@ -1,5 +1,9 @@
 # Benchmark Data Descriptions
 
+The evaluation files in this directory are based on the cleaned benchmark data
+released in the
+[SIRL `test_data` directory](https://github.com/Cardinal-Operations/SIRL/tree/main/test_data).
+
 A comprehensive benchmark dataset for large language models (LLMs) in optimization modeling, including NL4OPT, IndustryOR, MAMO-EasyLP, MAMO-ComplexLP, OptMATH, Optibench.
  We performed a quick review and correction on the NL4OPT, IndustryOR, MAMO-ComplexLP, and MAMO-EasyLP dataset. 
  Table 1 summarizes the sample counts for each dataset before and after our revisions.  

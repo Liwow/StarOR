@@ -109,23 +109,23 @@ algorithm:
     # Power used for weight scaling in "pow" method
     weight_pow: 2.0
 
-  # TTRL-OR custom sample-level MCTS + node-step GRPO loop.
-  ttrl_or:
+  # StarOR custom sample-level MCTS + node-step GRPO loop.
+  staror:
 
-    # Enable the custom TTRL-OR fit loop inside RayPPOTrainer.fit.
+    # Enable the custom StarOR fit loop inside RayPPOTrainer.fit.
     enable: False
 
     # Save per-sample logs under log_dir.
     save_logs: True
 
-    # Log root for TTRL-OR artifacts.
+    # Log root for StarOR artifacts.
     log_dir: null
 
     # MCTS-specific settings.
     mcts:
 
       # Maximum node-selection / rollout-update steps per sample.
-      max_iterations: 20
+      max_iterations: 10
 
       # PUCT exploration coefficient.
       c_puct: 1.414
@@ -133,8 +133,11 @@ algorithm:
       # Enable teacher-forcing prior for sibling action selection.
       enable_prior: True
 
+      # Softmax temperature for policy priors.
+      prior_temperature: 0.7
+
       # Stop once a rollout achieves reward >= 1.0.
-      # Keep this aligned with verl/trainer/ttrl_or_runtime/config.py default.
+      # Keep this aligned with verl/trainer/staror_runtime/config.py default.
       stop_on_reward_one: False
 
       # Enable solverllm-style split completion flow.
@@ -147,14 +150,14 @@ algorithm:
       code_refine: True
 
       # CODE terminal repair rounds (0 means disabled).
-      code_repair: 0
+      code_repair: 2
 
       # Require two attempts on the same node before entering CODE.
       code_entry_second_attempt: True
 
       # One-shot PUCT multiplier for same-cluster nodes on next selection
       # after first CODE-entry attempt.
-      code_entry_same_cluster_suppress_weight: 0.7
+      code_entry_same_cluster_suppress_weight: 0.5
 
       # Enable cluster-linked backprop update in MCTS:
       # update same-cluster siblings and ancestor-layer same-cluster siblings.
@@ -165,13 +168,13 @@ algorithm:
 
       # Auto-complete missing python code for non-CODE stage rollouts.
       # Only triggers when rollout text has no valid <python>...</python> block.
-      auto_complete: False
+      auto_complete: True
 
       # Filter rollout items with execution errors from MCTS+GRPO.
       # Infeasible/non-obj but non-error items are still kept.
       filter_rollout: False
 
-    # Reward settings migrated from TTRL-OR.
+    # Reward settings migrated from StarOR.
     reward:
 
       # Code execution timeout in seconds.
@@ -184,7 +187,7 @@ algorithm:
       robustness_cases: 3
 
       # Relative tolerance used by recent objective consensus checks.
-      global_consensus_rel_tol: 0.005
+      global_consensus_rel_tol: 0.0001
 
       # Code executor mode: sandbox or subprocess.
       code_executor_mode: sandbox
@@ -214,13 +217,13 @@ algorithm:
       r4_decay: 0.95
 
       # Enable dynamic reward schedule by MCTS iteration / code-entry.
-      dynamic_reward: False
+      dynamic_reward: True
 
       # Dynamic schedule weights (r1,r2,r3,r4) for early phase (iter<=3).
-      early_weight: "0.3,0.4,0.2,0.1"
+      early_weight: "0.2,0.5,0.2,0.1"
 
       # Dynamic schedule weights (r1,r2,r3,r4) for middle phase (iter 4~5).
-      mid_weight: "0.5,0.3,0.1,0.1"
+      mid_weight: "0.4,0.4,0.1,0.1"
 
       # Dynamic schedule weights (r1,r2,r3,r4) for final phase (iter>=6 or code-seen).
       final_weight: "0.6,0.2,0.1,0.1"
@@ -232,7 +235,7 @@ algorithm:
       r2_weight: 0.1
 
       # Multiplier on r1 weight when objective scale check fails.
-      r1_obj_scale_fail_multiplier: 0.2
+      r1_obj_scale_fail_multiplier: 0.5
 
       # Weight of r3 in final reward.
       r3_weight: 0.2
@@ -241,9 +244,9 @@ algorithm:
       r4_weight: 0.1
 
       # Minimum multiplicative gate when LP structure is incomplete.
-      structure_gate_min: 0.2
+      structure_gate_min: 1.0
 
-    # Dataset / preprocessing settings migrated from TTRL-OR.
+    # Dataset / preprocessing settings migrated from StarOR.
     dataset:
 
       # Optional raw jsonl path override for standalone runtime usage.
@@ -291,17 +294,17 @@ algorithm:
     grpo:
 
       # Master switch: True uses GRPO+LoRA updates; False runs pure MCTS (no LoRA, no GRPO update).
-      use_ttrl: True
+      enable_adaptation: True
 
       # Whether GRPO update is restricted to tokens up to current-stage content.
       # If True, trailing content (e.g., <python> tail) is masked out for update.
-      stage_update: False
+      stage_update: True
 
       # Optimizer learning rate mirrored into the runtime config.
-      learning_rate: 5.0e-5
+      learning_rate: 1.0e-4
 
       # Alias of num_generations in GRPO literature.
-      group_size: 3
+      group_size: 8
 
       # KL penalty coefficient beta in the runtime config.
       kl_coef: 0.001
@@ -331,7 +334,7 @@ algorithm:
       gradient_accumulation_steps: 1
 
       # Number of generations per prompt.
-      num_generations: 3
+      num_generations: 8
 
       # Optional explicit generation batch size override.
       generation_batch_size: 0
@@ -382,10 +385,10 @@ algorithm:
       model_name_or_path: ""
 
       # Random seed for standalone runtime usage.
-      seed: 7
+      seed: 42
 
       # Fallback generation temperature used outside direct rollout calls.
-      temperature: 0.8
+      temperature: 1.0
 
       # Fallback top-p used outside direct rollout calls.
       top_p: 0.95
@@ -519,19 +522,19 @@ trainer:
   #  mode: "auto", "enable", or "disable"
   use_legacy_worker_impl: disable
 
-# data-level extensions used by the custom TTRL-OR dataset wrapper
+# data-level extensions used by the custom StarOR dataset wrapper
 data:
 
-  # Custom dataset class used when routing PPO fit through TTRL-OR.
+  # Custom dataset class used when routing PPO fit through StarOR.
   custom_cls:
     path: null
     name: null
 
   # Max numeric features extracted from the raw OR jsonl sample.
-  ttrl_or_max_numeric_features: 256
+  staror_max_numeric_features: 32
 
   # Top-k key parameters used by the mapping extractor.
-  ttrl_or_key_param_top_k: 16
+  staror_key_param_top_k: 16
 
 # profiler configs
 global_profiler:
@@ -666,4 +669,3 @@ ray_kwargs:
 
   # Path to save Ray timeline JSON for performance profiling
   timeline_json_file: null
-

@@ -1336,11 +1336,11 @@ class RayPPOTrainer:
             config=OmegaConf.to_container(self.config, resolve=True),
         )
 
-        ttrl_or_cfg = self.config.algorithm.get("ttrl_or", {})
-        if bool(ttrl_or_cfg.get("enable", False)):
-            from verl.trainer.ppo.ttrl_or_fit import run_ttrl_or_fit
+        staror_cfg = self.config.algorithm.get("staror", {})
+        if bool(staror_cfg.get("enable", False)):
+            from verl.trainer.ppo.staror_fit import run_staror_fit
 
-            return run_ttrl_or_fit(self, logger)
+            return run_staror_fit(self, logger)
 
         self.global_steps = 0
 

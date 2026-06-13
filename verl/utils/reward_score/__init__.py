@@ -105,8 +105,8 @@ def default_compute_score(
 
         res = search_r1_like_qa_em.compute_score(solution_str, ground_truth)
 
-    elif data_source == "ttrl_or":
-        # TTRL-OR owns reward computation in its custom fit loop. When async rollout
+    elif data_source == "staror":
+        # StarOR owns reward computation in its custom fit loop. When async rollout
         # passes through verl's default reward-loop plumbing, return a neutral score
         # so generation can proceed and the custom reward can overwrite it later.
         res = 0.0

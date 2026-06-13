@@ -1,19 +1,28 @@
-# TTRL-OR Examples
+# StarOR Examples
 
-This directory contains example launch scripts for the migrated TTRL-OR flow on top of `verl`.
+`run_staror.sh` is the canonical launch script. Its search, adaptation, reward,
+and model hyperparameters match the paper configuration.
 
-Current example:
+```bash
+MODEL_NAME_OR_PATH=Qwen/Qwen3-4B-Instruct-2507 \
+TRAIN_FILE="$PWD/data/IndustryOR_fixedV2.jsonl" \
+bash examples/ttrl-or/run_staror.sh
+```
 
-- `run_ttrl_or.sh`
+The following environment variables can be overridden without editing the
+script:
 
-Notes:
+- `CUDA_VISIBLE_DEVICES`
+- `DATA_ROOT`
+- `TRAIN_FILE`
+- `MODEL_NAME_OR_PATH`
+- `OUTPUT_DIR`
 
-- This path uses the custom `algorithm.ttrl_or.enable=True` fit branch.
-- Rollout generation uses verl native `vllm` rollout.
-- Actor updates use verl native GRPO/PPO update functions.
-- Sample-local LoRA reset is enabled via:
-  - `algorithm.ttrl_or.backend.reset_lora_on_begin_episode=true`
-- LoRA settings are aligned with verl's LoRA guidance:
-  - `actor_rollout_ref.rollout.load_format=safetensors`
-  - `actor_rollout_ref.model.target_modules=all-linear`
-  - `trainer.use_legacy_worker_impl=disable`
+Additional Hydra overrides can be appended to the command. For example:
+
+```bash
+bash examples/ttrl-or/run_staror.sh trainer.logger='["console","wandb"]'
+```
+
+`run_ttrl_or.sh` is retained as a compatibility wrapper and forwards all
+arguments to `run_staror.sh`.

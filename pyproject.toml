@@ -2,9 +2,9 @@
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 [project]
-name = "ttrl-or"
+name = "staror"
 version = "0.1.0"
-description = "A modular test-time training framework for optimization modeling with MCTS + GRPO."
+description = "Search-and-adaptation for optimization modeling with MCTS and test-time GRPO."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []

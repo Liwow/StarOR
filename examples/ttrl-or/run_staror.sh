@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+
+DATA_ROOT="${DATA_ROOT:-${PROJECT_ROOT}/data}"
+TRAIN_FILE="${TRAIN_FILE:-${DATA_ROOT}/IndustryOR_fixedV2.jsonl}"
+MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-Qwen/Qwen3-4B-Instruct-2507}"
+OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_ROOT}/outputs/staror-paper}"
+
+python -m verl.trainer.main_ppo \
+    algorithm.adv_estimator=grpo \
+    algorithm.staror.enable=True \
+    algorithm.staror.log_dir="${OUTPUT_DIR}" \
+    algorithm.staror.mcts.max_iterations=10 \
+    algorithm.staror.mcts.c_puct=1.414 \
+    algorithm.staror.mcts.enable_prior=True \
+    algorithm.staror.mcts.prior_temperature=0.7 \
+    algorithm.staror.mcts.code_refine=True \
+    algorithm.staror.mcts.code_repair=2 \
+    algorithm.staror.mcts.code_entry_second_attempt=True \
+    algorithm.staror.mcts.code_entry_same_cluster_suppress_weight=0.5 \
+    algorithm.staror.mcts.mcts_cluster_update=True \
+    algorithm.staror.mcts.auto_complete=True \
+    algorithm.staror.mcts.filter_rollout=False \
+    algorithm.staror.mcts.solverllm_compare_mode=False \
+    algorithm.staror.grpo.enable_adaptation=True \
+    algorithm.staror.grpo.stage_update=True \
+    algorithm.staror.reward.enable_r3_reward=True \
+    algorithm.staror.reward.enable_r4_reward=True \
+    algorithm.staror.reward.dynamic_reward=True \
+    algorithm.staror.reward.early_weight='[0.2,0.5,0.2,0.1]' \
+    algorithm.staror.reward.mid_weight='[0.4,0.4,0.1,0.1]' \
+    algorithm.staror.reward.final_weight='[0.6,0.2,0.1,0.1]' \
+    algorithm.staror.reward.global_consensus_rel_tol=0.0001 \
+    algorithm.staror.reward.r4_decay=0.95 \
+    algorithm.staror.reward.r1_obj_scale_fail_multiplier=0.5 \
+    algorithm.staror.reward.structure_gate_min=1.0 \
+    algorithm.staror.reward.cluster_scope=local \
+    algorithm.staror.reward.robustness_cases=3 \
+    algorithm.staror.reward.gurobi_time_limit_sec=30 \
+    algorithm.staror.dataset.resume_skip_completed=True \
+    algorithm.staror.backend.reset_lora_on_begin_episode=True \
+    data.train_files="${TRAIN_FILE}" \
+    data.val_files="${TRAIN_FILE}" \
+    data.custom_cls.path='pkg://verl.utils.dataset.staror_dataset' \
+    data.custom_cls.name=StarORDataset \
+    data.staror_max_numeric_features=32 \
+    data.staror_key_param_top_k=16 \
+    data.train_batch_size=1 \
+    data.max_prompt_length=3000 \
+    data.max_response_length=4096 \
+    data.filter_overlong_prompts=False \
+    data.truncation=right \
+    data.shuffle=False \
+    actor_rollout_ref.model.path="${MODEL_NAME_OR_PATH}" \
+    actor_rollout_ref.model.use_shm=False \
+    actor_rollout_ref.model.target_modules=all-linear \
+    actor_rollout_ref.model.lora_rank=8 \
+    actor_rollout_ref.model.lora_alpha=16 \
+    actor_rollout_ref.model.use_remove_padding=True \
+    actor_rollout_ref.model.enable_gradient_checkpointing=False \
+    actor_rollout_ref.actor.optim.lr=1e-4 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=1 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.actor.use_kl_loss=True \
+    actor_rollout_ref.actor.kl_loss_coef=0.001 \
+    actor_rollout_ref.actor.kl_loss_type=low_var_kl \
+    actor_rollout_ref.actor.entropy_coeff=0 \
+    actor_rollout_ref.actor.fsdp_config.param_offload=False \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+    actor_rollout_ref.rollout.name=vllm \
+    actor_rollout_ref.rollout.n=8 \
+    actor_rollout_ref.rollout.temperature=1.0 \
+    actor_rollout_ref.rollout.top_p=0.95 \
+    actor_rollout_ref.rollout.max_model_len=16384 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.35 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.rollout.load_format=safetensors \
+    actor_rollout_ref.rollout.free_cache_engine=False \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.ref.fsdp_config.param_offload=True \
+    algorithm.use_kl_in_reward=False \
+    trainer.val_before_train=False \
+    trainer.critic_warmup=0 \
+    trainer.use_legacy_worker_impl=disable \
+    trainer.logger='["console"]' \
+    trainer.project_name=staror \
+    trainer.experiment_name=qwen3-4b-paper \
+    trainer.n_gpus_per_node=1 \
+    trainer.nnodes=1 \
+    trainer.total_epochs=1 \
+    "$@"
