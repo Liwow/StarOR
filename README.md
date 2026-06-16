@@ -4,7 +4,7 @@
 
 **Synergizing Tree Search and Test-Time Reinforcement Learning for Optimization Modeling**
 
-[Paper: arXiv coming soon](#citation)
+[Paper: arXiv](https://arxiv.org/pdf/2606.15197v1)
 
 </div>
 
