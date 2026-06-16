@@ -139,21 +139,18 @@ branch is activated by `algorithm.staror.enable=True`.
 The arXiv record and BibTeX entry will be added when the paper is public.
 
 ```bibtex
-@article{li2026staror,
-  title   = {StarOR: Synergizing Tree Search and Test-Time Reinforcement Learning for Optimization Modeling},
-  author  = {Li, Jiajun and Ding, Yu and Wang, Wanyuan},
-  journal = {arXiv preprint},
-  year    = {2026}
+@misc{li2026starorsynergizingtreesearch,
+      title={StarOR: Synergizing Tree Search and Test-Time Reinforcement Learning for Optimization Modeling}, 
+      author={Jiajun Li and Yu Ding and Shisi Guan and Ran Hou and Wanyuan Wang},
+      year={2026},
+      eprint={2606.15197},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2606.15197}, 
 }
 ```
 
 ## License
 
-A project-level license has not yet been selected. Add a `LICENSE` file before
-the public release; the bundled `verl` source files retain their original
-license notices.
+The code in this repository is released under the MIT License.
 
-## Documentation Maintenance
-
-Update this README when the canonical launch configuration, runtime entry
-points, benchmark files, paper link, or project license changes.
