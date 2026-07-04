@@ -56,12 +56,12 @@ Install those platform-specific dependencies before launching a full run.
 ## Quick Start
 
 The canonical paper configuration is
-[`examples/ttrl-or/run_staror.sh`](examples/ttrl-or/run_staror.sh).
+[`examples/StarOR/run_staror.sh`](examples/StarOR/run_staror.sh).
 
 ```bash
 MODEL_NAME_OR_PATH=Qwen/Qwen3-4B-Instruct-2507 \
 TRAIN_FILE="$PWD/data/IndustryOR_fixedV2.jsonl" \
-bash examples/ttrl-or/run_staror.sh
+bash examples/StarOR/run_staror.sh
 ```
 
 For a local model checkpoint:
@@ -70,11 +70,10 @@ For a local model checkpoint:
 MODEL_NAME_OR_PATH="$HOME/models/Qwen3-4B-Instruct-2507" \
 TRAIN_FILE="$PWD/data/OptMATH_Bench_166.jsonl" \
 OUTPUT_DIR="$PWD/outputs/optmath" \
-bash examples/ttrl-or/run_staror.sh
+bash examples/StarOR/run_staror.sh
 ```
 
-Additional Hydra overrides can be appended to the command. The legacy
-`run_ttrl_or.sh` filename is retained as a wrapper for existing workflows.
+Additional Hydra overrides can be appended to the command.
 
 ## Paper Configuration
 
@@ -123,7 +122,7 @@ python tools/eval_acc.py \
 StarOR/
 ├── assets/                         # README and project figures
 ├── data/                           # Benchmarks and data preparation
-├── examples/ttrl-or/               # Canonical and compatibility launchers
+├── examples/StarOR/                # Canonical StarOR launch script
 ├── tools/                          # Normalization and evaluation utilities
 ├── verl/trainer/staror_runtime/    # MCTS, rewards, prompts, and pipeline
 ├── verl/trainer/ppo/staror_fit.py  # StarOR integration with the verl trainer
@@ -153,4 +152,3 @@ The arXiv record and BibTeX entry will be added when the paper is public.
 ## License
 
 The code in this repository is released under the MIT License.
-
