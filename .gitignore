@@ -6,9 +6,13 @@ __pycache__/
 .venv/
 .env
 .datas
+.log
 logs/
 outputs/
+outputs_bon/
+outputs_bon_1/
 *.pdf
+*.out
 *.log
 *.egg-info
 wandb/
@@ -20,3 +24,6 @@ material
 .DS_Store
 DS_Store
 scripts/
+*.DS_Store
+staror_outputs/
+staror_logs/
